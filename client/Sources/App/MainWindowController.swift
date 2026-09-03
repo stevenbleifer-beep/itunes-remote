@@ -156,6 +156,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     deinit {
         if let m = keyMonitor { NSEvent.removeMonitor(m) }
+        if let m = clickMonitor { NSEvent.removeMonitor(m) }
     }
 
     // MARK: Layout
@@ -2305,7 +2306,18 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
+    private var clickMonitor: Any?
+
     private func installKeyMonitor() {
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            if let self = self, let popup = self.searchPopup, popup.isVisible,
+               event.window !== popup.panel {
+                let inField = event.window === self.window
+                    && self.searchField.frame.contains(self.searchField.superview?.convert(event.locationInWindow, from: nil) ?? .zero)
+                if !inField { popup.hide() }
+            }
+            return event
+        }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self, event.window === self.window else { return event }
             // Space toggles playback unless a text field has focus.
@@ -2313,6 +2325,15 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                !(self.window?.firstResponder is NSText) {
                 self.player.playPause()
                 return nil
+            }
+            if let popup = self.searchPopup, popup.isVisible, self.searchHasFocus {
+                switch event.keyCode {
+                case 125: popup.moveSelection(by: 1); return nil     // down
+                case 126: popup.moveSelection(by: -1); return nil    // up
+                case 36, 76: popup.activateSelection(); return nil   // return
+                case 53: popup.hide(); return nil                    // escape
+                default: break
+                }
             }
             if event.charactersIgnoringModifiers == "i", event.modifierFlags.contains(.command) {
                 self.showGetInfo(nil)
@@ -2473,12 +2494,90 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         searchTimer?.invalidate()
         let text = searchField.stringValue
         searchTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.controller.searchText = text }
+            Task { @MainActor in
+                self?.controller.searchText = text
+                self?.suggest(text)
+            }
         }
+        if text.isEmpty { searchPopup?.hide() }
     }
 
     @objc func focusSearch(_ sender: Any?) {
         window?.makeFirstResponder(searchField)
+    }
+
+    /// The field lost focus: the suggestions go with it.
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard (obj.object as? NSSearchField) === searchField else { return }
+        searchPopup?.hide()
+    }
+
+    // MARK: Search suggestions
+
+    private var searchPopup: SearchPopup?
+    private var suggestGeneration = 0
+
+    /// True while the search field is being typed into.
+    private var searchHasFocus: Bool {
+        (window?.firstResponder as? NSTextView)?.delegate === searchField
+    }
+
+    /// Asks the daemon for the top artists, albums and songs matching the
+    /// text, across the whole library rather than just the list on screen,
+    /// and drops them under the field.
+    private func suggest(_ text: String) {
+        let q = text.trimmingCharacters(in: .whitespaces)
+        guard q.count >= 2, let api = controller.api else { searchPopup?.hide(); return }
+        suggestGeneration += 1
+        let gen = suggestGeneration
+        let filter = TrackFilter(q: q)
+        Task { @MainActor in
+            async let artists = api.facet("artist", filter: filter)
+            async let albums = api.albumList(filter: filter)
+            async let songs = api.tracks(filter: filter, limit: 6)
+            // Stale if the field has moved on since this was asked for. That,
+            // not keyboard focus, is what decides whether to show it: focus
+            // is what routes the arrow keys, and the field may have lost it
+            // to a click without the text changing.
+            guard let a = try? await artists, let al = try? await albums, let s = try? await songs,
+                  gen == suggestGeneration,
+                  searchField.stringValue.trimmingCharacters(in: .whitespaces) == q else { return }
+            let popup = searchPopup ?? makeSearchPopup()
+            searchPopup = popup
+            popup.update(artists: a, albums: al, songs: s.tracks, below: searchField)
+        }
+    }
+
+    private func makeSearchPopup() -> SearchPopup {
+        let p = SearchPopup()
+        p.onPick = { [weak self] pick in
+            guard let self = self else { return }
+            switch pick {
+            case .artist(let name):
+                self.showInLibrary(artist: name, album: nil)
+            case .album(let a):
+                self.showInLibrary(artist: a.artist, album: a.album)
+            case .song(let t):
+                self.startPlayback(t, playlist: nil)
+                self.flashStatus("Playing “\(t.name)”.")
+            }
+        }
+        return p
+    }
+
+    /// Clears the search and narrows the library to one artist, or one
+    /// album, through the column browser — the same state clicking there
+    /// would have produced.
+    private func showInLibrary(artist: String, album: String?) {
+        searchField.stringValue = ""
+        searchTimer?.invalidate()
+        controller.searchText = ""
+        closeDevicePage()
+        if controller.source != .library { controller.source = .library }
+        controller.select(nil, in: "genre")
+        controller.select(artist, in: "artist")
+        controller.select(album, in: "album")
+        window?.makeFirstResponder(trackTable)
     }
 
     // MARK: Column browser

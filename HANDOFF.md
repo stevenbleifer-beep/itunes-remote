@@ -347,3 +347,56 @@ Not yet wired to the UI.
 - The iTunes 10 look, with the reference screenshot he supplied on 2026-09-03 as the target. He notices small things (glyph shape, placeholder alignment, version strings) and wants them right.
 - Visual sign-off from screenshots sent with SendUserFile.
 - Cover Flow "as much like iTunes 10 as possible with some modern niceties."
+
+## Evening pass, 2026-09-03 (second batch)
+
+All client-side; the daemon is untouched. Each is its own commit.
+
+- **Shift-select in the sidebar.** `sourceList.allowsMultipleSelection`,
+  with `selectionIndexesForProposedSelection` keeping only playlist rows in
+  a multiple selection. A multiple selection does not navigate. Delete and
+  forward-delete act on whichever list has focus: playlists in the sidebar,
+  songs (remove from playlist) in the track table. Both confirm and name
+  what is going. The app still never deletes from the library.
+- **Grid covers were fetched and thrown away.** Every cell asked twice; the
+  second time the cache answered synchronously *inside `draw`*, and AppKit
+  drops a `setNeedsDisplay` issued while drawing. Repaints are now
+  coalesced onto the next run-loop turn (`scheduleRepaint`). Neither Grid
+  nor Cover Flow cached a transient nil as "no cover" any more; both retry
+  unless `ArtworkCache.isKnownMiss`. This was the real cause of "album art
+  is slow" — it was invisible, not slow.
+- **Sort indicator.** `AquaHeaderCell` draws its own triangle on the sorted
+  column (AppKit only calls `drawSortIndicator` when an indicator image is
+  set, which nothing did). Direction accounts for the flipped header view.
+- **Restore Playlist Order** in the header context menu and View ▸ Clear
+  Column Sort (⌥⌘0). Clears the descriptor and re-fetches, since a column
+  sort reorders the array in memory and the original order is gone.
+- **Playing-playlist marker.** A speaker replaces the note icon beside the
+  source the current song came from. iTunes reports the playlist, except
+  for the one-item queue `play <track>` makes, so every start goes through
+  `startPlayback(_:playlist:)` which records `startedFromPlaylistId`.
+- **Up Next** (`UpNextPanel.swift`). A real manual queue, `upNext: [Track]`,
+  consumed by `step(by: 1)` before the list carries on. Play Next / Add to
+  Up Next in the track context menu and a new Controls menu (⌥⌘N, ⌥⌘E,
+  ⌥⌘U). In the panel: drag to reorder, Delete removes, Clear, double-click
+  plays now and drops what was ahead. Below the queue is a read-only
+  preview of the list's continuation, omitted under shuffle.
+- **Search suggestions** (`SearchPopup.swift`). A non-activating child
+  panel under the field showing top artists / albums / songs for the text,
+  fetched across the whole library with `async let` on the facet, album
+  list and track endpoints. Keyed on the text still matching the field,
+  not on focus. ↑↓ Return Escape route through the key monitor while the
+  field has focus; a click elsewhere dismisses. Picking an artist or album
+  clears the search and narrows Music through the column browser; picking
+  a song plays it.
+
+Testing note: background `app_type` sets the field by AX and does **not**
+fire `controlTextDidChange`; a real keystroke (e.g. Backspace) does. The
+suggestion panel also has `hidesOnDeactivate`, so the app must be
+frontmost to see it.
+
+**Two traps for whoever builds next.** `./build.sh` lives in `client/`, not
+`client/Sources` — from the wrong directory the "no such file" line scrolls
+past and nothing is built. And `./build.sh --install` while the app is
+running kills it without a crash report (the bundle is replaced under the
+process); quit first, install, relaunch.
