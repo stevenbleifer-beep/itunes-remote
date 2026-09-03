@@ -186,6 +186,10 @@ The device is a classic-style iPod with an `iPod_Control` folder, which is the k
 
 **Probe result, 2026-09-03: it works.** With the iPod classic (160 GB) connected, `update source` on iTunes 12.9.5 returned without error and iTunes began syncing. Sync is therefore built: the sidebar shows a DEVICES section with the iPod and its free space, the bottom bar gains Sync and Eject buttons, and the daemon exposes `GET /api/sources`, `POST /api/sources/{name}/sync` and `POST /api/sources/{name}/eject`. The probe is kept as `daemon/probe_ipod.sh` for re-running after an iTunes update.
 
+**Amendment, 2026-09-03: the device page.** Sync outgrew the two bottom-bar buttons, so selecting a device in the source list now opens a device page in place of the browser and track table, laid out as iTunes 10's was: Summary / Music / Playlists tabs, an identity panel, the segmented capacity bar with its legend, and Sync and Eject.
+
+The rule from section 2 still holds — nothing on this page is a control that does nothing. iTunes' scripting dictionary exposes no sync *settings* (sync the whole library, sync selected playlists, convert to 128 kbps), so those checkboxes are not drawn. What it does expose is read and shown: each media category's item count and total bytes, the device's playlists, and its capacity and free space. The serial number, link speed, filesystem and mount point come from `system_profiler SPUSBDataType`, which is also how a device iTunes has *not* opened as a source is noticed at all — an iPhone or iPad on the bus gets a row and a page saying plainly that iTunes has not opened it, instead of silently not appearing. The prohibition on GUI-scripting the sync button stands; Accessibility is used only to read iTunes' alert dialogs.
+
 **Known hazard:** an iPod left mounted in disk mode at `/Volumes/iPod` made iTunes hang at launch on every attempt, including after a reboot, until the volume was unmounted. `check.py` must report whether `/Volumes/iPod` is mounted, and the sync UI should offer to eject the iPod afterward.
 
 ## 8. HTTP API
