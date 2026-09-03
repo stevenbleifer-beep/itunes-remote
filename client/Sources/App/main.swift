@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         main = MainWindowController()
         main.snapshotPath = arg("--snapshot")
+        main.initialFlowIndex = arg("--flow-index").flatMap { Int($0) }
         main.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
 

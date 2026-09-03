@@ -102,6 +102,13 @@ final class APIClient {
         }
     }
 
+    /// One row per album for the current filters, for Cover Flow and Grid.
+    func albumList(filter: TrackFilter) async throws -> [AlbumEntry] {
+        struct Wrap: Decodable { let albums: [AlbumEntry] }
+        let w: Wrap = try await get("/api/albumlist", query: filter.queryItems)
+        return w.albums
+    }
+
     // MARK: Writes
 
     func patchTracks(ids: [String], fields: [String: Any]) async throws -> PatchResult {

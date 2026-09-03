@@ -243,7 +243,7 @@ final class AquaAirPlayButton: NSView {
     var onClick: (NSView) -> Void = { _ in }
     private var isPressed = false
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 22, height: 20) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 24, height: 22) }
 
     override func mouseDown(with event: NSEvent) {
         guard isEnabled else { return }
@@ -254,6 +254,13 @@ final class AquaAirPlayButton: NSView {
         needsDisplay = true
     }
 
+    /// Apple's own AirPlay symbol, obtained through the system-symbol API at
+    /// run time. Nothing is bundled; the system draws it.
+    private static let symbol: NSImage? = {
+        let base = NSImage(systemSymbolName: "airplayvideo", accessibilityDescription: "AirPlay")
+        return base?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .medium))
+    }()
+
     override func draw(_ dirtyRect: NSRect) {
         let color: NSColor = !isEnabled ? NSColor(white: 0.62, alpha: 1)
             : isActive ? Aqua.accent : Aqua.glyph
@@ -262,23 +269,11 @@ final class AquaAirPlayButton: NSView {
             (isActive ? Aqua.accent.withAlphaComponent(0.14) : NSColor.black.withAlphaComponent(0.08)).setFill()
             bg.fill()
         }
-        let w: CGFloat = 14, h: CGFloat = 11
-        let x = bounds.midX - w / 2, y = bounds.midY - h / 2 + 2
-
-        // Screen outline.
-        let screen = NSBezierPath(roundedRect: NSRect(x: x, y: y, width: w, height: h), xRadius: 1.5, yRadius: 1.5)
-        screen.lineWidth = 1.4
-        color.setStroke()
-        screen.stroke()
-
-        // Triangle below it.
-        let t = NSBezierPath()
-        t.move(to: NSPoint(x: bounds.midX - 5, y: y - 1.5))
-        t.line(to: NSPoint(x: bounds.midX + 5, y: y - 1.5))
-        t.line(to: NSPoint(x: bounds.midX, y: y - 7))
-        t.close()
-        color.setFill()
-        t.fill()
+        guard let symbol = AquaAirPlayButton.symbol,
+              let tinted = symbol.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [color])) else { return }
+        let size = tinted.size
+        let origin = NSPoint(x: round(bounds.midX - size.width / 2), y: round(bounds.midY - size.height / 2))
+        tinted.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1)
     }
 }
 

@@ -36,7 +36,8 @@ class Track(object):
         "persistent_id", "track_id", "name", "artist", "album", "album_artist",
         "genre", "composer", "year", "track_number", "track_count",
         "disc_number", "disc_count", "total_time", "kind", "size", "bit_rate",
-        "compilation", "date_added", "date_modified", "location", "search", "sort_key",
+        "compilation", "date_added", "date_modified", "location", "artwork_count",
+        "search", "sort_key",
     )
 
     # Fields the client may edit through PATCH, mapped to the AppleScript
@@ -64,12 +65,14 @@ class Track(object):
     def __init__(self, raw):
         self.persistent_id = raw["Persistent ID"]
         self.track_id = raw["Track ID"]
-        self.name = raw.get("Name", "")
-        self.artist = raw.get("Artist", "")
-        self.album = raw.get("Album", "")
-        self.album_artist = raw.get("Album Artist", "")
-        self.genre = raw.get("Genre", "")
-        self.composer = raw.get("Composer", "")
+        # A tag holding only whitespace is blank for every purpose here:
+        # grouping, sorting, the browser, and "Unknown Artist" captions.
+        self.name = _text(raw.get("Name"))
+        self.artist = _text(raw.get("Artist"))
+        self.album = _text(raw.get("Album"))
+        self.album_artist = _text(raw.get("Album Artist"))
+        self.genre = _text(raw.get("Genre"))
+        self.composer = _text(raw.get("Composer"))
         self.year = raw.get("Year")
         self.track_number = raw.get("Track Number")
         self.track_count = raw.get("Track Count")
@@ -83,6 +86,7 @@ class Track(object):
         self.date_added = _iso(raw.get("Date Added"))
         self.date_modified = _iso(raw.get("Date Modified"))
         self.location = _posix_path(raw.get("Location"))
+        self.artwork_count = raw.get("Artwork Count") or 0
         self.reindex()
 
     def reindex(self):
@@ -134,6 +138,13 @@ class Track(object):
             setattr(self, key, value)
         self.reindex()
         return old
+
+
+def _text(value):
+    """Tag text with whitespace-only values collapsed to empty."""
+    if not value:
+        return ""
+    return value if value.strip() else ""
 
 
 def _posix_path(url):
@@ -307,6 +318,47 @@ class Library(object):
             {"name": display[k], "count": counts[k]}
             for k in sorted(counts, key=lambda k: (k == "", k))
         ]
+
+    def albums(self, q=None, genre=None, artist=None, album=None, playlist=None):
+        """One row per album, for Cover Flow, Grid and Album List.
+
+        The cover track is the earliest track in the album that iTunes says has
+        artwork, falling back to the earliest track, so the client can ask for
+        exactly one image per album.
+        """
+        groups = {}
+        for t in self._filter(self._candidates(playlist), q, genre, artist, album):
+            display_artist = t.album_artist or t.artist
+            key = (fold(display_artist), fold(t.album))
+            g = groups.get(key)
+            if g is None:
+                g = groups[key] = {
+                    "album": t.album,
+                    "artist": display_artist,
+                    "year": t.year,
+                    "trackCount": 0,
+                    "totalTime": 0,
+                    "coverTrackId": None,
+                    "_coverRank": None,
+                    "_sort": (t.disc_number or 0, t.track_number or 0),
+                }
+            g["trackCount"] += 1
+            g["totalTime"] += t.total_time or 0
+            if g["year"] is None and t.year:
+                g["year"] = t.year
+            rank = (0 if t.artwork_count else 1, t.disc_number or 0, t.track_number or 0)
+            if g["_coverRank"] is None or rank < g["_coverRank"]:
+                g["_coverRank"] = rank
+                g["coverTrackId"] = t.persistent_id
+                g["hasArtwork"] = bool(t.artwork_count)
+        out = []
+        for key in sorted(groups, key=lambda k: (k[0] == "", k[0], k[1])):
+            g = groups[key]
+            g.pop("_coverRank", None)
+            g.pop("_sort", None)
+            g.setdefault("hasArtwork", False)
+            out.append(g)
+        return out
 
     def playlist_summaries(self):
         return [

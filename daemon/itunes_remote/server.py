@@ -75,6 +75,7 @@ class Api(object):
             ("GET", r"/api/genres", self.get_genres),
             ("GET", r"/api/artists", self.get_artists),
             ("GET", r"/api/albums", self.get_albums),
+            ("GET", r"/api/albumlist", self.get_album_list),
             ("GET", r"/api/playlists", self.get_playlists),
             ("GET", r"/api/playlists/" + pid + r"/tracks", self.get_playlist_tracks),
             ("GET", r"/api/itunes", self.get_itunes),
@@ -200,6 +201,13 @@ class Api(object):
 
     def get_albums(self, params, query, body):
         return self._facet("album", query)
+
+    def get_album_list(self, params, query, body):
+        f = self._filters(query)
+        try:
+            return {"albums": self.store.lib.albums(**f)}
+        except KeyError:
+            raise ApiError(404, "no such playlist")
 
     def get_playlists(self, params, query, body):
         return {"playlists": self.store.lib.playlist_summaries()}

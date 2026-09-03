@@ -47,6 +47,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var artworkToken = 0
     private var addToPlaylistItem: NSMenuItem?
     private var removeFromPlaylistItem: NSMenuItem?
+
+    // View mode
+    enum ViewMode: Int { case list = 0, coverFlow = 1 }
+    private(set) var viewMode: ViewMode = .list
+    private let viewSwitcher = AquaSegmentedControl(glyphs: [.list, .coverFlow])
+    private let topPane = NSView()
+    private let coverFlow = CoverFlowView()
+    /// What the track table shows: the whole filtered list, or one album.
+    private var rows: [Track] = []
+    private var albums: [AlbumEntry] = []
+    private var albumGeneration = 0
+    /// Development only: `--flow-index N` selects album N once the list loads.
+    var initialFlowIndex: Int?
     private var infoPanel: InfoPanel?          // held while its sheet is up
     private var namePrompt: NamePrompt?        // held while its sheet is up
     private var statusOverride: String?
@@ -121,17 +134,36 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         display.onSeek = { [weak self] seconds in self?.player.seek(to: seconds) }
         toolbar.addSubview(display)
 
+        // Right side of the toolbar, laid out from the window edge inwards.
+        let rightMargin: CGFloat = 14
+        let searchWidth: CGFloat = 200
+        let gap: CGFloat = 14
+        let searchX = W - rightMargin - searchWidth
         let apSize = airPlayButton.intrinsicContentSize
-        airPlayButton.frame = NSRect(x: W - 180 - 16 - apSize.width - 8, y: round(midY - apSize.height / 2),
+        airPlayButton.frame = NSRect(x: searchX - gap - apSize.width, y: round(midY - apSize.height / 2),
                                      width: apSize.width, height: apSize.height)
         airPlayButton.autoresizingMask = [.minXMargin]
         airPlayButton.onClick = { [weak self] sender in self?.showOutputMenu(sender) }
         toolbar.addSubview(airPlayButton)
 
-        searchField.frame = NSRect(x: W - 180 - 16, y: round(midY - 11), width: 180, height: 22)
+        let vs = viewSwitcher.intrinsicContentSize
+        viewSwitcher.frame = NSRect(x: airPlayButton.frame.minX - gap - vs.width, y: round(midY - vs.height / 2),
+                                    width: vs.width, height: vs.height)
+        viewSwitcher.autoresizingMask = [.minXMargin]
+        viewSwitcher.selectedIndex = ViewMode(rawValue: UserDefaults.standard.integer(forKey: "viewMode"))?.rawValue ?? 0
+        viewSwitcher.onChange = { [weak self] i in self?.setViewMode(ViewMode(rawValue: i) ?? .list) }
+        toolbar.addSubview(viewSwitcher)
+
+        // Small control size: its cell lays out for an 11-point font, so the
+        // text sits on the right baseline instead of low in a regular cell.
+        searchField.controlSize = .small
+        searchField.frame = NSRect(x: searchX, y: round(midY - 10), width: searchWidth, height: 19)
         searchField.autoresizingMask = [.minXMargin]
         searchField.font = Aqua.font(11)
-        searchField.placeholderString = "Search"
+        searchField.placeholderAttributedString = NSAttributedString(string: "Search", attributes: [
+            .font: Aqua.font(11),
+            .foregroundColor: NSColor(white: 0.55, alpha: 1),
+        ])
         searchField.delegate = self
         searchField.sendsWholeSearchString = false
         toolbar.addSubview(searchField)
@@ -183,11 +215,25 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         mainSplit.addArrangedSubview(rightSplit)
         mainSplit.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
 
-        // Browser panes over track table
-        browserSplit.frame = NSRect(x: 0, y: 0, width: rightSplit.bounds.width, height: 150)
+        // Browser panes (or Cover Flow) over the track table
+        topPane.frame = NSRect(x: 0, y: 0, width: rightSplit.bounds.width, height: 150)
+        topPane.autoresizesSubviews = true
+        browserSplit.frame = topPane.bounds
+        browserSplit.autoresizingMask = [.width, .height]
         browserSplit.isVertical = true
         browserSplit.dividerStyle = .thin
-        rightSplit.addArrangedSubview(browserSplit)
+        topPane.addSubview(browserSplit)
+        coverFlow.frame = topPane.bounds
+        coverFlow.autoresizingMask = [.width, .height]
+        coverFlow.isHidden = true
+        coverFlow.onSelectionChanged = { [weak self] _ in self?.coverSelectionChanged() }
+        coverFlow.onOpen = { [weak self] i in self?.playAlbum(at: i) }
+        coverFlow.imageProvider = { [weak self] pid, done in
+            guard let self = self else { done(nil); return }
+            self.artworkCache.image(for: pid, then: done)
+        }
+        topPane.addSubview(coverFlow)
+        rightSplit.addArrangedSubview(topPane)
         let trackScroll = scroll(for: trackTable)
         rightSplit.addArrangedSubview(trackScroll)
         rightSplit.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
@@ -204,6 +250,93 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         configureTrackTable()
         mainSplit.adjustSubviews()
         window.initialFirstResponder = trackTable
+        if let saved = ViewMode(rawValue: UserDefaults.standard.integer(forKey: "viewMode")), saved != .list {
+            // The split view has no real height until the window is on screen,
+            // so the divider position must be applied after the first pass.
+            DispatchQueue.main.async { [weak self] in self?.setViewMode(saved, animated: false) }
+        }
+    }
+
+    // MARK: View mode
+
+    private func setViewMode(_ mode: ViewMode, animated: Bool = true) {
+        viewMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "viewMode")
+        viewSwitcher.selectedIndex = mode.rawValue
+        let flow = mode == .coverFlow
+        browserSplit.isHidden = flow
+        coverFlow.isHidden = !flow
+        // Cover Flow needs room; the browser is happier short.
+        let total = rightSplit.bounds.height
+        let top = flow ? round(total * 0.58) : 150
+        rightSplit.setPosition(top, ofDividerAt: 0)
+        rightSplit.layoutSubtreeIfNeeded()
+        if flow {
+            // The browser's narrowing does not apply in Cover Flow; clear it.
+            controller.selectedGenre = nil
+            controller.selectedArtist = nil
+            controller.selectedAlbum = nil
+            loadAlbums()
+            window?.makeFirstResponder(coverFlow)
+        } else {
+            albums = []
+            refreshRows()
+            window?.makeFirstResponder(trackTable)
+        }
+    }
+
+    private func loadAlbums() {
+        guard let api = controller.api, viewMode == .coverFlow else { return }
+        albumGeneration += 1
+        let gen = albumGeneration
+        let filter = controller.trackFilter
+        let keep = albums.indices.contains(coverFlow.selectedIndex) ? albums[coverFlow.selectedIndex] : nil
+        Task { @MainActor in
+            do {
+                let list = try await api.albumList(filter: filter)
+                guard gen == albumGeneration else { return }
+                albums = list
+                coverFlow.albums = list
+                if let k = keep, let i = list.firstIndex(where: { $0.album == k.album && $0.artist == k.artist }) {
+                    coverFlow.select(i, animated: false)
+                } else if let i = initialFlowIndex {
+                    initialFlowIndex = nil
+                    coverFlow.select(i, animated: false)
+                }
+                refreshRows()
+            } catch {
+                flashStatus("Albums: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func coverSelectionChanged() {
+        refreshRows()
+        updateArtwork()
+    }
+
+    /// Recomputes the rows the table shows and reloads it.
+    private func refreshRows() {
+        if viewMode == .coverFlow, albums.indices.contains(coverFlow.selectedIndex) {
+            let a = albums[coverFlow.selectedIndex]
+            let artist = a.artist.lowercased()
+            let album = a.album.lowercased()
+            rows = controller.tracks.filter {
+                $0.displayArtist.lowercased() == artist && $0.album.lowercased() == album
+            }
+        } else if viewMode == .coverFlow {
+            rows = []
+        } else {
+            rows = controller.tracks
+        }
+        trackTable.reloadData()
+    }
+
+    private func playAlbum(at index: Int) {
+        guard albums.indices.contains(index) else { return }
+        refreshRows()
+        guard let first = rows.first else { return }
+        player.play(track: first.persistentId, playlist: controller.source.playlistId)
     }
 
     private func scroll(for table: NSTableView) -> NSScrollView {
@@ -299,8 +432,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         controller.onPlaylistsChanged = { [weak self] in self?.reloadSourceList() }
         controller.onBrowserChanged = { [weak self] in self?.reloadBrowser() }
         controller.onTracksChanged = { [weak self] in
-            self?.trackTable.reloadData()
-            self?.updateArtwork()
+            guard let self = self else { return }
+            if self.viewMode == .coverFlow {
+                self.loadAlbums()
+            } else {
+                self.refreshRows()
+            }
+            self.updateArtwork()
         }
         controller.onStatusChanged = { [weak self] in self?.updateStatus() }
         controller.onFirstLoad = { [weak self] in self?.firstLoadDone() }
@@ -375,7 +513,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private var selectedTracks: [Track] {
         trackTable.selectedRowIndexes.compactMap {
-            $0 < controller.tracks.count ? controller.tracks[$0] : nil
+            $0 < rows.count ? rows[$0] : nil
         }
     }
 
@@ -565,8 +703,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         if let t = player.state?.track, player.state?.state != "stopped" {
             pid = t.persistentId
             caption = "NOW PLAYING"
-        } else if trackTable.selectedRow >= 0, trackTable.selectedRow < controller.tracks.count {
-            pid = controller.tracks[trackTable.selectedRow].persistentId
+        } else if trackTable.selectedRow >= 0, trackTable.selectedRow < rows.count {
+            pid = rows[trackTable.selectedRow].persistentId
         }
         artworkView.caption = caption
         guard let id = pid else {
@@ -622,27 +760,27 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// after a search, a browser filter, or a column sort.
     private func step(by delta: Int) {
         guard let playing = player.state?.track?.persistentId,
-              let i = controller.tracks.firstIndex(where: { $0.persistentId == playing }) else {
+              let i = rows.firstIndex(where: { $0.persistentId == playing }) else {
             delta > 0 ? player.next() : player.previous()
             return
         }
         let j = i + delta
-        guard j >= 0, j < controller.tracks.count else { return }
-        player.play(track: controller.tracks[j].persistentId, playlist: controller.source.playlistId)
+        guard j >= 0, j < rows.count else { return }
+        player.play(track: rows[j].persistentId, playlist: controller.source.playlistId)
         trackTable.selectRowIndexes(IndexSet(integer: j), byExtendingSelection: false)
         trackTable.scrollRowToVisible(j)
     }
 
     @objc private func trackDoubleClicked(_ sender: Any?) {
         let row = trackTable.clickedRow
-        guard row >= 0, row < controller.tracks.count else { return }
-        player.play(track: controller.tracks[row].persistentId, playlist: controller.source.playlistId)
+        guard row >= 0, row < rows.count else { return }
+        player.play(track: rows[row].persistentId, playlist: controller.source.playlistId)
     }
 
     @objc private func sourceDoubleClicked(_ sender: Any?) {
         let row = sourceList.clickedRow
         guard row >= 0, row < sourceRows.count else { return }
-        if case .playlist(let p) = sourceRows[row], let first = controller.tracks.first {
+        if case .playlist(let p) = sourceRows[row], let first = rows.first {
             player.play(track: first.persistentId, playlist: p.persistentId)
         }
     }
@@ -670,8 +808,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func trackDoubleClickedFromSelection() {
         let row = trackTable.selectedRow
-        guard row >= 0, row < controller.tracks.count else { return }
-        player.play(track: controller.tracks[row].persistentId, playlist: controller.source.playlistId)
+        guard row >= 0, row < rows.count else { return }
+        player.play(track: rows[row].persistentId, playlist: controller.source.playlistId)
     }
 
     // MARK: NSMenuDelegate
@@ -719,7 +857,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         case .genre: return controller.genres.count + 1
         case .artist: return controller.artists.count + 1
         case .album: return controller.albums.count + 1
-        case .tracks: return controller.tracks.count
+        case .tracks: return rows.count
         case .none: return 0
         }
     }
@@ -768,8 +906,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             cell.textField?.stringValue = facetText(controller.albums, row: row, noun: "Album")
             return cell
         case .tracks:
-            guard let id = tableColumn?.identifier.rawValue, row < controller.tracks.count else { return nil }
-            let t = controller.tracks[row]
+            guard let id = tableColumn?.identifier.rawValue, row < rows.count else { return nil }
+            let t = rows[row]
             let right = ["totalTime", "year", "trackNumber"].contains(id)
             let cell = AquaTables.labelCell(tableView, id: right ? "trackR" : "track", rightAligned: right)
             let text: String

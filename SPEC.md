@@ -105,6 +105,8 @@ This is a requirement, not a nice to have. The app should look like iTunes 10 on
 
 **Everything must be drawn in code.** Do not extract artwork from old macOS system files, old iTunes application bundles, or screenshot archives. That is Apple's copyrighted artwork and I am not shipping it. Recreate the look with Core Graphics: gradients, inner and outer shadows, stroke highlights along the top edge of controls. If a raster asset is genuinely unavoidable, draw an original one.
 
+The one sanctioned exception (added 2026-09-02): Apple's system symbols obtained through the `NSImage(systemSymbolName:)` API. Those are provided for apps to use, are rendered by the system at run time, and nothing is copied into the bundle. The AirPlay button uses the `airplayvideo` symbol this way after two hand-drawn attempts looked wrong.
+
 **Font:** Lucida Grande. It still ships with macOS (confirmed present as `LucidaGrande.ttc` on macOS 26.6.2) and is the single biggest contributor to the period-correct feel. Do not use San Francisco anywhere.
 
 **Controls to build as custom `NSView` subclasses:**
