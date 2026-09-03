@@ -24,6 +24,9 @@ final class AlbumGridView: NSView, NSDraggingSource {
     var onSelect: (Int?) -> Void = { _ in }
     var onOpen: (Int) -> Void = { _ in }
     var imageProvider: (String, @escaping (NSImage?) -> Void) -> Void = { _, done in done(nil) }
+    /// Whether the cache has established for certain that a track has no
+    /// cover. Anything else that comes back empty is worth asking about again.
+    var knownMiss: (String) -> Bool = { _ in false }
 
     private var images: [Int: NSImage] = [:]
     private var requested: Set<Int> = []
@@ -134,9 +137,59 @@ final class AlbumGridView: NSView, NSDraggingSource {
         requested.insert(index)
         let gen = generation
         imageProvider(pid) { [weak self] image in
-            guard let self = self, gen == self.generation, let image = image else { return }
+            guard let self = self, gen == self.generation else { return }
+            guard let image = image else {
+                // Empty is not proof there is no cover. The daemon may have
+                // been unreachable, or the client may not have connected yet —
+                // which is exactly what happens when the window is built
+                // behind the mini player. Leaving the index in `requested`
+                // blanked the cell for the life of the album list, so let a
+                // later draw ask again unless the cache is certain.
+                if !self.knownMiss(pid) {
+                    self.requested.remove(index)
+                    self.scheduleRetry()
+                }
+                return
+            }
             self.images[index] = image
-            self.setNeedsDisplay(self.rect(for: index))
+            // Never repaint straight from here. A cover the cache already has
+            // comes back synchronously, which means this runs *inside* the
+            // draw pass that asked for it — and AppKit throws away a
+            // setNeedsDisplay issued while drawing. The image was stored and
+            // never shown, which is what left the Grid full of placeholder
+            // discs even though every fetch had succeeded.
+            self.scheduleRepaint()
+        }
+    }
+
+    /// Coalesced repaint on the next turn of the run loop, so a screenful of
+    /// covers costs one redraw and none of them are lost to the draw pass they
+    /// were requested from.
+    private var repaintScheduled = false
+
+    private func scheduleRepaint() {
+        guard !repaintScheduled else { return }
+        repaintScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.repaintScheduled = false
+            self.needsDisplay = true
+        }
+    }
+
+    /// Redraw once, shortly, so covers that came back empty are asked for
+    /// again without waiting for the user to scroll. Debounced to one pass in
+    /// flight, so a screenful of failures costs a single retry rather than one
+    /// per cell.
+    private var retryScheduled = false
+
+    private func scheduleRetry() {
+        guard !retryScheduled else { return }
+        retryScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self = self else { return }
+            self.retryScheduled = false
+            self.needsDisplay = true
         }
     }
 

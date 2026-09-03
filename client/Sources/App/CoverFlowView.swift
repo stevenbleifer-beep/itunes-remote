@@ -45,6 +45,9 @@ final class CoverFlowView: NSView, NSDraggingSource {
     private let fullStageButton = CoverFlowCornerButton()
     /// Supplies a cover image for a track persistent ID, on the main actor.
     var imageProvider: (String, @escaping (NSImage?) -> Void) -> Void = { _, done in done(nil) }
+    /// Whether the cache has established for certain that a track has no
+    /// cover. Anything else that comes back empty is worth asking about again.
+    var knownMiss: (String) -> Bool = { _ in false }
 
     /// Pinch to resize, between 0.6 and 1.4 of the default cover size.
     private var coverScale: CGFloat = 1.0
@@ -318,7 +321,10 @@ final class CoverFlowView: NSView, NSDraggingSource {
             guard let self = self, gen == self.generation, index < self.albums.count else { return }
             let cg = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
                 ?? CoverFlowView.placeholder
-            self.imageCache[index] = cg
+            // Only remember the placeholder when the cover is genuinely
+            // absent; caching it after a transient failure left the cover grey
+            // until the album list changed.
+            if image != nil || self.knownMiss(pid) { self.imageCache[index] = cg }
             if let layer = self.coverLayers[index] {
                 CATransaction.begin()
                 CATransaction.setAnimationDuration(0.2)

@@ -389,6 +389,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             guard let self = self else { done(nil); return }
             self.artworkCache.image(for: pid, then: done)
         }
+        coverFlow.knownMiss = { [weak self] pid in self?.artworkCache.isKnownMiss(pid) ?? false }
         topPane.addSubview(coverFlow)
         gridScroll.frame = topPane.bounds
         gridScroll.autoresizingMask = [.width, .height]
@@ -405,6 +406,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             guard let self = self else { done(nil); return }
             self.artworkCache.image(for: pid, then: done)
         }
+        grid.knownMiss = { [weak self] pid in self?.artworkCache.isKnownMiss(pid) ?? false }
         topPane.addSubview(gridScroll)
         rightSplit.addArrangedSubview(topPane)
         let trackScroll = scroll(for: trackTable)
