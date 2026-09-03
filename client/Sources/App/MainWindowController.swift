@@ -326,6 +326,22 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         devicePage.isHidden = true
         devicePage.onSync = { [weak self] in self?.syncOpenDevice() }
         devicePage.onEject = { [weak self] in self?.ejectOpenDevice() }
+        devicePage.onDone = { [weak self] in
+            self?.closeDevicePage()
+            self?.selectSourceRow(forLibrary: true)
+        }
+        devicePage.loadTracks = { [weak self] playlist, done in
+            guard let self = self, let name = self.openDevice, let api = self.controller.api else { done([]); return }
+            Task { @MainActor in
+                done((try? await api.deviceTracks(name, playlist: playlist, limit: 2000)) ?? [])
+            }
+        }
+        devicePage.loadImage = { [weak self] done in
+            guard let self = self, let name = self.openDevice, let api = self.controller.api else { done(nil); return }
+            Task { @MainActor in
+                done((try? await api.deviceImage(name, size: 128)) ?? nil)
+            }
+        }
         rightContainer.addSubview(devicePage)
         mainSplit.addArrangedSubview(rightContainer)
         mainSplit.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)

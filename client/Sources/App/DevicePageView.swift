@@ -1,33 +1,48 @@
 import Cocoa
 
-/// The device page, as iTunes 10 showed it when you picked an iPod in the
-/// source list: tabs across the top, a summary panel, the capacity bar along
-/// the bottom, and Sync and Eject.
+/// The device page, laid out as iTunes 12.9.5 lays it out on the MacBook Pro:
+/// the device's own picture, name and capacity badge at the top left, a
+/// settings list under it, the pane on the right, and the capacity bar with
+/// Sync and Done along the bottom.
 ///
-/// Every figure on this page is read from iTunes or from the USB tree. There
-/// is no tab here that iTunes cannot actually answer: the sync *settings*
-/// (sync whole library, sync selected playlists, convert bit rate) are not in
-/// iTunes' scripting dictionary, so they are not shown as controls that would
-/// do nothing.
+/// Everything shown is read from iTunes, from its com.apple.iPod preferences,
+/// or from the USB tree. iTunes' sync *settings* — sync the whole library,
+/// convert to 192 kbps, sync only checked songs — live in the library
+/// database and are exposed to nothing, so they are described rather than
+/// drawn as switches that would do nothing.
 @MainActor
 final class DevicePageView: NSView {
     var onSync: () -> Void = {}
     var onEject: () -> Void = {}
+    var onDone: () -> Void = {}
+    /// Asks for the tracks in one of the device's playlists.
+    var loadTracks: (String, @escaping ([DeviceTrack]) -> Void) -> Void = { _, done in done([]) }
+    var loadImage: (@escaping (NSImage?) -> Void) -> Void = { done in done(nil) }
 
-    private let tabs = DeviceTabBar(titles: ["Summary", "Music", "Playlists"])
+    private enum Row {
+        case header(String)
+        case summary
+        /// A playlist on the device: its name and whether it is a special one.
+        case content(String, SidebarIcon)
+    }
+
+    private var rows: [Row] = [.header("Settings"), .summary]
+    private let header = DeviceHeaderView()
+    private let list = NSTableView()
+    private let listScroll = NSScrollView()
     private let summary = DeviceSummaryView()
-    private let categoryTable = SimpleTable(columns: [("On this device", 260), ("Items", 90), ("Size", 110)])
-    private let playlistTable = SimpleTable(columns: [("Playlist", 360), ("Items", 90)])
+    private let trackTable = SimpleTable(columns: [("Name", 300), ("Artist", 200), ("Album", 200), ("Time", 60)])
     private let capacity = CapacityBarView()
     private let syncButton = AquaPushButton(title: "Sync")
-    private let ejectButton = AquaPushButton(title: "Eject")
+    private let doneButton = AquaPushButton(title: "Done", isDefault: true)
     private let statusLabel = NSTextField(labelWithString: "")
     private var detail: DeviceDetail?
+    private var loadedPlaylist: String?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        for v in [tabs as NSView, summary, categoryTable.scrollView, playlistTable.scrollView,
-                  capacity, syncButton, ejectButton, statusLabel] {
+        for v in [header as NSView, listScroll, summary, trackTable.scrollView,
+                  capacity, syncButton, doneButton, statusLabel] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -36,81 +51,110 @@ final class DevicePageView: NSView {
         statusLabel.lineBreakMode = .byTruncatingTail
         syncButton.target = self
         syncButton.action = #selector(sync(_:))
-        syncButton.isDefault = true
-        ejectButton.target = self
-        ejectButton.action = #selector(eject(_:))
-        tabs.selectedIndex = min(2, max(0, UserDefaults.standard.integer(forKey: "deviceTab")))
-        tabs.onChange = { [weak self] i in
-            UserDefaults.standard.set(i, forKey: "deviceTab")
-            self?.applyTab()
-        }
+        doneButton.target = self
+        doneButton.action = #selector(done(_:))
+        header.onEject = { [weak self] in self?.onEject() }
 
-        let pad: CGFloat = 16
+        list.headerView = nil
+        list.backgroundColor = Aqua.sidebarBackground
+        list.rowHeight = 22
+        list.intercellSpacing = NSSize(width: 0, height: 0)
+        list.gridStyleMask = []
+        list.selectionHighlightStyle = .regular
+        list.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("device")))
+        list.dataSource = self
+        list.delegate = self
+        listScroll.documentView = list
+        listScroll.drawsBackground = true
+        listScroll.backgroundColor = Aqua.sidebarBackground
+        listScroll.hasVerticalScroller = true
+        listScroll.scrollerStyle = .legacy
+        listScroll.verticalScroller = AquaScroller()
+
+        let pad: CGFloat = 14
+        let sidebar: CGFloat = 210
         NSLayoutConstraint.activate([
-            tabs.centerXAnchor.constraint(equalTo: centerXAnchor),
-            tabs.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            header.leadingAnchor.constraint(equalTo: leadingAnchor),
+            header.topAnchor.constraint(equalTo: topAnchor),
+            header.widthAnchor.constraint(equalToConstant: sidebar),
+            header.heightAnchor.constraint(equalToConstant: 72),
+
+            listScroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            listScroll.topAnchor.constraint(equalTo: header.bottomAnchor),
+            listScroll.widthAnchor.constraint(equalToConstant: sidebar),
+            listScroll.bottomAnchor.constraint(equalTo: capacity.topAnchor, constant: -10),
 
             capacity.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
             capacity.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
-            capacity.heightAnchor.constraint(equalToConstant: 58),
-            capacity.bottomAnchor.constraint(equalTo: syncButton.topAnchor, constant: -10),
+            capacity.heightAnchor.constraint(equalToConstant: 24),
+            capacity.bottomAnchor.constraint(equalTo: doneButton.topAnchor, constant: -10),
 
-            ejectButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
-            ejectButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -pad),
-            syncButton.trailingAnchor.constraint(equalTo: ejectButton.leadingAnchor, constant: -8),
-            syncButton.centerYAnchor.constraint(equalTo: ejectButton.centerYAnchor),
+            doneButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
+            doneButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -pad),
+            syncButton.trailingAnchor.constraint(equalTo: doneButton.leadingAnchor, constant: -8),
+            syncButton.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
             statusLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: syncButton.leadingAnchor, constant: -10),
-            statusLabel.centerYAnchor.constraint(equalTo: ejectButton.centerYAnchor),
+            statusLabel.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
         ])
-        for content in [summary as NSView, categoryTable.scrollView, playlistTable.scrollView] {
+        for content in [summary as NSView, trackTable.scrollView] {
             NSLayoutConstraint.activate([
-                content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
+                content.leadingAnchor.constraint(equalTo: listScroll.trailingAnchor, constant: pad),
                 content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
-                content.topAnchor.constraint(equalTo: tabs.bottomAnchor, constant: 12),
+                content.topAnchor.constraint(equalTo: topAnchor, constant: pad),
                 content.bottomAnchor.constraint(equalTo: capacity.topAnchor, constant: -12),
             ])
         }
-        applyTab()
+        trackTable.scrollView.isHidden = true
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     override func draw(_ dirtyRect: NSRect) {
-        // The same light sheet iTunes put behind a device page.
-        NSGradient(starting: NSColor(white: 0.97, alpha: 1), ending: NSColor(white: 0.90, alpha: 1))!
-            .draw(in: bounds, angle: -90)
-    }
-
-    private func applyTab() {
-        summary.isHidden = tabs.selectedIndex != 0
-        categoryTable.scrollView.isHidden = tabs.selectedIndex != 1
-        playlistTable.scrollView.isHidden = tabs.selectedIndex != 2
+        NSColor(white: 0.96, alpha: 1).setFill()
+        bounds.fill()
+        // The sidebar's own ground, and the hairline that separates it.
+        Aqua.sidebarBackground.setFill()
+        NSRect(x: 0, y: 0, width: 210, height: bounds.height).fill()
+        NSColor(white: 0.66, alpha: 1).setFill()
+        NSRect(x: 210, y: 0, width: 1, height: bounds.height).fill()
     }
 
     @objc private func sync(_ sender: Any?) { onSync() }
-    @objc private func eject(_ sender: Any?) { onEject() }
+    @objc private func done(_ sender: Any?) { onDone() }
 
     func setStatus(_ text: String) { statusLabel.stringValue = text }
 
     func setBusy(_ busy: Bool) {
         syncButton.isEnabled = !busy && (detail?.syncable ?? false)
-        ejectButton.isEnabled = !busy && (detail?.itunesSource ?? false)
+        header.canEject = !busy && (detail?.itunesSource ?? false)
     }
 
     func show(_ d: DeviceDetail) {
+        let firstLoad = detail?.name != d.name
         detail = d
+        header.show(d)
         summary.show(d)
         capacity.show(d)
-        categoryTable.rows = d.categories.map {
-            [$0.name, NumberFormatter.localizedString(from: NSNumber(value: $0.trackCount), number: .decimal),
-             $0.bytes > 0 ? StatusFormat.size($0.bytes) : "—"]
+        var r: [Row] = [.header("Settings"), .summary]
+        if !d.categories.isEmpty || !d.playlists.isEmpty {
+            r.append(.header("On My Device"))
+            for c in d.categories where c.trackCount > 0 {
+                r.append(.content(c.name, DevicePageView.icon(for: c.name)))
+            }
+            for p in d.playlists {
+                r.append(.content(p.name, .playlist))
+            }
         }
-        playlistTable.rows = d.playlists.map {
-            [$0.name, NumberFormatter.localizedString(from: NSNumber(value: $0.count), number: .decimal)]
+        rows = r
+        list.reloadData()
+        if firstLoad || list.selectedRow < 0 {
+            list.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+            showSummary()
+            loadImage { [weak self] image in self?.header.image = image }
         }
         syncButton.isEnabled = d.syncable
-        ejectButton.isEnabled = d.itunesSource
+        header.canEject = d.itunesSource
         if let reason = d.unavailableReason {
             statusLabel.stringValue = reason
         } else if let n = d.trackCount {
@@ -119,300 +163,420 @@ final class DevicePageView: NSView {
             statusLabel.stringValue = ""
         }
     }
+
+    private static func icon(for category: String) -> SidebarIcon {
+        switch category {
+        case "Music": return .music
+        case "Books", "Audiobooks": return .playlist
+        default: return .playlist
+        }
+    }
+
+    private func showSummary() {
+        summary.isHidden = false
+        trackTable.scrollView.isHidden = true
+    }
+
+    private func showTracks(_ playlist: String) {
+        summary.isHidden = true
+        trackTable.scrollView.isHidden = false
+        guard loadedPlaylist != playlist else { return }
+        loadedPlaylist = playlist
+        trackTable.rows = [["Reading \(playlist) from the device…", "", "", ""]]
+        loadTracks(playlist) { [weak self] tracks in
+            guard let self = self, self.loadedPlaylist == playlist else { return }
+            self.trackTable.rows = tracks.map {
+                [$0.name, $0.artist, $0.album, StatusFormat.duration($0.totalTime)]
+            }
+            if tracks.isEmpty {
+                self.trackTable.rows = [["Nothing in \(playlist) on this device.", "", "", ""]]
+            }
+        }
+    }
 }
 
-// MARK: - Tabs
+extension DevicePageView: NSTableViewDataSource, NSTableViewDelegate {
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
-/// Text tabs in the iTunes 10 capsule, the selected one pressed in.
-final class DeviceTabBar: NSView {
-    let titles: [String]
-    var selectedIndex = 0 { didSet { needsDisplay = true } }
-    var onChange: (Int) -> Void = { _ in }
-    private var widths: [CGFloat] = []
-
-    init(titles: [String]) {
-        self.titles = titles
-        super.init(frame: .zero)
-        widths = titles.map { max(74, ($0 as NSString).size(withAttributes: [.font: Aqua.font(12, bold: true)]).width + 32) }
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        if case .header = rows[row] { return false }
+        return true
     }
 
-    required init?(coder: NSCoder) { fatalError() }
-
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: widths.reduce(0, +) + 2, height: 24)
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        switch rows[row] {
+        case .header(let title):
+            let cell = AquaTables.labelCell(tableView, id: "deviceHeader")
+            let emboss = NSShadow()
+            emboss.shadowColor = NSColor.white.withAlphaComponent(0.9)
+            emboss.shadowOffset = NSSize(width: 0, height: -1)
+            emboss.shadowBlurRadius = 0
+            cell.textField?.attributedStringValue = NSAttributedString(string: title, attributes: [
+                .font: Aqua.font(11, bold: true), .foregroundColor: Aqua.sidebarHeaderText, .shadow: emboss,
+            ])
+            return cell
+        case .summary:
+            return DevicePageView.sidebarCell(tableView, text: "Summary", icon: .smartPlaylist)
+        case .content(let name, let icon):
+            return DevicePageView.sidebarCell(tableView, text: name, icon: icon)
+        }
     }
 
-    private func frame(of i: Int) -> NSRect {
-        let x = widths[0..<i].reduce(0, +) + 1
-        return NSRect(x: x, y: 1, width: widths[i], height: bounds.height - 2)
+    private static func sidebarCell(_ table: NSTableView, text: String, icon: SidebarIcon) -> SidebarCellView {
+        let ident = NSUserInterfaceItemIdentifier("cell.deviceSidebar")
+        let cell = (table.makeView(withIdentifier: ident, owner: nil) as? SidebarCellView) ?? {
+            let v = SidebarCellView()
+            v.identifier = ident
+            return v
+        }()
+        cell.label.stringValue = text
+        cell.iconView.icon = icon
+        return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard list.selectedRow >= 0, list.selectedRow < rows.count else { return }
+        switch rows[list.selectedRow] {
+        case .summary: showSummary()
+        case .content(let name, _): showTracks(name)
+        case .header: break
+        }
+    }
+}
+
+// MARK: - Header
+
+/// The device's picture, its name, the capacity badge and the eject button,
+/// in the corner iTunes puts them.
+final class DeviceHeaderView: NSView {
+    var image: NSImage? { didSet { needsDisplay = true } }
+    var onEject: () -> Void = {}
+    var canEject = false { didSet { needsDisplay = true } }
+    private var title = ""
+    private var badge = ""
+
+    private var ejectRect: NSRect {
+        NSRect(x: bounds.maxX - 26, y: bounds.maxY - 34, width: 18, height: 18)
+    }
+
+    func show(_ d: DeviceDetail) {
+        title = d.name
+        // iTunes shows the marketing size on the badge, not the formatted
+        // capacity: a 160 GB iPod formats to 148.87 GB.
+        badge = d.capacity.map { DeviceFormat.marketingSize($0) } ?? ""
+        needsDisplay = true
     }
 
     override func mouseDown(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        for i in titles.indices where frame(of: i).contains(p) {
-            if i != selectedIndex {
-                selectedIndex = i
-                onChange(i)
-            }
-            return
-        }
+        guard canEject, ejectRect.insetBy(dx: -4, dy: -4).contains(convert(event.locationInWindow, from: nil)) else { return }
+        onEject()
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let outer = bounds.insetBy(dx: 0.5, dy: 1.5)
-        let capsule = NSBezierPath(roundedRect: outer, xRadius: 4, yRadius: 4)
-        NSGradient(starting: NSColor(white: 0.99, alpha: 1), ending: NSColor(white: 0.86, alpha: 1))!
-            .draw(in: capsule, angle: -90)
-        NSGraphicsContext.saveGraphicsState()
-        capsule.addClip()
-        for i in titles.indices {
-            let r = frame(of: i)
-            if i == selectedIndex {
-                NSGradient(starting: NSColor(white: 0.60, alpha: 1), ending: NSColor(white: 0.74, alpha: 1))!
-                    .draw(in: r, angle: -90)
-            }
-            if i > 0 {
-                NSColor(white: 0.55, alpha: 1).setFill()
-                NSRect(x: r.minX, y: r.minY, width: 1, height: r.height).fill()
-            }
-            let style = NSMutableParagraphStyle()
-            style.alignment = .center
-            let emboss = NSShadow()
-            emboss.shadowColor = (i == selectedIndex ? NSColor.black : NSColor.white).withAlphaComponent(0.6)
-            emboss.shadowOffset = NSSize(width: 0, height: i == selectedIndex ? -1 : -1)
-            emboss.shadowBlurRadius = 0
-            let text = titles[i] as NSString
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: Aqua.font(12, bold: i == selectedIndex),
-                .foregroundColor: i == selectedIndex ? NSColor.white : NSColor(white: 0.20, alpha: 1),
-                .paragraphStyle: style, .shadow: emboss,
-            ]
-            let h = text.size(withAttributes: attrs).height
-            text.draw(in: NSRect(x: r.minX, y: r.midY - h / 2, width: r.width, height: h), withAttributes: attrs)
+        Aqua.sidebarBackground.setFill()
+        bounds.fill()
+        let side: CGFloat = 46
+        let box = NSRect(x: 12, y: bounds.midY - side / 2, width: side, height: side)
+        if let image = image {
+            image.draw(in: box, from: .zero, operation: .sourceOver, fraction: 1,
+                       respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high.rawValue])
+        } else {
+            DeviceSummaryView.drawIPod(in: box)
         }
-        NSGraphicsContext.restoreGraphicsState()
-        NSColor(white: 0.45, alpha: 1).setStroke()
-        capsule.lineWidth = 1
-        capsule.stroke()
+        let left = box.maxX + 10
+        (title as NSString).draw(at: NSPoint(x: left, y: bounds.maxY - 30), withAttributes: [
+            .font: Aqua.font(13, bold: true), .foregroundColor: NSColor(white: 0.12, alpha: 1),
+        ])
+        if !badge.isEmpty {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: Aqua.font(10), .foregroundColor: NSColor(white: 0.30, alpha: 1),
+            ]
+            let size = (badge as NSString).size(withAttributes: attrs)
+            let r = NSRect(x: left, y: bounds.maxY - 50, width: size.width + 12, height: 15)
+            let pill = NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3)
+            NSColor(white: 1, alpha: 0.75).setFill()
+            pill.fill()
+            NSColor(white: 0.62, alpha: 1).setStroke()
+            pill.lineWidth = 1
+            pill.stroke()
+            (badge as NSString).draw(at: NSPoint(x: r.minX + 6, y: r.minY + 1), withAttributes: attrs)
+        }
+        guard canEject else { return }
+        let e = ejectRect
+        let color = NSColor(white: 0.28, alpha: 1)
+        color.setFill()
+        let t = NSBezierPath()
+        t.move(to: NSPoint(x: e.midX - 6, y: e.midY - 1))
+        t.line(to: NSPoint(x: e.midX + 6, y: e.midY - 1))
+        t.line(to: NSPoint(x: e.midX, y: e.midY + 5))
+        t.close()
+        t.fill()
+        NSRect(x: e.midX - 6, y: e.midY - 5, width: 12, height: 2).fill()
     }
 }
 
 // MARK: - Summary
 
-/// The device icon and its identity fields, laid out as iTunes 10's Summary.
+/// iTunes' Summary pane: the identity box, then Options.
 final class DeviceSummaryView: NSView {
-    private var fields: [(String, String)] = []
     private var title = ""
-    private var subtitle = ""
+    private var left: [(String, String)] = []
+    private var softwareVersion: String?
+    private var options: [(String, Bool?)] = []
+    private var note = ""
 
     func show(_ d: DeviceDetail) {
         title = d.name
-        subtitle = [d.productName, d.kind == d.productName ? nil : d.kind]
-            .compactMap { $0 }.joined(separator: " · ")
-        var f: [(String, String)] = []
-        if let cap = d.capacity { f.append(("Capacity", StatusFormat.size(cap))) }
-        if let free = d.freeSpace { f.append(("Free space", StatusFormat.size(free))) }
-        if let n = d.trackCount {
-            f.append(("Items", NumberFormatter.localizedString(from: NSNumber(value: n), number: .decimal)))
-        }
-        if let s = d.serialNumber { f.append(("Serial number", s)) }
-        if let c = d.connection { f.append(("Connection", c)) }
-        if let fs = d.fileSystem { f.append(("Format", fs)) }
-        if let m = d.mountPoint { f.append(("Mounted at", m)) }
-        fields = f
+        var l: [(String, String)] = []
+        if let cap = d.capacity { l.append(("Capacity:", DeviceFormat.size(cap))) }
+        if let s = d.deviceSerialNumber ?? d.serialNumber { l.append(("Serial Number:", s)) }
+        if let f = d.formatName { l.append(("Format:", f)) }
+        if let c = d.connection { l.append(("Connection:", c)) }
+        if let n = d.useCount { l.append(("Times connected:", String(n))) }
+        left = l
+        softwareVersion = d.softwareVersion
+        options = [("Enable disk use", d.diskUse)]
+        note = "iTunes keeps its other sync settings — whole library or selected playlists, "
+            + "convert higher bit rate songs, sync only checked songs — inside its library "
+            + "database, where nothing outside iTunes can read or change them. Set those in "
+            + "iTunes on the MacBook Pro."
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let panelH = CGFloat(fields.count) * 19 + 96
-        let panel = NSRect(x: 0, y: bounds.maxY - panelH, width: bounds.width, height: panelH)
-        let box = NSBezierPath(roundedRect: panel.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5)
-        NSGradient(starting: NSColor(white: 1.0, alpha: 0.95), ending: NSColor(white: 0.96, alpha: 0.95))!
-            .draw(in: box, angle: -90)
-        NSColor(white: 0.72, alpha: 1).setStroke()
-        box.lineWidth = 1
-        box.stroke()
-
-        let iconSide: CGFloat = 96
-        let iconRect = NSRect(x: 20, y: panel.maxY - iconSide - 16, width: iconSide, height: iconSide)
-        DeviceSummaryView.drawIPod(in: iconRect)
-        let left = iconRect.maxX + 20
-        var y = panel.maxY - 18
+        var y = bounds.maxY
         let titleAttrs: [NSAttributedString.Key: Any] = [
-            .font: Aqua.font(20, bold: true), .foregroundColor: NSColor(white: 0.12, alpha: 1),
+            .font: Aqua.font(19), .foregroundColor: NSColor(white: 0.10, alpha: 1),
         ]
-        let th = (title as NSString).size(withAttributes: titleAttrs).height
-        y -= th
-        (title as NSString).draw(at: NSPoint(x: left, y: y), withAttributes: titleAttrs)
-        if !subtitle.isEmpty {
-            let sub: [NSAttributedString.Key: Any] = [
-                .font: Aqua.font(12), .foregroundColor: NSColor(white: 0.42, alpha: 1),
-            ]
-            y -= 18
-            (subtitle as NSString).draw(at: NSPoint(x: left, y: y), withAttributes: sub)
-        }
-        y -= 16
+        y -= 26
+        (title as NSString).draw(at: NSPoint(x: 0, y: y), withAttributes: titleAttrs)
+
+        // Identity box: fields on the left, software version on the right.
+        y -= 14
+        let boxH = max(CGFloat(left.count) * 20 + 24, 92)
+        let box = NSRect(x: 0, y: y - boxH, width: bounds.width, height: boxH)
+        DeviceSummaryView.drawBox(box)
         let labelAttrs: [NSAttributedString.Key: Any] = [
-            .font: Aqua.font(11, bold: true), .foregroundColor: NSColor(white: 0.38, alpha: 1),
+            .font: Aqua.font(12, bold: true), .foregroundColor: NSColor(white: 0.20, alpha: 1),
         ]
         let valueAttrs: [NSAttributedString.Key: Any] = [
-            .font: Aqua.font(11), .foregroundColor: NSColor(white: 0.10, alpha: 1),
+            .font: Aqua.font(12), .foregroundColor: NSColor(white: 0.20, alpha: 1),
         ]
-        let labelWidth: CGFloat = 108
-        for (name, value) in fields {
-            y -= 19
-            guard y > 0 else { break }
-            let style = NSMutableParagraphStyle()
-            style.alignment = .right
-            var la = labelAttrs
-            la[.paragraphStyle] = style
-            (name as NSString).draw(in: NSRect(x: left, y: y, width: labelWidth, height: 16), withAttributes: la)
-            (value as NSString).draw(at: NSPoint(x: left + labelWidth + 12, y: y), withAttributes: valueAttrs)
+        var fy = box.maxY - 28
+        for (name, value) in left {
+            let w = (name as NSString).size(withAttributes: labelAttrs).width
+            (name as NSString).draw(at: NSPoint(x: box.minX + 18, y: fy), withAttributes: labelAttrs)
+            (value as NSString).draw(at: NSPoint(x: box.minX + 18 + w + 6, y: fy), withAttributes: valueAttrs)
+            fy -= 20
         }
+        let rx = box.minX + max(300, box.width * 0.52)
+        if let v = softwareVersion {
+            ("Software Version \(v)" as NSString).draw(at: NSPoint(x: rx, y: box.maxY - 28), withAttributes: labelAttrs)
+            let para = NSMutableParagraphStyle()
+            para.lineBreakMode = .byWordWrapping
+            ("Read from iTunes' own record of this device. iTunes checks for iPod software updates itself." as NSString)
+                .draw(in: NSRect(x: rx, y: box.minY + 10, width: box.maxX - rx - 18, height: box.maxY - 52 - box.minY),
+                      withAttributes: [.font: Aqua.font(11), .foregroundColor: NSColor(white: 0.35, alpha: 1),
+                                       .paragraphStyle: para])
+        }
+
+        // Options box.
+        y = box.minY - 24
+        ("Options" as NSString).draw(at: NSPoint(x: 0, y: y), withAttributes: [
+            .font: Aqua.font(15), .foregroundColor: NSColor(white: 0.12, alpha: 1),
+        ])
+        y -= 10
+        let optH = CGFloat(options.count) * 22 + 68
+        let obox = NSRect(x: 0, y: y - optH, width: bounds.width, height: optH)
+        DeviceSummaryView.drawBox(obox)
+        var oy = obox.maxY - 28
+        for (name, value) in options {
+            DeviceSummaryView.drawTick(at: NSPoint(x: obox.minX + 20, y: oy + 5), on: value == true)
+            (name as NSString).draw(at: NSPoint(x: obox.minX + 38, y: oy), withAttributes: valueAttrs)
+            oy -= 22
+        }
+        let para = NSMutableParagraphStyle()
+        para.lineBreakMode = .byWordWrapping
+        (note as NSString).draw(in: NSRect(x: obox.minX + 20, y: obox.minY + 8,
+                                           width: obox.width - 40, height: oy - obox.minY),
+                                withAttributes: [.font: Aqua.font(11),
+                                                 .foregroundColor: NSColor(white: 0.40, alpha: 1),
+                                                 .paragraphStyle: para])
     }
 
-    /// A small iPod, drawn: white body, screen, click wheel.
+    static func drawBox(_ r: NSRect) {
+        let box = NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5)
+        NSColor(white: 0.925, alpha: 1).setFill()
+        box.fill()
+        NSColor(white: 0.78, alpha: 1).setStroke()
+        box.lineWidth = 1
+        box.stroke()
+    }
+
+    /// A read-only tick: this reflects iTunes' state, it does not set it.
+    static func drawTick(at p: NSPoint, on: Bool) {
+        let box = NSRect(x: p.x - 6, y: p.y - 6, width: 12, height: 12)
+        let path = NSBezierPath(roundedRect: box.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2)
+        NSColor(white: on ? 0.99 : 0.94, alpha: 1).setFill()
+        path.fill()
+        NSColor(white: 0.55, alpha: 1).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+        guard on else { return }
+        let tick = NSBezierPath()
+        tick.lineWidth = 1.8
+        tick.lineCapStyle = .round
+        tick.lineJoinStyle = .round
+        tick.move(to: NSPoint(x: box.minX + 2.6, y: box.midY))
+        tick.line(to: NSPoint(x: box.minX + 5, y: box.minY + 2.8))
+        tick.line(to: NSPoint(x: box.maxX - 2.2, y: box.maxY - 2))
+        Aqua.accent.setStroke()
+        tick.stroke()
+    }
+
+    /// A small iPod, drawn, for when the daemon has no picture for the device.
     static func drawIPod(in rect: NSRect) {
         let w = rect.width * 0.62
         let body = NSRect(x: rect.midX - w / 2, y: rect.minY, width: w, height: rect.height)
         let path = NSBezierPath(roundedRect: body, xRadius: w * 0.10, yRadius: w * 0.10)
-        NSGraphicsContext.saveGraphicsState()
-        let shadow = NSShadow()
-        shadow.shadowColor = NSColor.black.withAlphaComponent(0.25)
-        shadow.shadowBlurRadius = 4
-        shadow.shadowOffset = NSSize(width: 0, height: -2)
-        shadow.set()
-        NSGradient(starting: NSColor(white: 1.0, alpha: 1), ending: NSColor(white: 0.82, alpha: 1))!
+        NSGradient(starting: NSColor(white: 0.32, alpha: 1), ending: NSColor(white: 0.14, alpha: 1))!
             .draw(in: path, angle: -90)
-        NSGraphicsContext.restoreGraphicsState()
-        NSColor(white: 0.58, alpha: 1).setStroke()
+        NSColor(white: 0.08, alpha: 1).setStroke()
         path.lineWidth = 1
         path.stroke()
         let screen = NSRect(x: body.minX + w * 0.11, y: body.midY + body.height * 0.06,
                             width: w * 0.78, height: body.height * 0.36)
-        let sp = NSBezierPath(roundedRect: screen, xRadius: 2, yRadius: 2)
-        NSGradient(starting: NSColor(srgbRed: 0.28, green: 0.42, blue: 0.56, alpha: 1),
-                   ending: NSColor(srgbRed: 0.62, green: 0.76, blue: 0.88, alpha: 1))!
-            .draw(in: sp, angle: -90)
-        NSColor(white: 0.45, alpha: 1).setStroke()
-        sp.lineWidth = 1
-        sp.stroke()
+        NSColor(white: 0.06, alpha: 1).setFill()
+        NSBezierPath(roundedRect: screen, xRadius: 2, yRadius: 2).fill()
         let wheelR = w * 0.34
         let cy = body.minY + body.height * 0.24
-        let wheel = NSBezierPath(ovalIn: NSRect(x: body.midX - wheelR, y: cy - wheelR, width: wheelR * 2, height: wheelR * 2))
-        NSGradient(starting: NSColor(white: 0.94, alpha: 1), ending: NSColor(white: 0.80, alpha: 1))!
-            .draw(in: wheel, angle: -90)
-        NSColor(white: 0.62, alpha: 1).setStroke()
-        wheel.lineWidth = 1
-        wheel.stroke()
+        NSColor(white: 0.22, alpha: 1).setFill()
+        NSBezierPath(ovalIn: NSRect(x: body.midX - wheelR, y: cy - wheelR, width: wheelR * 2, height: wheelR * 2)).fill()
         let hubR = wheelR * 0.40
-        let hub = NSBezierPath(ovalIn: NSRect(x: body.midX - hubR, y: cy - hubR, width: hubR * 2, height: hubR * 2))
-        NSColor(white: 0.99, alpha: 1).setFill()
-        hub.fill()
-        NSColor(white: 0.68, alpha: 1).setStroke()
-        hub.lineWidth = 1
-        hub.stroke()
+        NSColor(white: 0.34, alpha: 1).setFill()
+        NSBezierPath(ovalIn: NSRect(x: body.midX - hubR, y: cy - hubR, width: hubR * 2, height: hubR * 2)).fill()
     }
 }
 
 // MARK: - Capacity bar
 
-/// iTunes' capacity bar: one coloured band per media kind, free space at the
-/// right, and a legend underneath. Bands under a pixel wide are still drawn as
-/// a hairline so a small category does not silently vanish.
+/// iTunes' capacity bar: one band per media kind with its name written inside,
+/// and the free space named in the empty part.
 final class CapacityBarView: NSView {
     private struct Band {
         let label: String
         let bytes: Int
         let color: NSColor
+        let dark: Bool
     }
     private var bands: [Band] = []
     private var capacity = 0
+    private var freeLabel = ""
 
     private static let colors: [String: NSColor] = [
-        "Music": NSColor(srgbRed: 0.96, green: 0.68, blue: 0.17, alpha: 1),
-        "Movies": NSColor(srgbRed: 0.51, green: 0.36, blue: 0.78, alpha: 1),
-        "TV Shows": NSColor(srgbRed: 0.92, green: 0.31, blue: 0.52, alpha: 1),
-        "Podcasts": NSColor(srgbRed: 0.19, green: 0.66, blue: 0.60, alpha: 1),
-        "Books": NSColor(srgbRed: 0.62, green: 0.45, blue: 0.36, alpha: 1),
-        "Audiobooks": NSColor(srgbRed: 0.99, green: 0.80, blue: 0.20, alpha: 1),
-        "Tones": NSColor(srgbRed: 0.40, green: 0.73, blue: 0.42, alpha: 1),
-        "Purchased Music": NSColor(srgbRed: 0.36, green: 0.60, blue: 0.86, alpha: 1),
+        "Music": NSColor(srgbRed: 0.94, green: 0.55, blue: 0.44, alpha: 1),
+        "Movies": NSColor(srgbRed: 0.44, green: 0.66, blue: 0.86, alpha: 1),
+        "TV Shows": NSColor(srgbRed: 0.66, green: 0.55, blue: 0.82, alpha: 1),
+        "Podcasts": NSColor(srgbRed: 0.50, green: 0.75, blue: 0.55, alpha: 1),
+        "Books": NSColor(srgbRed: 0.80, green: 0.66, blue: 0.44, alpha: 1),
+        "Audiobooks": NSColor(srgbRed: 0.86, green: 0.74, blue: 0.36, alpha: 1),
+        "Tones": NSColor(srgbRed: 0.55, green: 0.78, blue: 0.60, alpha: 1),
     ]
-    private static let otherColor = NSColor(srgbRed: 0.69, green: 0.75, blue: 0.79, alpha: 1)
-    private static let freeColor = NSColor(white: 0.98, alpha: 1)
+    private static let otherColor = NSColor(srgbRed: 0.96, green: 0.79, blue: 0.26, alpha: 1)
+    private static let freeColor = NSColor(white: 0.91, alpha: 1)
 
     func show(_ d: DeviceDetail) {
         capacity = d.capacity ?? 0
         var b: [Band] = []
         for c in d.categories where c.bytes > 0 {
-            b.append(Band(label: c.name, bytes: c.bytes,
-                          color: CapacityBarView.colors[c.name] ?? CapacityBarView.otherColor))
+            // iTunes calls the music band "Audio".
+            let label = c.name == "Music" ? "Audio" : c.name
+            b.append(Band(label: label, bytes: c.bytes,
+                          color: CapacityBarView.colors[c.name] ?? CapacityBarView.otherColor, dark: false))
         }
         if let other = d.otherBytes, other > 0 {
-            b.append(Band(label: "Other", bytes: other, color: CapacityBarView.otherColor))
+            b.append(Band(label: "Other", bytes: other, color: CapacityBarView.otherColor, dark: false))
         }
         if let free = d.freeSpace, free > 0 {
-            b.append(Band(label: "Free", bytes: free, color: CapacityBarView.freeColor))
+            b.append(Band(label: "", bytes: free, color: CapacityBarView.freeColor, dark: true))
+            freeLabel = "\(DeviceFormat.size(free)) Free"
+        } else {
+            freeLabel = ""
         }
         bands = b
+        toolTip = bands.filter { !$0.label.isEmpty }
+            .map { "\($0.label)  \(DeviceFormat.size($0.bytes))" }
+            .joined(separator: "\n")
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
         guard capacity > 0, !bands.isEmpty else { return }
-        let barH: CGFloat = 20
-        let bar = NSRect(x: 0, y: bounds.maxY - barH - 2, width: bounds.width, height: barH)
-        let clip = NSBezierPath(roundedRect: bar, xRadius: 4, yRadius: 4)
+        let bar = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let clip = NSBezierPath(roundedRect: bar, xRadius: 3, yRadius: 3)
         NSGraphicsContext.saveGraphicsState()
         clip.addClip()
         var x = bar.minX
         for band in bands {
+            // A band under a pixel wide still gets a hairline, so a small
+            // category never silently disappears.
             let w = max(1, bar.width * CGFloat(band.bytes) / CGFloat(capacity))
             let r = NSRect(x: x, y: bar.minY, width: w, height: bar.height)
-            NSGradient(starting: band.color.blended(withFraction: 0.28, of: .white) ?? band.color,
-                       ending: band.color)!.draw(in: r, angle: -90)
+            band.color.setFill()
+            r.fill()
+            let text = band.dark ? freeLabel : band.label
+            if !text.isEmpty {
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: Aqua.font(11),
+                    .foregroundColor: band.dark ? NSColor(white: 0.30, alpha: 1) : NSColor(white: 0.16, alpha: 1),
+                ]
+                let size = (text as NSString).size(withAttributes: attrs)
+                if size.width + 12 < w {
+                    (text as NSString).draw(at: NSPoint(x: r.minX + 6, y: r.midY - size.height / 2),
+                                            withAttributes: attrs)
+                }
+            }
             x += w
             if x < bar.maxX {
-                NSColor(white: 1, alpha: 0.55).setFill()
+                NSColor(white: 1, alpha: 0.6).setFill()
                 NSRect(x: x - 0.5, y: bar.minY, width: 1, height: bar.height).fill()
             }
         }
-        // A gloss across the top half, so the bar reads like iTunes' did.
-        NSGradient(starting: NSColor(white: 1, alpha: 0.42), ending: NSColor(white: 1, alpha: 0.02))!
+        NSGradient(starting: NSColor(white: 1, alpha: 0.30), ending: NSColor(white: 1, alpha: 0.0))!
             .draw(in: NSRect(x: bar.minX, y: bar.midY, width: bar.width, height: bar.height / 2), angle: -90)
         NSGraphicsContext.restoreGraphicsState()
-        NSColor(white: 0.52, alpha: 1).setStroke()
+        NSColor(white: 0.58, alpha: 1).setStroke()
         clip.lineWidth = 1
         clip.stroke()
+    }
+}
 
-        // Legend.
-        var lx = bar.minX
-        let ly = bar.minY - 22
-        for band in bands {
-            let swatch = NSRect(x: lx, y: ly + 3, width: 10, height: 10)
-            let sp = NSBezierPath(roundedRect: swatch, xRadius: 2, yRadius: 2)
-            band.color.setFill()
-            sp.fill()
-            NSColor(white: 0.45, alpha: 1).setStroke()
-            sp.lineWidth = 1
-            sp.stroke()
-            let text = "\(band.label)  \(StatusFormat.size(band.bytes))" as NSString
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: Aqua.font(11), .foregroundColor: NSColor(white: 0.25, alpha: 1),
-            ]
-            let w = text.size(withAttributes: attrs).width
-            text.draw(at: NSPoint(x: swatch.maxX + 5, y: ly), withAttributes: attrs)
-            lx = swatch.maxX + 5 + w + 18
-            if lx > bounds.maxX - 60 { break }
+// MARK: - Units
+
+enum DeviceFormat {
+    /// iTunes writes device sizes in binary units but labels them GB: a
+    /// 159,839,977,472-byte iPod reads as "148.87 GB" on its Summary pane.
+    static func size(_ bytes: Int) -> String {
+        let gb = Double(bytes) / 1073741824
+        if gb >= 1 { return String(format: "%.2f GB", gb) }
+        let mb = Double(bytes) / 1048576
+        return String(format: "%.1f MB", mb)
+    }
+
+    /// The size printed on the box, which is what iTunes puts on the badge.
+    static func marketingSize(_ bytes: Int) -> String {
+        let gb = Double(bytes) / 1_000_000_000
+        for step in [8, 16, 20, 30, 32, 40, 60, 64, 80, 120, 128, 160, 256, 512] {
+            if abs(gb - Double(step)) / Double(step) < 0.08 { return "\(step)GB" }
         }
+        return String(format: "%.0fGB", gb)
     }
 }
 
 // MARK: - A small read-only table
 
-/// A plain string-grid table. The device page's two list tabs are read-only,
-/// so they need none of the track table's machinery.
+/// A plain string grid. The device's content lists are read-only, so they
+/// need none of the track table's machinery.
 @MainActor
 final class SimpleTable: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let table = NSTableView()
@@ -422,8 +586,6 @@ final class SimpleTable: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     init(columns: [(String, CGFloat)]) {
         super.init()
         table.usesAlternatingRowBackgroundColors = true
-        // Let the name column take the slack; the count and size columns keep
-        // their widths at the right, as iTunes' device lists did.
         table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         table.rowHeight = 18
         table.gridStyleMask = [.solidVerticalGridLineMask]
@@ -454,7 +616,7 @@ final class SimpleTable: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         let cell = AquaTables.labelCell(tableView, id: "simple")
         cell.textField?.font = Aqua.font(11)
         cell.textField?.stringValue = rows[row][i]
-        cell.textField?.alignment = i == 0 ? .left : .right
+        cell.textField?.alignment = i == rows[row].count - 1 ? .right : .left
         return cell
     }
 }

@@ -197,6 +197,25 @@ struct DeviceDetail: Decodable {
     let unavailableReason: String?
     let categories: [Category]
     let playlists: [DevicePlaylist]
+    /// From iTunes' own com.apple.iPod preferences, which is the only place
+    /// the printed serial and the firmware version can be read.
+    let deviceSerialNumber: String?
+    let softwareVersion: String?
+    let familyId: Int?
+    let deviceClass: String?
+    let useCount: Int?
+    let lastConnected: String?
+    let formatName: String?
+    let diskUse: Bool?
+    let hasImage: Bool?
+}
+
+/// One track on the device, as iTunes reports it.
+struct DeviceTrack: Decodable, Equatable {
+    let name: String
+    let artist: String
+    let album: String
+    let totalTime: Int
 }
 
 struct Output: Decodable {

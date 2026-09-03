@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 struct APIError: LocalizedError {
     let status: Int
@@ -145,6 +146,32 @@ final class APIClient {
     // appendingPathComponent, which percent-encodes the component itself; a
     // name escaped here first came out double-encoded ("iPod%2520classic") and
     // the daemon answered 404.
+    func deviceTracks(_ name: String, playlist: String, limit: Int = 500) async throws -> [DeviceTrack] {
+        struct Wrap: Decodable { let tracks: [DeviceTrack] }
+        let w: Wrap = try await get("/api/devices/\(name)/tracks", query: [
+            URLQueryItem(name: "playlist", value: playlist),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ])
+        return w.tracks
+    }
+
+    /// The device's own picture, as iTunes draws it. The daemon reads it out
+    /// of iTunes.app, so the client ships no Apple artwork.
+    func deviceImageURL(_ name: String, size: Int) -> URL {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("/api/devices/\(name)/image"),
+                                  resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "size", value: String(size))]
+        return comps.url!
+    }
+
+    func deviceImage(_ name: String, size: Int) async throws -> NSImage? {
+        var req = URLRequest(url: deviceImageURL(name, size: size))
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: req)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return NSImage(data: data)
+    }
+
     private func sourcePath(_ name: String, _ op: String) -> String {
         "/api/sources/\(name)/\(op)"
     }
