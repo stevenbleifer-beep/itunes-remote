@@ -5,8 +5,15 @@ import Cocoa
 //   --snapshot PATH               render the main window to PATH after the first load, then quit
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var main: MainWindowController!
+    private var browserSubmenu: NSMenu?
+    private var columnsSubmenu: NSMenu?
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === browserSubmenu { main?.buildBrowserMenu(menu) }
+        if menu === columnsSubmenu { main?.buildColumnMenu(menu) }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .aqua)
@@ -90,6 +97,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let editItem = NSMenuItem()
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
+
+        let viewMenu = NSMenu(title: "View")
+        viewMenu.autoenablesItems = false
+        let browserItem = NSMenuItem(title: "Column Browser", action: nil, keyEquivalent: "")
+        let browserSub = NSMenu()
+        browserSub.delegate = self
+        browserItem.submenu = browserSub
+        viewMenu.addItem(browserItem)
+        browserSubmenu = browserSub
+        let columnsItem = NSMenuItem(title: "Columns", action: nil, keyEquivalent: "")
+        let columnsSub = NSMenu()
+        columnsSub.delegate = self
+        columnsItem.submenu = columnsSub
+        viewMenu.addItem(columnsItem)
+        columnsSubmenu = columnsSub
+        viewMenu.addItem(.separator())
+        for (i, title) in ["as List", "as Album List", "as Grid", "as Cover Flow"].enumerated() {
+            let item = viewMenu.addItem(withTitle: title,
+                                        action: #selector(MainWindowController.pickViewMode(_:)),
+                                        keyEquivalent: String(i + 3))
+            item.keyEquivalentModifierMask = [NSEvent.ModifierFlags.command, NSEvent.ModifierFlags.option]
+            item.tag = i
+        }
+        let viewItem = NSMenuItem()
+        viewItem.submenu = viewMenu
+        mainMenu.addItem(viewItem)
 
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")

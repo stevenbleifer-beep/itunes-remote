@@ -157,6 +157,15 @@ final class APIClient {
         return try JSONDecoder().decode(Playlist.self, from: data)
     }
 
+    func renamePlaylist(_ playlistId: String, name: String) async throws -> Playlist {
+        let data = try await request("PATCH", "/api/playlists/\(playlistId)", body: ["name": name])
+        return try JSONDecoder().decode(Playlist.self, from: data)
+    }
+
+    func deletePlaylist(_ playlistId: String) async throws {
+        _ = try await request("DELETE", "/api/playlists/\(playlistId)")
+    }
+
     func addToPlaylist(_ playlistId: String, ids: [String]) async throws -> PlaylistChange {
         let data = try await request("POST", "/api/playlists/\(playlistId)/tracks", body: ["ids": ids])
         return try JSONDecoder().decode(PlaylistChange.self, from: data)
@@ -194,10 +203,12 @@ final class APIClient {
         return w.playlists
     }
 
-    func facet(_ kind: FacetKind, filter: TrackFilter) async throws -> [FacetEntry] {
-        let data = try await request("GET", "/api/\(kind.rawValue)", query: filter.queryItems)
+    /// `field` is the singular name: genre, artist, album, composer, grouping.
+    func facet(_ field: String, filter: TrackFilter) async throws -> [FacetEntry] {
+        let plural = field + "s"
+        let data = try await request("GET", "/api/\(plural)", query: filter.queryItems)
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let arr = obj?[kind.rawValue] as? [[String: Any]] else { return [] }
+        guard let arr = obj?[plural] as? [[String: Any]] else { return [] }
         return arr.map { FacetEntry(name: $0["name"] as? String ?? "", count: $0["count"] as? Int ?? 0) }
     }
 

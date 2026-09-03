@@ -67,6 +67,8 @@ struct TrackFilter: Equatable {
     var genre: String?
     var artist: String?
     var album: String?
+    var composer: String?
+    var grouping: String?
     var playlist: String?
     /// Non-zero asks the daemon for only the N most recently added, newest first.
     var recent: Int = 0
@@ -77,16 +79,21 @@ struct TrackFilter: Equatable {
         if let v = genre { items.append(URLQueryItem(name: "genre", value: v)) }
         if let v = artist { items.append(URLQueryItem(name: "artist", value: v)) }
         if let v = album { items.append(URLQueryItem(name: "album", value: v)) }
+        if let v = composer { items.append(URLQueryItem(name: "composer", value: v)) }
+        if let v = grouping { items.append(URLQueryItem(name: "grouping", value: v)) }
         if let v = playlist { items.append(URLQueryItem(name: "playlist", value: v)) }
         if recent > 0 { items.append(URLQueryItem(name: "recent", value: String(recent))) }
         return items
     }
 }
 
+/// The daemon's facet endpoints are the field name plus "s".
 enum FacetKind: String {
     case genre = "genres"
     case artist = "artists"
     case album = "albums"
+    case composer = "composers"
+    case grouping = "groupings"
 }
 
 /// Formats totals the way the iTunes status bar did: "1,234 songs, 3.2 days, 12.1 GB".

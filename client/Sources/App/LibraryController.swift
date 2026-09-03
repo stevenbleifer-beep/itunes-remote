@@ -40,9 +40,10 @@ final class LibraryController {
 
     private(set) var info: LibraryInfo?
     private(set) var playlists: [Playlist] = []
-    private(set) var genres: [FacetEntry] = []
-    private(set) var artists: [FacetEntry] = []
-    private(set) var albums: [FacetEntry] = []
+    /// Facet values per browser field, and which value each pane has chosen.
+    private(set) var facets: [String: [FacetEntry]] = [:]
+    private(set) var selections: [String: String] = [:]
+    private(set) var browserFields: [String] = ["genre", "artist", "album"]
     private(set) var tracks: [Track] = []
     private(set) var totalTime = 0
     private(set) var totalSize = 0
@@ -51,9 +52,28 @@ final class LibraryController {
 
     var source: Source = .library { didSet { if source != oldValue { resetBrowser(); reload() } } }
     var searchText: String = "" { didSet { if searchText != oldValue { reload() } } }
-    var selectedGenre: String? { didSet { if selectedGenre != oldValue { selectedArtist = nil; selectedAlbum = nil; reload() } } }
-    var selectedArtist: String? { didSet { if selectedArtist != oldValue { selectedAlbum = nil; reload() } } }
-    var selectedAlbum: String? { didSet { if selectedAlbum != oldValue { reload() } } }
+    func setBrowserFields(_ fields: [String]) {
+        browserFields = fields
+        for key in selections.keys where !fields.contains(key) { selections[key] = nil }
+    }
+
+    func facet(_ field: String) -> [FacetEntry] { facets[field] ?? [] }
+    func selection(_ field: String) -> String? { selections[field] }
+
+    /// Choosing in a pane clears the panes to its right, as iTunes did.
+    func select(_ value: String?, in field: String) {
+        guard selections[field] != value else { return }
+        selections[field] = value
+        if let i = browserFields.firstIndex(of: field) {
+            for later in browserFields[(i + 1)...] { selections[later] = nil }
+        }
+        reload()
+    }
+
+    func clearBrowserSelections() {
+        guard !selections.isEmpty else { return }
+        selections.removeAll()
+    }
 
     var sortKey: String? = nil
     var sortAscending = true
@@ -69,9 +89,7 @@ final class LibraryController {
     private var firstLoadDone = false
 
     private func resetBrowser() {
-        selectedGenre = nil
-        selectedArtist = nil
-        selectedAlbum = nil
+        selections.removeAll()
     }
 
     // MARK: Connect
@@ -124,15 +142,25 @@ final class LibraryController {
 
     // MARK: Filters
 
-    private var browserFilter: TrackFilter {
-        TrackFilter(q: searchText, genre: nil, artist: nil, album: nil,
-                    playlist: source.playlistId, recent: source.recentLimit)
+    /// The filter with every pane's choice applied except those after `field`.
+    private func filter(upTo field: String?) -> TrackFilter {
+        var f = TrackFilter(q: searchText, playlist: source.playlistId, recent: source.recentLimit)
+        for name in browserFields {
+            if name == field { break }
+            guard let value = selections[name] else { continue }
+            switch name {
+            case "genre": f.genre = value
+            case "artist": f.artist = value
+            case "album": f.album = value
+            case "composer": f.composer = value
+            case "grouping": f.grouping = value
+            default: break
+            }
+        }
+        return f
     }
 
-    var trackFilter: TrackFilter {
-        TrackFilter(q: searchText, genre: selectedGenre, artist: selectedArtist,
-                    album: selectedAlbum, playlist: source.playlistId, recent: source.recentLimit)
-    }
+    var trackFilter: TrackFilter { filter(upTo: nil) }
 
     // MARK: Reload
 
@@ -142,29 +170,33 @@ final class LibraryController {
         let gen = generation
         loading = true
         onStatusChanged()
-        let base = browserFilter
-        let artistFilter = TrackFilter(q: base.q, genre: selectedGenre, artist: nil, album: nil,
-                                       playlist: base.playlist, recent: base.recent)
-        let albumFilter = TrackFilter(q: base.q, genre: selectedGenre, artist: selectedArtist, album: nil,
-                                      playlist: base.playlist, recent: base.recent)
+        let fields = browserFields
+        let paneFilters = fields.map { filter(upTo: $0) }
         let trackFilter = self.trackFilter
         Task {
             do {
-                async let g = api.facet(.genre, filter: base)
-                async let a = api.facet(.artist, filter: artistFilter)
-                async let al = api.facet(.album, filter: albumFilter)
-                async let t = api.tracks(filter: trackFilter)
-                let (genres, artists, albums, page) = try await (g, a, al, t)
+                var fetched: [String: [FacetEntry]] = [:]
+                try await withThrowingTaskGroup(of: (String, [FacetEntry]).self) { group in
+                    for (i, field) in fields.enumerated() {
+                        group.addTask { (field, try await api.facet(field, filter: paneFilters[i])) }
+                    }
+                    for try await (field, values) in group { fetched[field] = values }
+                }
+                let page = try await api.tracks(filter: trackFilter)
                 guard gen == generation else { return }
-                self.genres = genres
-                self.artists = artists
-                self.albums = albums
-                // A selection that no longer exists in its pane falls back to All.
+                self.facets = fetched
+                // A choice that no longer exists in its pane falls back to All.
                 var changed = false
-                if let s = selectedGenre, !genres.contains(where: { $0.name == s }) { selectedGenre = nil; changed = true }
-                if let s = selectedArtist, !artists.contains(where: { $0.name == s }) { selectedArtist = nil; changed = true }
-                if let s = selectedAlbum, !albums.contains(where: { $0.name == s }) { selectedAlbum = nil; changed = true }
-                if changed { return }   // the didSet already kicked off a fresh reload
+                for field in fields {
+                    if let s = selections[field], !(fetched[field] ?? []).contains(where: { $0.name == s }) {
+                        selections[field] = nil
+                        changed = true
+                    }
+                }
+                if changed {
+                    reload()
+                    return
+                }
                 self.tracks = page.tracks
                 self.totalTime = page.totalTime
                 self.totalSize = page.totalSize

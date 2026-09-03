@@ -11,7 +11,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     let artworkCache = ArtworkCache()
     var snapshotPath: String?
 
-    private enum Tag: Int { case source = 0, genre, artist, album, tracks }
+    private enum Tag: Int { case source = 0, browser, tracks }
 
     private enum SourceRow {
         case header(String)
@@ -46,13 +46,18 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var devices: [DeviceSource] = []
     private var deviceTimer: Timer?
     private var miniPlayer: MiniPlayerWindowController?
+    private var columnMenu: NSMenu?
+    private var sourceMenu: NSMenu?
     private let mainSplit = NSSplitView()
     private let rightSplit = NSSplitView()
     private let browserSplit = NSSplitView()
+    /// Which browser panes are shown, in order. iTunes offered these five.
+    private var browserFields: [String] = (UserDefaults.standard.array(forKey: "browserFields") as? [String])
+        ?? ["genre", "artist", "album"]
+    private var browserVisible = UserDefaults.standard.object(forKey: "browserVisible") as? Bool ?? true
+    private var browserScrolls: [String: NSScrollView] = [:]
+    private var browserTables: [String: NSTableView] = [:]
     private let sourceList = NSTableView()
-    private let genreTable = NSTableView()
-    private let artistTable = NSTableView()
-    private let albumTable = NSTableView()
     private let trackTable = AquaTableView()
     private let artworkView = ArtworkView()
 
@@ -339,13 +344,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         rightSplit.addArrangedSubview(trackScroll)
         rightSplit.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
 
-        let third = browserSplit.bounds.width / 3
-        for (table, title) in [(genreTable, "Genres"), (artistTable, "Artists"), (albumTable, "Albums")] {
-            let s = scroll(for: table)
-            s.frame = NSRect(x: 0, y: 0, width: third, height: 150)
-            browserSplit.addArrangedSubview(s)
-            configureBrowser(table, title: title)
-        }
+        rebuildBrowserPanes()
 
         configureSourceList()
         configureTrackTable()
@@ -383,9 +382,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             window?.makeFirstResponder(trackTable)
         } else {
             // The browser's narrowing does not apply here; clear it.
-            controller.selectedGenre = nil
-            controller.selectedArtist = nil
-            controller.selectedAlbum = nil
+            controller.clearBrowserSelections()
             loadAlbums()
             window?.makeFirstResponder(flow ? coverFlow : (isGrid ? grid : trackTable))
         }
@@ -535,23 +532,52 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         sourceList.doubleAction = #selector(sourceDoubleClicked(_:))
 
         let menu = NSMenu()
-        let item = NSMenuItem(title: "New Playlist…", action: #selector(newPlaylist(_:)), keyEquivalent: "")
-        item.target = self
-        item.attributedTitle = NSAttributedString(string: "New Playlist…", attributes: [.font: Aqua.font(13)])
-        menu.addItem(item)
+        menu.delegate = self
         sourceList.menu = menu
+        sourceMenu = menu
     }
 
-    private func configureBrowser(_ table: NSTableView, title: String) {
-        table.tag = title == "Genres" ? Tag.genre.rawValue : title == "Artists" ? Tag.artist.rawValue : Tag.album.rawValue
-        let c = AquaTables.column(title.lowercased(), title: title, width: 200, sortable: false)
-        c.resizingMask = .autoresizingMask
-        table.addTableColumn(c)
-        AquaTables.style(table, rowHeight: 18, header: true)
-        table.gridStyleMask = []
-        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        table.dataSource = self
-        table.delegate = self
+    /// Every optional column, in the order iTunes listed them.
+    static let optionalColumns: [(String, String)] = [
+        ("artist", "Artist"), ("album", "Album"), ("genre", "Genre"), ("rating", "Rating"),
+        ("playCount", "Plays"), ("dateAdded", "Date Added"), ("year", "Year"),
+        ("trackNumber", "Track #"), ("discNumber", "Disc #"), ("composer", "Composer"),
+        ("grouping", "Grouping"), ("bpm", "BPM"), ("kind", "Kind"),
+    ]
+
+    private func hiddenColumns() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: "hiddenColumns") ?? ["discNumber", "composer", "grouping", "bpm", "kind"])
+    }
+
+    private func applyColumnVisibility() {
+        let hidden = hiddenColumns()
+        for column in trackTable.tableColumns {
+            let id = column.identifier.rawValue
+            guard MainWindowController.optionalColumns.contains(where: { $0.0 == id }) else { continue }
+            column.isHidden = hidden.contains(id)
+        }
+    }
+
+    @objc private func toggleColumn(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        var hidden = hiddenColumns()
+        if hidden.contains(id) { hidden.remove(id) } else { hidden.insert(id) }
+        UserDefaults.standard.set(Array(hidden), forKey: "hiddenColumns")
+        applyColumnVisibility()
+    }
+
+    /// Built fresh whenever the header's menu or the View menu opens.
+    func buildColumnMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let hidden = hiddenColumns()
+        for (id, title) in MainWindowController.optionalColumns {
+            let item = NSMenuItem(title: title, action: #selector(toggleColumn(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = id
+            item.state = hidden.contains(id) ? .off : .on
+            item.attributedTitle = NSAttributedString(string: title, attributes: [.font: Aqua.font(13)])
+            menu.addItem(item)
+        }
     }
 
     private func configureTrackTable() {
@@ -575,6 +601,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         trackTable.addTableColumn(AquaTables.column("year", title: "Year", width: 48, min: 40, rightAligned: true))
         trackTable.addTableColumn(AquaTables.column("trackNumber", title: "Track #", width: 64, min: 40, rightAligned: true))
         AquaTables.style(trackTable, rowHeight: 18, header: true)
+        let headerMenu = NSMenu()
+        headerMenu.delegate = self
+        trackTable.headerView?.menu = headerMenu
+        columnMenu = headerMenu
+        applyColumnVisibility()
         trackTable.allowsMultipleSelection = true
         trackTable.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         trackTable.dataSource = self
@@ -792,14 +823,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func reloadBrowser() {
         updatingUI = true
-        for (table, entries, selected) in [
-            (genreTable, controller.genres, controller.selectedGenre),
-            (artistTable, controller.artists, controller.selectedArtist),
-            (albumTable, controller.albums, controller.selectedAlbum),
-        ] {
+        for (field, table) in browserTables {
+            let entries = controller.facet(field)
             table.reloadData()
             var row = 0
-            if let s = selected, let i = entries.firstIndex(where: { $0.name == s }) { row = i + 1 }
+            if let s = controller.selection(field), let i = entries.firstIndex(where: { $0.name == s }) { row = i + 1 }
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             if row > 0 { table.scrollRowToVisible(row) }
         }
@@ -834,7 +862,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         let selected = selectedTracks
         guard !selected.isEmpty, let window = window, let api = controller.api else { return }
         let panel = InfoPanel(tracks: selected)
-        panel.knownGenres = controller.genres.map { $0.name }.filter { !$0.isEmpty }
+        panel.knownGenres = controller.facet("genre").map { $0.name }.filter { !$0.isEmpty }
         let ids = selected.map { $0.persistentId }
         panel.onApply = { [weak self] fields, done in
             Task { @MainActor in
@@ -853,6 +881,78 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     // MARK: Playlists
+
+    private func clickedPlaylist() -> Playlist? {
+        let row = sourceList.clickedRow >= 0 ? sourceList.clickedRow : sourceList.selectedRow
+        guard row >= 0, row < sourceRows.count, case .playlist(let p) = sourceRows[row] else { return nil }
+        return p
+    }
+
+    func buildSourceMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        func add(_ title: String, _ action: Selector, enabled: Bool = true) {
+            let item = NSMenuItem(title: title, action: enabled ? action : nil, keyEquivalent: "")
+            item.target = self
+            item.isEnabled = enabled
+            item.attributedTitle = NSAttributedString(string: title, attributes: [
+                .font: Aqua.font(13),
+                .foregroundColor: enabled ? NSColor.controlTextColor : NSColor.disabledControlTextColor,
+            ])
+            menu.addItem(item)
+        }
+        add("New Playlist…", #selector(newPlaylist(_:)))
+        let playlist = clickedPlaylist()
+        let editable = playlist != nil && !(playlist!.smart)
+        menu.addItem(.separator())
+        add("Rename…", #selector(renamePlaylist(_:)), enabled: editable)
+        add("Delete Playlist", #selector(deletePlaylist(_:)), enabled: editable)
+    }
+
+    @objc func renamePlaylist(_ sender: Any?) {
+        guard let playlist = clickedPlaylist(), let window = window, let api = controller.api else { return }
+        let prompt = NamePrompt(title: "Rename Playlist", prompt: "New name for “\(playlist.name)”:",
+                                placeholder: playlist.name, acceptTitle: "Rename")
+        prompt.onAccept = { [weak self] name, done in
+            Task { @MainActor in
+                do {
+                    let updated = try await api.renamePlaylist(playlist.persistentId, name: name)
+                    self?.flashStatus("Renamed to \(updated.name).")
+                    await self?.reloadPlaylists()
+                    done(nil)
+                } catch {
+                    done(error.localizedDescription)
+                }
+            }
+        }
+        prompt.present(in: window)
+        namePrompt = prompt
+    }
+
+    @objc func deletePlaylist(_ sender: Any?) {
+        guard let playlist = clickedPlaylist(), let window = window, let api = controller.api else { return }
+        // Deleting is not undoable in iTunes, so confirm first.
+        let alert = NSAlert()
+        alert.messageText = "Delete the playlist “\(playlist.name)”?"
+        alert.informativeText = "The playlist is removed from iTunes. Its \(playlist.count) songs stay in your library."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            Task { @MainActor in
+                do {
+                    try await api.deletePlaylist(playlist.persistentId)
+                    self?.flashStatus("Deleted \(playlist.name).")
+                    if self?.controller.source.playlistId == playlist.persistentId {
+                        self?.controller.source = .library
+                    }
+                    await self?.reloadPlaylists()
+                } catch {
+                    self?.flashStatus("Delete failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
 
     @objc func newPlaylist(_ sender: Any?) {
         guard let window = window, let api = controller.api else { return }
@@ -1170,6 +1270,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     // MARK: NSMenuDelegate
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === columnMenu {
+            buildColumnMenu(menu)
+            return
+        }
+        if menu === sourceMenu {
+            buildSourceMenu(menu)
+            return
+        }
         guard menu === trackTable.menu else { return }
         let editable = controller.playlists.filter { !$0.smart }
         let submenu = NSMenu()
@@ -1204,14 +1312,109 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         window?.makeFirstResponder(searchField)
     }
 
+    // MARK: Column browser
+
+    static let browserTitles = ["genre": "Genres", "artist": "Artists", "album": "Albums",
+                                "composer": "Composers", "grouping": "Groupings"]
+    static let browserOrder = ["genre", "artist", "album", "composer", "grouping"]
+
+    private func rebuildBrowserPanes() {
+        for view in browserSplit.arrangedSubviews { browserSplit.removeArrangedSubview(view); view.removeFromSuperview() }
+        browserScrolls.removeAll()
+        browserTables.removeAll()
+        let fields = MainWindowController.browserOrder.filter { browserFields.contains($0) }
+        let width = max(1, browserSplit.bounds.width / CGFloat(max(1, fields.count)))
+        for field in fields {
+            let table = NSTableView()
+            table.tag = Tag.browser.rawValue
+            table.identifier = NSUserInterfaceItemIdentifier(field)
+            let column = AquaTables.column(field, title: MainWindowController.browserTitles[field] ?? field,
+                                           width: 200, sortable: false)
+            column.resizingMask = .autoresizingMask
+            table.addTableColumn(column)
+            AquaTables.style(table, rowHeight: 18, header: true)
+            table.gridStyleMask = []
+            table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+            table.dataSource = self
+            table.delegate = self
+            let scroll = self.scroll(for: table)
+            scroll.frame = NSRect(x: 0, y: 0, width: width, height: 150)
+            browserSplit.addArrangedSubview(scroll)
+            browserScrolls[field] = scroll
+            browserTables[field] = table
+        }
+        browserSplit.adjustSubviews()
+        applyBrowserVisibility()
+    }
+
+    private func applyBrowserVisibility() {
+        let showBrowser = browserVisible && viewMode == .list
+        browserSplit.isHidden = !showBrowser
+        let total = rightSplit.bounds.height
+        if viewMode == .list {
+            rightSplit.setPosition(showBrowser ? 150 : 0, ofDividerAt: 0)
+        }
+        _ = total
+    }
+
+    /// The View menu's four view items, tagged 0 to 3 in switcher order.
+    @objc func pickViewMode(_ sender: NSMenuItem) {
+        guard sender.tag >= 0, sender.tag < ViewMode.segments.count else { return }
+        setViewMode(ViewMode.segments[sender.tag])
+    }
+
+    @objc func toggleColumnBrowser(_ sender: Any?) {
+        guard viewMode == .list else {
+            flashStatus("The column browser is only shown in List view.")
+            return
+        }
+        browserVisible.toggle()
+        UserDefaults.standard.set(browserVisible, forKey: "browserVisible")
+        applyBrowserVisibility()
+    }
+
+    @objc private func toggleBrowserField(_ sender: NSMenuItem) {
+        guard let field = sender.representedObject as? String else { return }
+        if browserFields.contains(field) {
+            guard browserFields.count > 1 else { return }
+            browserFields.removeAll { $0 == field }
+        } else {
+            browserFields.append(field)
+        }
+        UserDefaults.standard.set(browserFields, forKey: "browserFields")
+        rebuildBrowserPanes()
+        controller.setBrowserFields(browserFields)
+        controller.reload()
+    }
+
+    /// The View menu's browser submenu, built fresh each time it opens.
+    func buildBrowserMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let toggle = NSMenuItem(title: browserVisible ? "Hide Column Browser" : "Show Column Browser",
+                                action: #selector(toggleColumnBrowser(_:)), keyEquivalent: "b")
+        toggle.target = self
+        menu.addItem(toggle)
+        menu.addItem(.separator())
+        for field in MainWindowController.browserOrder {
+            let item = NSMenuItem(title: MainWindowController.browserTitles[field] ?? field,
+                                  action: #selector(toggleBrowserField(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = field
+            item.state = browserFields.contains(field) ? .on : .off
+            item.attributedTitle = NSAttributedString(string: MainWindowController.browserTitles[field] ?? field,
+                                                      attributes: [.font: Aqua.font(13)])
+            menu.addItem(item)
+        }
+    }
+
     // MARK: NSTableViewDataSource
 
     func numberOfRows(in tableView: NSTableView) -> Int {
         switch Tag(rawValue: tableView.tag) {
         case .source: return sourceRows.count
-        case .genre: return controller.genres.count + 1
-        case .artist: return controller.artists.count + 1
-        case .album: return controller.albums.count + 1
+        case .browser:
+            guard let field = tableView.identifier?.rawValue else { return 0 }
+            return controller.facet(field).count + 1
         case .tracks: return displayRows.count
         case .none: return 0
         }
@@ -1277,17 +1480,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 }
                 return sidebarCell(tableView, text: text, icon: .ipod)
             }
-        case .genre:
+        case .browser:
+            guard let field = tableView.identifier?.rawValue else { return nil }
             let cell = AquaTables.labelCell(tableView, id: "facet")
-            cell.textField?.stringValue = facetText(controller.genres, row: row, noun: "Genre")
-            return cell
-        case .artist:
-            let cell = AquaTables.labelCell(tableView, id: "facet")
-            cell.textField?.stringValue = facetText(controller.artists, row: row, noun: "Artist")
-            return cell
-        case .album:
-            let cell = AquaTables.labelCell(tableView, id: "facet")
-            cell.textField?.stringValue = facetText(controller.albums, row: row, noun: "Album")
+            let noun = (MainWindowController.browserTitles[field] ?? field)
+            cell.textField?.stringValue = facetText(controller.facet(field), row: row,
+                                                    noun: String(noun.dropLast()))
             return cell
         case .tracks:
             guard row < displayRows.count else { return nil }
@@ -1416,12 +1614,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             case .playlist(let p): controller.source = .playlist(p)
             case .header, .device: break
             }
-        case .genre:
-            controller.selectedGenre = row > 0 ? controller.genres[row - 1].name : nil
-        case .artist:
-            controller.selectedArtist = row > 0 ? controller.artists[row - 1].name : nil
-        case .album:
-            controller.selectedAlbum = row > 0 ? controller.albums[row - 1].name : nil
+        case .browser:
+            guard let field = table.identifier?.rawValue else { return }
+            let entries = controller.facet(field)
+            controller.select(row > 0 && row - 1 < entries.count ? entries[row - 1].name : nil, in: field)
         default:
             break
         }

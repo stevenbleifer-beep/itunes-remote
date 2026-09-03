@@ -38,6 +38,7 @@ class Track(object):
         "disc_number", "disc_count", "total_time", "kind", "size", "bit_rate",
         "compilation", "enabled", "rating", "play_count", "grouping", "bpm",
         "date_added", "date_modified", "location", "artwork_count", "search", "sort_key",
+        "sort_name", "sort_artist", "sort_album", "sort_album_artist",
     )
 
     # Fields the client may edit through PATCH, mapped to the AppleScript
@@ -94,6 +95,10 @@ class Track(object):
         self.play_count = raw.get("Play Count") or 0
         self.date_added = _iso(raw.get("Date Added"))
         self.date_modified = _iso(raw.get("Date Modified"))
+        self.sort_name = _text(raw.get("Sort Name"))
+        self.sort_artist = _text(raw.get("Sort Artist"))
+        self.sort_album = _text(raw.get("Sort Album"))
+        self.sort_album_artist = _text(raw.get("Sort Album Artist"))
         self.location = _posix_path(raw.get("Location"))
         self.artwork_count = raw.get("Artwork Count") or 0
         self.reindex()
@@ -102,15 +107,19 @@ class Track(object):
         self.search = "\x1f".join(
             fold(x) for x in (self.name, self.artist, self.album, self.album_artist)
         )
-        artist = fold(self.album_artist or self.artist)
+        # Match iTunes: Sort fields win, and a leading article is dropped.
+        if self.album_artist:
+            artist = sort_form(self.album_artist, self.sort_album_artist or self.sort_artist)
+        else:
+            artist = sort_form(self.artist, self.sort_artist)
         self.sort_key = (
             artist == "",          # blanks sort last, as iTunes does
             artist,
             self.year or 0,
-            fold(self.album),
+            sort_form(self.album, self.sort_album),
             self.disc_number or 0,
             self.track_number or 0,
-            fold(self.name),
+            sort_form(self.name, self.sort_name),
         )
 
     def to_dict(self):
@@ -152,6 +161,20 @@ class Track(object):
             setattr(self, key, value)
         self.reindex()
         return old
+
+
+# iTunes drops a leading article when sorting, so "The Beatles" files under B.
+_ARTICLES = ("the ", "a ", "an ")
+
+
+def sort_form(text, override=None):
+    """iTunes' sort order for one field: its Sort override if the track has
+    one, otherwise the text with a leading article removed."""
+    value = fold(override or text or "")
+    for article in _ARTICLES:
+        if value.startswith(article) and len(value) > len(article):
+            return value[len(article):]
+    return value
 
 
 def _text(value):
@@ -272,7 +295,7 @@ class Library(object):
         for t in tracks:
             if g is not None and fold(t.genre) != g:
                 continue
-            if ar is not None and fold(t.artist) != ar and fold(t.album_artist) != ar:
+            if ar is not None and fold(t.artist) != ar:
                 continue
             if al is not None and fold(t.album) != al:
                 continue
@@ -332,21 +355,22 @@ class Library(object):
         """Distinct values of `field` with counts, over the filtered set."""
         if field not in self.FACET_FIELDS:
             raise ValueError("not a browsable field: %s" % field)
+        overrides = {"artist": "sort_artist", "album": "sort_album", "name": "sort_name"}
+        override_attr = overrides.get(field)
         counts = {}
         display = {}
+        order = {}
         for t in self._filter(self._candidates(playlist), q, genre, artist, album, composer, grouping):
-            if field == "artist":
-                value = t.album_artist or t.artist
-            else:
-                value = getattr(t, field)
-            if not value:
-                value = ""
+            value = getattr(t, field) or ""
             key = fold(value)
             counts[key] = counts.get(key, 0) + 1
-            display.setdefault(key, value)
+            if key not in display:
+                display[key] = value
+                override = getattr(t, override_attr) if override_attr else None
+                order[key] = sort_form(value, override)
         return [
             {"name": display[k], "count": counts[k]}
-            for k in sorted(counts, key=lambda k: (k == "", k))
+            for k in sorted(counts, key=lambda k: (k == "", order.get(k, k)))
         ]
 
     def albums(self, q=None, genre=None, artist=None, album=None, composer=None,
@@ -372,7 +396,10 @@ class Library(object):
                     "coverTrackId": None,
                     "dateAdded": None,
                     "_coverRank": None,
-                    "_sort": (t.disc_number or 0, t.track_number or 0),
+                    "_sortKey": (
+                        sort_form(display_artist, t.sort_album_artist or t.sort_artist),
+                        sort_form(t.album, t.sort_album),
+                    ),
                 }
             if t.date_added and (g["dateAdded"] is None or t.date_added > g["dateAdded"]):
                 # The album's recency is that of its newest track.
@@ -389,12 +416,12 @@ class Library(object):
         if recent:
             order = sorted(groups, key=lambda k: groups[k]["dateAdded"] or "", reverse=True)[:recent]
         else:
-            order = sorted(groups, key=lambda k: (k[0] == "", k[0], k[1]))
+            order = sorted(groups, key=lambda k: (k[0] == "", groups[k]["_sortKey"]))
         out = []
         for key in order:
             g = groups[key]
             g.pop("_coverRank", None)
-            g.pop("_sort", None)
+            g.pop("_sortKey", None)
             g.setdefault("hasArtwork", False)
             out.append(g)
         return out
@@ -423,6 +450,21 @@ class Library(object):
         self.playlists = sorted(self.playlists + [entry], key=lambda p: fold(p["name"]))
         self.playlists_by_id[persistent_id] = entry
         return entry
+
+    def playlist_rename(self, playlist_id, name):
+        p = self.playlists_by_id.get(playlist_id)
+        if p is None:
+            raise KeyError(playlist_id)
+        p["name"] = name
+        self.playlists.sort(key=lambda x: fold(x["name"]))
+        return p
+
+    def playlist_delete(self, playlist_id):
+        p = self.playlists_by_id.pop(playlist_id, None)
+        if p is None:
+            raise KeyError(playlist_id)
+        self.playlists = [x for x in self.playlists if x["persistentId"] != playlist_id]
+        return p
 
     def playlist_add(self, playlist_id, track_ids):
         p = self.playlists_by_id.get(playlist_id)
@@ -604,6 +646,10 @@ class LibraryStore(object):
             return lib.playlist_add(playlist_id, track_ids)
         if op == "remove":
             return lib.playlist_remove(playlist_id, track_ids)
+        if op == "rename":
+            return lib.playlist_rename(playlist_id, name)
+        if op == "delete":
+            return lib.playlist_delete(playlist_id)
         raise ValueError("unknown playlist op: %s" % op)
 
     def status(self):

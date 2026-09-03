@@ -125,6 +125,8 @@ class Api(object):
             ("POST", r"/api/outputs", self.post_outputs),
             ("PATCH", r"/api/tracks", self.patch_tracks),
             ("POST", r"/api/playlists", self.post_playlist),
+            ("PATCH", r"/api/playlists/" + pid, self.patch_playlist),
+            ("DELETE", r"/api/playlists/" + pid, self.delete_playlist),
             ("POST", r"/api/playlists/" + pid + r"/tracks", self.post_playlist_tracks),
             ("DELETE", r"/api/playlists/" + pid + r"/tracks", self.delete_playlist_tracks),
         ]
@@ -586,6 +588,28 @@ class Api(object):
         if self.write_log:
             self.write_log.record("playlist-create", out[0], None, {"name": out[1]}, "ok")
         return {k: v for k, v in entry.items() if k != "items"}
+
+    def patch_playlist(self, params, query, body):
+        playlist_pid = params["pid"].upper()
+        self._playlist(playlist_pid)
+        name = (body or {}).get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ApiError(400, "body needs a name")
+        name = name.strip()[:200]
+        old = self._script("playlist_rename", playlist_pid, name, timeout=30)
+        entry = self.store.playlist_op("rename", playlist_pid, name=name)
+        if self.write_log:
+            self.write_log.record("playlist-rename", playlist_pid, {"name": old}, {"name": name}, "ok")
+        return {k: v for k, v in entry.items() if k != "items"}
+
+    def delete_playlist(self, params, query, body):
+        playlist_pid = params["pid"].upper()
+        playlist = self._playlist(playlist_pid)
+        name = self._script("playlist_delete", playlist_pid, timeout=30)
+        self.store.playlist_op("delete", playlist_pid)
+        if self.write_log:
+            self.write_log.record("playlist-delete", playlist_pid, {"name": playlist["name"]}, None, "ok", name)
+        return {"deleted": playlist_pid, "name": name}
 
     def _playlist_track_op(self, script, operation, playlist_pid, body):
         playlist = self._playlist(playlist_pid)

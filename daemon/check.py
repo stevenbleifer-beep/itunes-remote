@@ -82,8 +82,10 @@ def main():
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "alert_read.applescript")
         rc, out, err = run(["osascript", script], timeout=25)
         ok = rc == 0
+        app = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(sys.executable))),
+                           "Resources", "Python.app")
         check("Accessibility permission (optional, for iTunes alerts)", ok,
-              "grant Python under Security & Privacy > Privacy > Accessibility to see iTunes dialogs"
+              "add %s under Security & Privacy > Privacy > Accessibility (the .app, not the binary)" % app
               if not ok else "can read iTunes dialogs")
 
     # 6. iPod hazard

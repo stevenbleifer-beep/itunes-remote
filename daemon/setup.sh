@@ -66,11 +66,15 @@ echo
 echo "If a dialog asks whether Python may control iTunes, click OK. Then:"
 echo "  System Preferences > Security & Privacy > Privacy > Automation: Python -> iTunes should be ticked."
 echo
+PYTHON_APP="$(/usr/bin/python3 -c 'import sys' 2>/dev/null; echo "")"
+PYTHON_APP="$(dirname "$(dirname "$(readlink -f "$PYTHON" 2>/dev/null || echo "$PYTHON")")")/Resources/Python.app"
 echo "Optional, so the remote can show and dismiss iTunes' own alert dialogs:"
 echo "  System Preferences > Security & Privacy > Privacy > Accessibility"
-echo "  Click the lock, then + , and add:"
-echo "    $PYTHON"
-echo "  (Press Command-Shift-G in the file chooser and paste that path.)"
+echo "  Click the lock, then + , press Command-Shift-G and paste:"
+echo "    $PYTHON_APP"
+echo
+echo "  Add the .app bundle, NOT the python3 binary: the binaries in bin/ are"
+echo "  symlinks and the file chooser greys them out."
 echo
 sleep 3
 (cd "$DAEMON_DIR" && "$PYTHON" check.py) || true
