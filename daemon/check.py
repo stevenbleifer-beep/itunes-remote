@@ -77,11 +77,20 @@ def main():
         else:
             check("Automation permission for iTunes", False, err[:120])
 
-    # 5. iPod hazard
+    # 5. Accessibility, needed only to read and dismiss iTunes' own dialogs
+    if running:
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "alert_read.applescript")
+        rc, out, err = run(["osascript", script], timeout=25)
+        ok = rc == 0
+        check("Accessibility permission (optional, for iTunes alerts)", ok,
+              "grant Python under Security & Privacy > Privacy > Accessibility to see iTunes dialogs"
+              if not ok else "can read iTunes dialogs")
+
+    # 6. iPod hazard
     check("No iPod volume mounted", not os.path.ismount("/Volumes/iPod"),
           "an iPod in disk mode has hung iTunes at launch before")
 
-    # 6. Config
+    # 7. Config
     cfg = None
     try:
         with open(CONFIG) as f:
@@ -90,12 +99,12 @@ def main():
         pass
     check("Config exists with a token", bool(cfg and cfg.get("token")), CONFIG)
 
-    # 7. LaunchAgent
+    # 8. LaunchAgent
     check("LaunchAgent plist installed", os.path.exists(PLIST), PLIST)
     rc, out, _ = run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), LABEL)])
     check("LaunchAgent loaded", rc == 0, "run setup.sh" if rc != 0 else "")
 
-    # 8. Daemon answering
+    # 9. Daemon answering
     if cfg:
         port = cfg.get("port", 8765)
         url = "http://127.0.0.1:%d/api/library" % port

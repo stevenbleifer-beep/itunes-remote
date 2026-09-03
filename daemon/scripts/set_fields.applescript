@@ -31,6 +31,12 @@ on setField(t, fn, fv)
         else if fn is "composer" then
             set old to composer of t
             set composer of t to fv
+        else if fn is "grouping" then
+            set old to grouping of t
+            set grouping of t to fv
+        else if fn is "bpm" then
+            set old to (bpm of t) as text
+            set bpm of t to (fv as integer)
         else if fn is "year" then
             set old to (year of t) as text
             set year of t to (fv as integer)

@@ -64,6 +64,8 @@ class Api(object):
         "albumArtist": "album_artist",
         "genre": "genre",
         "composer": "composer",
+        "grouping": "grouping",
+        "bpm": "bpm",
         "year": "year",
         "trackNumber": "track_number",
         "discNumber": "disc_number",
@@ -71,7 +73,7 @@ class Api(object):
         "enabled": "enabled",
         "rating": "rating",
     }
-    NUMERIC_FIELDS = frozenset(("year", "track_number", "disc_number", "rating"))
+    NUMERIC_FIELDS = frozenset(("year", "track_number", "disc_number", "rating", "bpm"))
     BOOL_FIELDS = frozenset(("compilation", "enabled"))
 
     # Small enough that the Apple Events lock is released often, so the
@@ -85,6 +87,11 @@ class Api(object):
         self.write_log = write_log
         self.artwork_cache = OrderedDict()   # persistent id -> (mime, bytes) or None
         self.artwork_lock = threading.Lock()
+        # None = not tried, True = Accessibility works, False = give up.
+        # Without the permission the System Events call hangs rather than
+        # failing, so one bad result disables it: a 20 s block on every poll
+        # would stall the Apple Events lock the player shares.
+        self.alerts_readable = None
         pid = r"(?P<pid>[0-9A-Fa-f]{16})"
         self.routes = [
             ("GET", r"/api/library", self.get_library),
@@ -95,10 +102,14 @@ class Api(object):
             ("GET", r"/api/genres", self.get_genres),
             ("GET", r"/api/artists", self.get_artists),
             ("GET", r"/api/albums", self.get_albums),
+            ("GET", r"/api/composers", self.get_composers),
+            ("GET", r"/api/groupings", self.get_groupings),
             ("GET", r"/api/albumlist", self.get_album_list),
             ("GET", r"/api/playlists", self.get_playlists),
             ("GET", r"/api/playlists/" + pid + r"/tracks", self.get_playlist_tracks),
             ("GET", r"/api/itunes", self.get_itunes),
+            ("GET", r"/api/itunes/alert", self.get_alert),
+            ("POST", r"/api/itunes/alert/dismiss", self.post_alert_dismiss),
             ("POST", r"/api/itunes/launch", self.post_itunes_launch),
             ("GET", r"/api/player", self.get_player),
             ("POST", r"/api/player/play", self.post_play),
@@ -159,6 +170,8 @@ class Api(object):
             "genre": self._one(query, "genre"),
             "artist": self._one(query, "artist"),
             "album": self._one(query, "album"),
+            "composer": self._one(query, "composer"),
+            "grouping": self._one(query, "grouping"),
             "playlist": self._one(query, "playlist"),
         }
 
@@ -230,10 +243,15 @@ class Api(object):
 
     def _facet(self, field, query):
         f = self._filters(query)
+        # A pane does not narrow itself: browsing Genres shows every genre for
+        # the other filters, exactly as the iTunes column browser behaved.
+        f.pop(field, None)
         try:
             return {field + "s": self.store.lib.facet(field, **f)}
         except KeyError:
             raise ApiError(404, "no such playlist")
+        except ValueError as e:
+            raise ApiError(400, str(e))
 
     def get_genres(self, params, query, body):
         return self._facet("genre", query)
@@ -243,6 +261,12 @@ class Api(object):
 
     def get_albums(self, params, query, body):
         return self._facet("album", query)
+
+    def get_composers(self, params, query, body):
+        return self._facet("composer", query)
+
+    def get_groupings(self, params, query, body):
+        return self._facet("grouping", query)
 
     def get_album_list(self, params, query, body):
         f = self._filters(query)
@@ -327,6 +351,43 @@ class Api(object):
             "ipodMounted": self.itunes.ipod_mounted(),
             "configured": True,
         }
+
+    def get_alert(self, params, query, body):
+        """Any modal dialog iTunes is showing. Read-only.
+
+        iTunes raises alerts that no AppleScript call ever returns (a failed
+        AirPlay pick, sync warnings), and on a headless machine nobody sees
+        them. This surfaces them; dismissing is a separate, explicit call.
+        """
+        if self._one(query, "recheck") not in (None, "", "0"):
+            self.alerts_readable = None
+        if self.itunes is None or not self.itunes.itunes_running():
+            return {"alert": None, "readable": bool(self.alerts_readable)}
+        if self.alerts_readable is False:
+            return {"alert": None, "readable": False}
+        try:
+            out = self._script("alert_read", timeout=6)
+        except ApiError as e:
+            # A timeout here means Accessibility was never granted; stop asking.
+            self.alerts_readable = False
+            log.info("alerts unreadable, disabling the check: %s", e.message)
+            return {"alert": None, "readable": False}
+        self.alerts_readable = True
+        if not out.strip():
+            return {"alert": None, "readable": True}
+        parts = self.itunes.fields(out)
+        return {"alert": {"message": parts[0], "buttons": [p for p in parts[1:] if p]}, "readable": True}
+
+    def post_alert_dismiss(self, params, query, body):
+        button = (body or {}).get("button")
+        if not isinstance(button, str) or not button.strip():
+            raise ApiError(400, "body needs the button name to click")
+        if self.alerts_readable is False:
+            raise ApiError(409, "iTunes dialogs are not readable; grant Accessibility to Python")
+        out = self._script("alert_click", button, timeout=20)
+        if self.write_log:
+            self.write_log.record("alert-dismiss", None, None, {"button": button}, "ok", out)
+        return {"result": out}
 
     def post_itunes_launch(self, params, query, body):
         if self.itunes is None:

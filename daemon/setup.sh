@@ -66,5 +66,11 @@ echo
 echo "If a dialog asks whether Python may control iTunes, click OK. Then:"
 echo "  System Preferences > Security & Privacy > Privacy > Automation: Python -> iTunes should be ticked."
 echo
+echo "Optional, so the remote can show and dismiss iTunes' own alert dialogs:"
+echo "  System Preferences > Security & Privacy > Privacy > Accessibility"
+echo "  Click the lock, then + , and add:"
+echo "    $PYTHON"
+echo "  (Press Command-Shift-G in the file chooser and paste that path.)"
+echo
 sleep 3
 (cd "$DAEMON_DIR" && "$PYTHON" check.py) || true

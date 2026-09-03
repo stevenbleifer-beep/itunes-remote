@@ -36,8 +36,8 @@ class Track(object):
         "persistent_id", "track_id", "name", "artist", "album", "album_artist",
         "genre", "composer", "year", "track_number", "track_count",
         "disc_number", "disc_count", "total_time", "kind", "size", "bit_rate",
-        "compilation", "enabled", "rating", "play_count", "date_added", "date_modified",
-        "location", "artwork_count", "search", "sort_key",
+        "compilation", "enabled", "rating", "play_count", "grouping", "bpm",
+        "date_added", "date_modified", "location", "artwork_count", "search", "sort_key",
     )
 
     # Fields the client may edit through PATCH, mapped to the AppleScript
@@ -50,6 +50,8 @@ class Track(object):
         "album_artist": "album artist",
         "genre": "genre",
         "composer": "composer",
+        "grouping": "grouping",
+        "bpm": "bpm",
         "year": "year",
         "track_number": "track number",
         "disc_number": "disc number",
@@ -75,6 +77,8 @@ class Track(object):
         self.album_artist = _text(raw.get("Album Artist"))
         self.genre = _text(raw.get("Genre"))
         self.composer = _text(raw.get("Composer"))
+        self.grouping = _text(raw.get("Grouping"))
+        self.bpm = raw.get("BPM") or 0
         self.year = raw.get("Year")
         self.track_number = raw.get("Track Number")
         self.track_count = raw.get("Track Count")
@@ -119,6 +123,8 @@ class Track(object):
             "albumArtist": self.album_artist,
             "genre": self.genre,
             "composer": self.composer,
+            "grouping": self.grouping,
+            "bpm": self.bpm,
             "year": self.year,
             "trackNumber": self.track_number,
             "trackCount": self.track_count,
@@ -254,11 +260,14 @@ class Library(object):
             raise KeyError(playlist)
         return [self.tracks[pid] for pid in p["items"]]
 
-    def _filter(self, tracks, q=None, genre=None, artist=None, album=None):
+    def _filter(self, tracks, q=None, genre=None, artist=None, album=None,
+                composer=None, grouping=None):
         terms = [fold(x) for x in (q or "").split() if x]
         g = fold(genre) if genre is not None else None
         ar = fold(artist) if artist is not None else None
         al = fold(album) if album is not None else None
+        co = fold(composer) if composer is not None else None
+        gr = fold(grouping) if grouping is not None else None
         out = []
         for t in tracks:
             if g is not None and fold(t.genre) != g:
@@ -266,6 +275,10 @@ class Library(object):
             if ar is not None and fold(t.artist) != ar and fold(t.album_artist) != ar:
                 continue
             if al is not None and fold(t.album) != al:
+                continue
+            if co is not None and fold(t.composer) != co:
+                continue
+            if gr is not None and fold(t.grouping) != gr:
                 continue
             if terms:
                 s = t.search
@@ -277,12 +290,12 @@ class Library(object):
     COMPACT_COLUMNS = (
         "persistentId", "name", "artist", "album", "albumArtist", "genre",
         "year", "trackNumber", "discNumber", "totalTime", "size", "compilation", "enabled",
-        "rating", "playCount",
+        "rating", "playCount", "composer", "grouping", "bpm", "kind", "dateAdded",
     )
 
-    def query(self, q=None, genre=None, artist=None, album=None,
-              playlist=None, offset=0, limit=200, compact=False):
-        matched = self._filter(self._candidates(playlist), q, genre, artist, album)
+    def query(self, q=None, genre=None, artist=None, album=None, composer=None,
+              grouping=None, playlist=None, offset=0, limit=200, compact=False):
+        matched = self._filter(self._candidates(playlist), q, genre, artist, album, composer, grouping)
         page = matched[offset:offset + limit]
         total_time = 0
         total_size = 0
@@ -303,18 +316,23 @@ class Library(object):
             out["rows"] = [
                 [t.persistent_id, t.name, t.artist, t.album, t.album_artist, t.genre,
                  t.year, t.track_number, t.disc_number, t.total_time, t.size, t.compilation, t.enabled,
-                 t.rating, t.play_count]
+                 t.rating, t.play_count, t.composer, t.grouping, t.bpm, t.kind, t.date_added]
                 for t in page
             ]
         else:
             out["tracks"] = [t.to_dict() for t in page]
         return out
 
-    def facet(self, field, q=None, genre=None, artist=None, album=None, playlist=None):
+    FACET_FIELDS = ("genre", "artist", "album", "composer", "grouping")
+
+    def facet(self, field, q=None, genre=None, artist=None, album=None,
+              composer=None, grouping=None, playlist=None):
         """Distinct values of `field` with counts, over the filtered set."""
+        if field not in self.FACET_FIELDS:
+            raise ValueError("not a browsable field: %s" % field)
         counts = {}
         display = {}
-        for t in self._filter(self._candidates(playlist), q, genre, artist, album):
+        for t in self._filter(self._candidates(playlist), q, genre, artist, album, composer, grouping):
             if field == "artist":
                 value = t.album_artist or t.artist
             else:
@@ -329,7 +347,8 @@ class Library(object):
             for k in sorted(counts, key=lambda k: (k == "", k))
         ]
 
-    def albums(self, q=None, genre=None, artist=None, album=None, playlist=None):
+    def albums(self, q=None, genre=None, artist=None, album=None, composer=None,
+               grouping=None, playlist=None):
         """One row per album, for Cover Flow, Grid and Album List.
 
         The cover track is the earliest track in the album that iTunes says has
@@ -337,7 +356,7 @@ class Library(object):
         exactly one image per album.
         """
         groups = {}
-        for t in self._filter(self._candidates(playlist), q, genre, artist, album):
+        for t in self._filter(self._candidates(playlist), q, genre, artist, album, composer, grouping):
             display_artist = t.album_artist or t.artist
             key = (fold(display_artist), fold(t.album))
             g = groups.get(key)
