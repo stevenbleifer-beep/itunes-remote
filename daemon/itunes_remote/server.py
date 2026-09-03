@@ -35,6 +35,21 @@ class RawResponse(object):
         self.headers = headers or {}
 
 
+class FileResponse(object):
+    """A file streamed from disk with HTTP range support, for local playback
+    on the client. This is a read; nothing here ever writes to the library."""
+
+    AUDIO_TYPES = {
+        ".m4a": "audio/mp4", ".m4p": "audio/mp4", ".m4b": "audio/mp4", ".mp4": "audio/mp4",
+        ".mp3": "audio/mpeg", ".wav": "audio/wav", ".aif": "audio/aiff", ".aiff": "audio/aiff",
+    }
+
+    def __init__(self, path):
+        self.path = path
+        ext = os.path.splitext(path)[1].lower()
+        self.content_type = self.AUDIO_TYPES.get(ext, "application/octet-stream")
+
+
 class Api(object):
     """Route table. Handlers take (params, query, body) and return a JSON-able
     object or a RawResponse. Everything that talks to iTunes goes through
@@ -76,6 +91,7 @@ class Api(object):
             ("GET", r"/api/tracks", self.get_tracks),
             ("GET", r"/api/tracks/" + pid, self.get_track),
             ("GET", r"/api/tracks/" + pid + r"/artwork", self.get_artwork),
+            ("GET", r"/api/tracks/" + pid + r"/audio", self.get_audio),
             ("GET", r"/api/genres", self.get_genres),
             ("GET", r"/api/artists", self.get_artists),
             ("GET", r"/api/albums", self.get_albums),
@@ -291,6 +307,15 @@ class Api(object):
         mime, data = result
         etag = '"%s"' % hashlib.sha1(data).hexdigest()[:16]
         return RawResponse(mime, data, {"ETag": etag, "Cache-Control": "max-age=86400"})
+
+    def get_audio(self, params, query, body):
+        """The track's file, for the client to play on its own speakers."""
+        t = self.store.lib.tracks.get(params["pid"].upper())
+        if t is None:
+            raise ApiError(404, "no such track")
+        if not t.location or not os.path.isfile(t.location):
+            raise ApiError(404, "the file for this track is not on disk")
+        return FileResponse(t.location)
 
     # -- iTunes process -------------------------------------------------
 
@@ -675,12 +700,70 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         log.debug("%s " + fmt, self.address_string(), *args)
 
-    def _authorized(self):
+    def _authorized(self, query):
         auth = self.headers.get("Authorization", "")
         token = self.headers.get("X-Auth-Token", "")
         if auth.startswith("Bearer "):
             token = auth[7:].strip()
+        if not token:
+            token = (query.get("token") or [""])[0]
         return token and token == self.api.config.token
+
+    def _send_file(self, response):
+        try:
+            size = os.path.getsize(response.path)
+            f = open(response.path, "rb")
+        except OSError:
+            self._send(404, {"error": "file unreadable"})
+            return
+        start, end = 0, size - 1
+        status = 200
+        rng = self.headers.get("Range", "")
+        if rng.startswith("bytes="):
+            spec = rng[6:].split(",")[0].strip()
+            a, _, b = spec.partition("-")
+            try:
+                if a:
+                    start = int(a)
+                    end = int(b) if b else size - 1
+                elif b:
+                    start = max(0, size - int(b))
+            except ValueError:
+                start, end = 0, size - 1
+            end = min(end, size - 1)
+            if start > end or start >= size:
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */%d" % size)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                f.close()
+                return
+            status = 206
+        length = end - start + 1
+        self.send_response(status)
+        self.send_header("Content-Type", response.content_type)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "no-store")
+        if status == 206:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+        self.end_headers()
+        if self.command == "HEAD":
+            f.close()
+            return
+        try:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(256 * 1024, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass   # the player seeked or stopped; normal
+        finally:
+            f.close()
 
     def _send_bytes(self, status, content_type, data, headers=None):
         self.send_response(status)
@@ -697,10 +780,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle(self, method):
         try:
-            if not self._authorized():
-                raise ApiError(401, "missing or bad token")
             parts = urlsplit(self.path)
             query = parse_qs(parts.query, keep_blank_values=True)
+            if not self._authorized(query):
+                raise ApiError(401, "missing or bad token")
             body = None
             length = int(self.headers.get("Content-Length") or 0)
             if length:
@@ -710,6 +793,9 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     raise ApiError(400, "body is not valid JSON")
             result = self.api.dispatch(method, parts.path, query, body)
+            if isinstance(result, FileResponse):
+                self._send_file(result)
+                return
             if isinstance(result, RawResponse):
                 etag = result.headers.get("ETag")
                 if etag and self.headers.get("If-None-Match") == etag:
@@ -738,6 +824,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         self._handle("DELETE")
+
+    def do_HEAD(self):
+        self._handle("GET")
 
 
 def make_server(api):

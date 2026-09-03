@@ -152,6 +152,55 @@ final class AquaDisplayPanel: NSView {
         } else {
             drawPlaying()
         }
+        drawCornerGlyphs()
+    }
+
+    /// The small circled glyphs in the display's corners: a play or pause
+    /// mark at the left, and the repeat / AirPlay indicator at the right.
+    var isPlaying = false { didSet { needsDisplay = true } }
+    var airPlayActive = false { didSet { needsDisplay = true } }
+
+    private func drawCornerGlyphs() {
+        let color = NSColor(white: 0.45, alpha: 1)
+        let cy = bounds.midY
+        func circle(_ cx: CGFloat) {
+            let p = NSBezierPath(ovalIn: NSRect(x: cx - 6, y: cy - 6, width: 12, height: 12))
+            color.setFill()
+            p.fill()
+        }
+        // Left: play (triangle) or pause (bars), knocked out of a dark disc.
+        let lx: CGFloat = 12
+        circle(lx)
+        NSColor(srgbRed: 0.93, green: 0.95, blue: 0.87, alpha: 1).setFill()
+        if isPlaying {
+            NSRect(x: lx - 2.6, y: cy - 2.6, width: 1.8, height: 5.2).fill()
+            NSRect(x: lx + 0.8, y: cy - 2.6, width: 1.8, height: 5.2).fill()
+        } else {
+            let t = NSBezierPath()
+            t.move(to: NSPoint(x: lx - 2, y: cy - 3)); t.line(to: NSPoint(x: lx + 3, y: cy)); t.line(to: NSPoint(x: lx - 2, y: cy + 3))
+            t.close(); t.fill()
+        }
+        // Right: a small AirPlay screen when streaming, otherwise a repeat loop.
+        let rx = bounds.width - 12
+        circle(rx)
+        NSColor(srgbRed: 0.93, green: 0.95, blue: 0.87, alpha: 1).setStroke()
+        NSColor(srgbRed: 0.93, green: 0.95, blue: 0.87, alpha: 1).setFill()
+        if airPlayActive {
+            let screen = NSBezierPath(roundedRect: NSRect(x: rx - 3.5, y: cy - 1, width: 7, height: 4.5), xRadius: 0.8, yRadius: 0.8)
+            screen.lineWidth = 1
+            screen.stroke()
+            let tri = NSBezierPath()
+            tri.move(to: NSPoint(x: rx - 2.5, y: cy - 3.5)); tri.line(to: NSPoint(x: rx + 2.5, y: cy - 3.5)); tri.line(to: NSPoint(x: rx, y: cy - 1))
+            tri.close(); tri.fill()
+        } else {
+            let loop = NSBezierPath()
+            loop.lineWidth = 1.2
+            loop.appendArc(withCenter: NSPoint(x: rx, y: cy), radius: 3.2, startAngle: 30, endAngle: 330)
+            loop.stroke()
+            let head = NSBezierPath()
+            head.move(to: NSPoint(x: rx + 1.2, y: cy - 4.2)); head.line(to: NSPoint(x: rx + 4, y: cy - 2.4)); head.line(to: NSPoint(x: rx + 1.4, y: cy - 0.6))
+            head.close(); head.fill()
+        }
     }
 
     private func centred(_ text: String, _ rect: NSRect, size: CGFloat, bold: Bool = false, alpha: CGFloat = 1) {
@@ -177,10 +226,10 @@ final class AquaDisplayPanel: NSView {
     private func drawPlaying() {
         let total = duration ?? 0
         let pos = min(total, max(0, shownPosition))
-        let w = bounds.width - 16
+        let w = bounds.width - 52
 
-        centred(primary, NSRect(x: 8, y: bounds.maxY - 20, width: w, height: 15), size: 12, bold: true)
-        centred(secondary, NSRect(x: 8, y: bounds.maxY - 34, width: w, height: 14), size: 11)
+        centred(primary, NSRect(x: 26, y: bounds.maxY - 20, width: w, height: 15), size: 12, bold: true)
+        centred(secondary, NSRect(x: 26, y: bounds.maxY - 34, width: w, height: 14), size: 11)
 
         // Times either side of the groove.
         let g = grooveRect

@@ -93,6 +93,15 @@ final class APIClient {
         return try JSONDecoder().decode(Wrap.self, from: data).outputs
     }
 
+    /// The track's file, for playing on this Mac. The token rides in the
+    /// query as well because AVFoundation does not always send headers.
+    func audioURL(for persistentId: String) -> URL {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("/api/tracks/\(persistentId)/audio"),
+                                  resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "token", value: token)]
+        return comps.url!
+    }
+
     /// Image bytes, or nil when the track has no artwork (404).
     func artwork(for persistentId: String) async throws -> Data? {
         do {

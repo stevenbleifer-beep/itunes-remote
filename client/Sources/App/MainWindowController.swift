@@ -62,9 +62,21 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var removeFromPlaylistItem: NSMenuItem?
 
     // View mode
-    enum ViewMode: Int { case list = 0, coverFlow = 1 }
+    enum ViewMode: Int {
+        case list = 0, coverFlow = 1, albumList = 2
+        /// Segment order in the switcher, as iTunes had it.
+        static let segments: [ViewMode] = [.list, .albumList, .coverFlow]
+        var segment: Int { ViewMode.segments.firstIndex(of: self) ?? 0 }
+    }
     private(set) var viewMode: ViewMode = .list
-    private let viewSwitcher = AquaSegmentedControl(glyphs: [.list, .coverFlow])
+    private let viewSwitcher = AquaSegmentedControl(glyphs: [.list, .albumList, .coverFlow])
+
+    /// What each table row is: an album header in Album List, or a track.
+    private enum DisplayRow {
+        case group(AlbumEntry)
+        case track(Int)     // index into rows
+    }
+    private var displayRows: [DisplayRow] = []
     private let topPane = NSView()
     private let coverFlow = CoverFlowView()
     /// What the track table shows: the whole filtered list, or one album.
@@ -163,8 +175,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         viewSwitcher.frame = NSRect(x: airPlayButton.frame.minX - gap - vs.width, y: round(midY - vs.height / 2),
                                     width: vs.width, height: vs.height)
         viewSwitcher.autoresizingMask = [.minXMargin]
-        viewSwitcher.selectedIndex = ViewMode(rawValue: UserDefaults.standard.integer(forKey: "viewMode"))?.rawValue ?? 0
-        viewSwitcher.onChange = { [weak self] i in self?.setViewMode(ViewMode(rawValue: i) ?? .list) }
+        viewSwitcher.selectedIndex = (ViewMode(rawValue: UserDefaults.standard.integer(forKey: "viewMode")) ?? .list).segment
+        viewSwitcher.onChange = { [weak self] i in self?.setViewMode(ViewMode.segments[i]) }
         toolbar.addSubview(viewSwitcher)
 
         // Small control size: its cell lays out for an 11-point font, so the
@@ -330,26 +342,28 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func setViewMode(_ mode: ViewMode, animated: Bool = true) {
         viewMode = mode
         UserDefaults.standard.set(mode.rawValue, forKey: "viewMode")
-        viewSwitcher.selectedIndex = mode.rawValue
+        viewSwitcher.selectedIndex = mode.segment
         let flow = mode == .coverFlow
         browserSplit.isHidden = flow
         coverFlow.isHidden = !flow
-        // Cover Flow needs room; the browser is happier short.
+        fullStage = false
+        // Cover Flow needs room; Album List hides the browser; List keeps it short.
         let total = rightSplit.bounds.height
-        let top = flow ? round(total * 0.58) : 150
+        let top: CGFloat = flow ? round(total * 0.58) : (mode == .albumList ? 0 : 150)
         rightSplit.setPosition(top, ofDividerAt: 0)
         rightSplit.layoutSubtreeIfNeeded()
-        if flow {
-            // The browser's narrowing does not apply in Cover Flow; clear it.
+        trackTable.floatsGroupRows = false
+        if mode == .list {
+            albums = []
+            refreshRows()
+            window?.makeFirstResponder(trackTable)
+        } else {
+            // The browser's narrowing does not apply here; clear it.
             controller.selectedGenre = nil
             controller.selectedArtist = nil
             controller.selectedAlbum = nil
             loadAlbums()
-            window?.makeFirstResponder(coverFlow)
-        } else {
-            albums = []
-            refreshRows()
-            window?.makeFirstResponder(trackTable)
+            window?.makeFirstResponder(flow ? coverFlow : trackTable)
         }
     }
 
@@ -368,7 +382,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     private func loadAlbums() {
-        guard let api = controller.api, viewMode == .coverFlow else { return }
+        guard let api = controller.api, viewMode != .list else { return }
         albumGeneration += 1
         let gen = albumGeneration
         let filter = controller.trackFilter
@@ -378,8 +392,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 let list = try await api.albumList(filter: filter)
                 guard gen == albumGeneration else { return }
                 albums = list
-                coverFlow.albums = list
-                if let k = keep, let i = list.firstIndex(where: { $0.album == k.album && $0.artist == k.artist }) {
+                if viewMode == .coverFlow { coverFlow.albums = list }
+                if let k = keep, viewMode == .coverFlow,
+                   let i = list.firstIndex(where: { $0.album == k.album && $0.artist == k.artist }) {
                     coverFlow.select(i, animated: false)
                 } else if let i = initialFlowIndex {
                     initialFlowIndex = nil
@@ -411,14 +426,46 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         } else {
             rows = controller.tracks
         }
+        if viewMode == .albumList {
+            // A header row before each run of tracks from the same album. The
+            // rows arrive sorted by artist, album, disc, track already.
+            var out: [DisplayRow] = []
+            var lookup: [String: AlbumEntry] = [:]
+            for a in albums { lookup[a.artist.lowercased() + "\u{1f}" + a.album.lowercased()] = a }
+            var lastKey = ""
+            for (i, t) in rows.enumerated() {
+                let key = t.displayArtist.lowercased() + "\u{1f}" + t.album.lowercased()
+                if key != lastKey {
+                    lastKey = key
+                    let entry = lookup[key] ?? AlbumEntry(
+                        album: t.album, artist: t.displayArtist, year: t.year, trackCount: 0, totalTime: 0,
+                        coverTrackId: t.persistentId, hasArtwork: false)
+                    out.append(.group(entry))
+                }
+                out.append(.track(i))
+            }
+            displayRows = out
+        } else {
+            displayRows = rows.indices.map { .track($0) }
+        }
         trackTable.reloadData()
+    }
+
+    /// Track index for a table row, or nil for an album header.
+    private func trackIndex(forRow row: Int) -> Int? {
+        guard row >= 0, row < displayRows.count, case .track(let i) = displayRows[row] else { return nil }
+        return i
+    }
+
+    private func tableRow(forTrackIndex index: Int) -> Int? {
+        displayRows.firstIndex { if case .track(let i) = $0 { return i == index }; return false }
     }
 
     private func playAlbum(at index: Int) {
         guard albums.indices.contains(index) else { return }
         refreshRows()
         guard let first = rows.first else { return }
-        player.play(track: first.persistentId, playlist: controller.source.playlistId)
+        player.play(first, playlist: controller.source.playlistId)
     }
 
     private func scroll(for table: NSTableView) -> NSScrollView {
@@ -534,6 +581,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         controller.onFirstLoad = { [weak self] in self?.firstLoadDone() }
         player.onChange = { [weak self] in self?.updatePlayerUI() }
         player.onOutputsChanged = { [weak self] in self?.updateAirPlayButton() }
+        player.onLocalTrackFinished = { [weak self] in self?.step(by: 1) }
         updateStatus()
     }
 
@@ -617,9 +665,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     @objc private func ratingChanged(_ sender: AquaRatingView) {
-        let row = trackTable.row(for: sender)
-        guard row >= 0, row < rows.count, let api = controller.api else { return }
-        let track = rows[row]
+        guard let index = trackIndex(forRow: trackTable.row(for: sender)), let api = controller.api else { return }
+        let track = rows[index]
         let value = sender.rating
         Task { @MainActor in
             do {
@@ -634,9 +681,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     @objc private func enabledToggled(_ sender: AquaCheckbox) {
-        let row = trackTable.row(for: sender)
-        guard row >= 0, row < rows.count, let api = controller.api else { return }
-        let track = rows[row]
+        guard let index = trackIndex(forRow: trackTable.row(for: sender)), let api = controller.api else { return }
+        let track = rows[index]
         let on = sender.isOn
         Task { @MainActor in
             do {
@@ -717,9 +763,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     // MARK: Editing
 
     private var selectedTracks: [Track] {
-        trackTable.selectedRowIndexes.compactMap {
-            $0 < rows.count ? rows[$0] : nil
-        }
+        trackTable.selectedRowIndexes.compactMap { trackIndex(forRow: $0) }.map { rows[$0] }
     }
 
     @objc func showGetInfo(_ sender: Any?) {
@@ -817,7 +861,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     @objc func playSelection(_ sender: Any?) {
         guard let first = selectedTracks.first else { return }
-        player.play(track: first.persistentId, playlist: controller.source.playlistId)
+        player.play(first, playlist: controller.source.playlistId)
     }
 
     // MARK: Player UI
@@ -826,6 +870,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         let state = player.state
         let playing = state?.isPlaying ?? false
         playButton.glyph = playing ? .pause : .play
+        display.isPlaying = playing
+        display.airPlayActive = player.nonComputerOutputSelected
 
         if let t = state?.track, state?.state != "stopped" {
             display.duration = t.duration
@@ -890,6 +936,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             menu.addItem(item)
         }
         menu.addItem(.separator())
+        // iTunes 12.9.5 cannot AirPlay to a modern Mac (error -15022), so this
+        // streams the file from the daemon and plays it here instead.
+        let mine = NSMenuItem(title: "Play on This Mac", action: #selector(playHere(_:)), keyEquivalent: "")
+        mine.target = self
+        mine.state = player.mode == .local ? .on : .off
+        mine.attributedTitle = NSAttributedString(string: "Play on This Mac", attributes: [.font: Aqua.font(13)])
+        mine.toolTip = "Play through this Mac's speakers; the file streams from the MacBook Pro"
+        menu.addItem(mine)
         let refresh = NSMenuItem(title: "Refresh Devices", action: #selector(refreshOutputs(_:)), keyEquivalent: "")
         refresh.target = self
         refresh.attributedTitle = NSAttributedString(string: "Refresh Devices", attributes: [.font: Aqua.font(13)])
@@ -899,7 +953,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     @objc private func outputPicked(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
+        player.setMode(.remote)
         player.toggleOutput(name)
+    }
+
+    @objc private func playHere(_ sender: Any?) {
+        player.setMode(player.mode == .local ? .remote : .local)
+        flashStatus(player.mode == .local ? "Playing on this Mac. Double-click a track." : "Playing on the MacBook Pro.")
     }
 
     @objc private func refreshOutputs(_ sender: Any?) {
@@ -915,8 +975,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         if let t = player.state?.track, player.state?.state != "stopped" {
             pid = t.persistentId
             caption = "NOW PLAYING"
-        } else if trackTable.selectedRow >= 0, trackTable.selectedRow < rows.count {
-            pid = rows[trackTable.selectedRow].persistentId
+        } else if let i = trackIndex(forRow: trackTable.selectedRow) {
+            pid = rows[i].persistentId
         }
         artworkView.caption = caption
         guard let id = pid else {
@@ -978,22 +1038,23 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         let j = i + delta
         guard j >= 0, j < rows.count else { return }
-        player.play(track: rows[j].persistentId, playlist: controller.source.playlistId)
-        trackTable.selectRowIndexes(IndexSet(integer: j), byExtendingSelection: false)
-        trackTable.scrollRowToVisible(j)
+        player.play(rows[j], playlist: controller.source.playlistId)
+        if let r = tableRow(forTrackIndex: j) {
+            trackTable.selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
+            trackTable.scrollRowToVisible(r)
+        }
     }
 
     @objc private func trackDoubleClicked(_ sender: Any?) {
-        let row = trackTable.clickedRow
-        guard row >= 0, row < rows.count else { return }
-        player.play(track: rows[row].persistentId, playlist: controller.source.playlistId)
+        guard let i = trackIndex(forRow: trackTable.clickedRow) else { return }
+        player.play(rows[i], playlist: controller.source.playlistId)
     }
 
     @objc private func sourceDoubleClicked(_ sender: Any?) {
         let row = sourceList.clickedRow
         guard row >= 0, row < sourceRows.count else { return }
         if case .playlist(let p) = sourceRows[row], let first = rows.first {
-            player.play(track: first.persistentId, playlist: p.persistentId)
+            player.play(first, playlist: p.persistentId)
         }
     }
 
@@ -1019,9 +1080,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     private func trackDoubleClickedFromSelection() {
-        let row = trackTable.selectedRow
-        guard row >= 0, row < rows.count else { return }
-        player.play(track: rows[row].persistentId, playlist: controller.source.playlistId)
+        guard let i = trackIndex(forRow: trackTable.selectedRow) else { return }
+        player.play(rows[i], playlist: controller.source.playlistId)
     }
 
     // MARK: NSMenuDelegate
@@ -1069,7 +1129,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         case .genre: return controller.genres.count + 1
         case .artist: return controller.artists.count + 1
         case .album: return controller.albums.count + 1
-        case .tracks: return rows.count
+        case .tracks: return displayRows.count
         case .none: return 0
         }
     }
@@ -1120,8 +1180,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             cell.textField?.stringValue = facetText(controller.albums, row: row, noun: "Album")
             return cell
         case .tracks:
-            guard let id = tableColumn?.identifier.rawValue, row < rows.count else { return nil }
-            let t = rows[row]
+            guard row < displayRows.count else { return nil }
+            if case .group(let album) = displayRows[row] {
+                let ident = NSUserInterfaceItemIdentifier("cell.albumGroup")
+                let view = (tableView.makeView(withIdentifier: ident, owner: nil) as? AlbumGroupView) ?? {
+                    let v = AlbumGroupView()
+                    v.identifier = ident
+                    return v
+                }()
+                view.configure(album, cache: artworkCache)
+                return view
+            }
+            guard let id = tableColumn?.identifier.rawValue, let index = trackIndex(forRow: row) else { return nil }
+            let t = rows[index]
             if id == "enabled" {
                 let ident = NSUserInterfaceItemIdentifier("cell.enabled")
                 let box = (tableView.makeView(withIdentifier: ident, owner: nil) as? AquaCheckbox) ?? {
@@ -1182,12 +1253,31 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         let tag = Tag(rawValue: tableView.tag)
+        if tag == .tracks, row < displayRows.count, case .group = displayRows[row] {
+            return AquaTables.rowView(tableView, row: 0, striped: false, background: .white)
+        }
         return AquaTables.rowView(tableView, row: row, striped: tag == .tracks,
                                   background: tag == .source ? Aqua.sidebarBackground : .white,
                                   selection: tag == .source ? .sidebar : .blue)
     }
 
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
+        guard Tag(rawValue: tableView.tag) == .tracks, row < displayRows.count else { return false }
+        if case .group = displayRows[row] { return true }
+        return false
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        if Tag(rawValue: tableView.tag) == .tracks, row < displayRows.count, case .group = displayRows[row] {
+            return 66
+        }
+        return tableView.rowHeight
+    }
+
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        if Tag(rawValue: tableView.tag) == .tracks, row < displayRows.count, case .group = displayRows[row] {
+            return false
+        }
         if Tag(rawValue: tableView.tag) == .source {
             switch sourceRows[row] {
             case .header, .device: return false

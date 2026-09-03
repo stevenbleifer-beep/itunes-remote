@@ -7,7 +7,15 @@ import Cocoa
 final class PlayerController {
     var api: APIClient?
 
-    private(set) var state: PlayerState?
+    /// Where sound comes out: iTunes on the MacBook Pro, or this Mac.
+    enum Mode { case remote, local }
+    private(set) var mode: Mode = .remote
+    let local = LocalPlayer()
+    /// Called when a locally played track ends, so the window can advance.
+    var onLocalTrackFinished: () -> Void = {}
+
+    private var remoteState: PlayerState?
+    var state: PlayerState? { mode == .local ? local.state : remoteState }
     private(set) var outputs: [Output] = []
     private(set) var lastError: String?
     private(set) var itunesRunning = true
@@ -24,6 +32,12 @@ final class PlayerController {
     // MARK: Polling
 
     func start() {
+        local.onTick = { [weak self] in self?.onChange() }
+        local.onFinished = { [weak self] in self?.onLocalTrackFinished() }
+        local.onError = { [weak self] message in
+            self?.lastError = "Local playback: \(message)"
+            self?.onChange()
+        }
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
@@ -36,6 +50,11 @@ final class PlayerController {
 
     private func tick() {
         tickCount += 1
+        if mode == .local {
+            // No HTTP poll needed; AVFoundation reports its own time.
+            if tickCount % 30 == 0 { Task { await refresh() } }   // keep iTunes' state warm
+            return
+        }
         if !NSApp.isActive && tickCount % 5 != 0 {
             onChange()   // still advance the local clock for the display
             return
@@ -49,14 +68,14 @@ final class PlayerController {
         defer { inFlight = false }
         do {
             let s = try await api.playerState()
-            state = s
+            remoteState = s
             lastPoll = Date()
             lastError = nil
             itunesRunning = true
         } catch let e as APIError where e.status == 503 {
             itunesRunning = false
             lastError = e.message
-            state = nil
+            remoteState = nil
         } catch {
             lastError = error.localizedDescription
         }
@@ -65,6 +84,7 @@ final class PlayerController {
 
     /// Position estimated between polls so the scrubber moves smoothly.
     var displayPosition: Double {
+        if mode == .local { return local.position }
         guard let s = state else { return 0 }
         if s.isPlaying {
             return min(s.track?.duration ?? s.position, s.position + Date().timeIntervalSince(lastPoll))
@@ -88,8 +108,36 @@ final class PlayerController {
     }
 
     func playPause() {
+        if mode == .local { local.playPause(); return }
         guard let api = api else { return }
         command { try await api.playerCommand("playpause") }
+    }
+
+    /// Plays a track wherever the current mode says. Local needs the Track
+    /// itself; remote only needs its id.
+    func play(_ track: Track, playlist: String?) {
+        if mode == .local, let api = api {
+            local.play(track, api: api)
+            onChange()
+        } else {
+            play(track: track.persistentId, playlist: playlist)
+        }
+    }
+
+    /// Switches output. Entering local mode pauses iTunes on the MacBook Pro
+    /// so two things are not playing; leaving it stops local playback.
+    func setMode(_ new: Mode) {
+        guard new != mode else { return }
+        mode = new
+        if new == .local {
+            if remoteState?.isPlaying == true, let api = api {
+                command { try await api.playerCommand("pause") }
+            }
+        } else {
+            local.stop()
+        }
+        onOutputsChanged()
+        onChange()
     }
 
     func next() {
@@ -108,6 +156,7 @@ final class PlayerController {
     }
 
     func seek(to seconds: Double) {
+        if mode == .local { local.seek(to: seconds); return }
         guard let api = api else { return }
         command { try await api.setPosition(seconds) }
     }
@@ -115,6 +164,11 @@ final class PlayerController {
     /// Volume changes are coalesced: the slider fires continuously while
     /// dragging, and each set is an osascript spawn.
     func setVolume(_ volume: Int) {
+        if mode == .local {
+            local.volume = Double(volume) / 100
+            onChange()
+            return
+        }
         pendingVolume = volume
         volumeTimer?.invalidate()
         volumeTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
@@ -185,7 +239,22 @@ final class PlayerController {
         }
     }
 
+    /// Routes everything to one device, the way picking a single speaker did.
+    func selectOnly(_ name: String) {
+        guard let api = api else { return }
+        Task {
+            do {
+                outputs = try await api.setOutputs([name])
+                lastError = nil
+            } catch {
+                lastError = error.localizedDescription
+            }
+            onOutputsChanged()
+            onChange()
+        }
+    }
+
     var nonComputerOutputSelected: Bool {
-        outputs.contains { $0.selected && $0.kind.lowercased() != "computer" }
+        mode == .local || outputs.contains { $0.selected && $0.kind.lowercased() != "computer" }
     }
 }

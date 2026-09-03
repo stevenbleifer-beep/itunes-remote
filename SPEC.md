@@ -26,6 +26,7 @@ I want an app that runs on my MacBook Air (M5, macOS current) and controls iTune
 
 - Do not clone the iTunes interface. Build only the screens needed for the functions above.
 - No audio streaming to the MacBook Air. Playback happens on the MacBook Pro, which is wired into a receiver. This app is a remote control, and audio never crosses the network.
+  - **Amended 2026-09-03:** one exception, "Play on This Mac". Steven asked for the Air's speakers as an output. iTunes 12.9.5 cannot AirPlay to a current Mac (its dialog: "not compatible with the current AirPlay playback configuration", AppleScript error -15022), so the client streams the track's file from the daemon over HTTP with range requests and plays it with AVFoundation. That is a file read, not iTunes playback, and the transport controls drive the local player while that mode is on. `GET /api/tracks/{id}/audio`; the token may ride in the query for AVFoundation's sake.
 - No album art editing: no adding, replacing, or removing artwork. Showing it is in scope.
 - No smart playlist rule editing, no store integration, no Apple Music.
 - No write path to the library files on disk. Every mutation goes through iTunes itself.
