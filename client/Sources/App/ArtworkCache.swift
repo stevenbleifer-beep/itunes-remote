@@ -43,12 +43,24 @@ final class ArtworkCache {
         inFlight[persistentId] = [completion]
         Task {
             var image: NSImage?
-            if let data = try? await api.artwork(for: persistentId), !data.isEmpty {
-                image = NSImage(data: data)
+            // Only a 404 means "this track has no artwork". Anything else is
+            // the daemon being unreachable, and remembering that as a miss
+            // blacklisted the cover for the life of the process: restarting
+            // the daemon once left Cover Flow showing grey placeholders until
+            // the app was relaunched.
+            var definitelyNone = false
+            do {
+                if let data = try await api.artwork(for: persistentId), !data.isEmpty {
+                    image = NSImage(data: data)
+                } else {
+                    definitelyNone = true
+                }
+            } catch {
+                definitelyNone = false
             }
             if let image = image {
                 cache.setObject(image, forKey: persistentId as NSString)
-            } else {
+            } else if definitelyNone {
                 misses.insert(persistentId)
             }
             let waiting = inFlight.removeValue(forKey: persistentId) ?? []

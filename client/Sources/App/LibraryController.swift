@@ -234,9 +234,25 @@ final class LibraryController {
                 }
             } catch {
                 guard gen == generation else { return }
+                // A failed load used to leave the track table empty with no
+                // way back: the daemon restarting under a running app emptied
+                // the view and nothing ever asked again. Try once more.
                 lastError = error.localizedDescription
                 loading = false
                 onStatusChanged()
+                self.scheduleReloadRetry(gen)
+            }
+        }
+    }
+
+    private var reloadRetry: Timer?
+
+    private func scheduleReloadRetry(_ gen: Int) {
+        reloadRetry?.invalidate()
+        reloadRetry = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, gen == self.generation, self.lastError != nil else { return }
+                self.reload()
             }
         }
     }

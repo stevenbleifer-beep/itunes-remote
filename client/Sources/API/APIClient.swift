@@ -198,6 +198,10 @@ final class APIClient {
         return try JSONDecoder().decode(DeviceCopyResult.self, from: data)
     }
 
+    func deviceFacets(_ name: String) async throws -> DeviceFacets {
+        try await get("/api/devices/\(name)/facets")
+    }
+
     func deviceTracks(_ name: String, playlist: String, limit: Int = 500) async throws -> [DeviceTrack] {
         struct Wrap: Decodable { let tracks: [DeviceTrack] }
         let w: Wrap = try await get("/api/devices/\(name)/tracks", query: [

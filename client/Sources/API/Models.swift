@@ -239,6 +239,16 @@ struct DeviceSync: Decodable, Equatable {
     var syncsWholeLibrary: Bool { mode == "entireLibrary" }
 }
 
+/// The artists, albums and genres that actually reached a device. iTunes' own
+/// Music pane ticks whatever its sync selection names, and that selection is
+/// readable by nothing outside iTunes, so the pane marks this instead.
+struct DeviceFacets: Decodable {
+    let device: String
+    let artists: [String]
+    let albums: [String]
+    let genres: [String]
+}
+
 /// A modal dialog iTunes is showing on the MacBook Pro. Nobody is sitting in
 /// front of that machine, so the app surfaces these rather than letting them
 /// block iTunes unseen.

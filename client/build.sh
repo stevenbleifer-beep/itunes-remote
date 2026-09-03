@@ -42,33 +42,25 @@ case "${1:-}" in
     --snapshot) out="$2"; shift 2; "$BIN" --snapshot "$out" "$@" ;;
     # Replace the copy in /Applications. Quit it first: overwriting a running
     # bundle leaves the old code mapped and the next launch misbehaves.
+    # Update the installed copy in place. Never delete and recreate the
+    # bundle: the Dock pins an app by that directory, and a custom icon
+    # pasted in Finder lives on the directory itself, so removing it loses
+    # both. rsync replaces the contents and leaves the bundle where it is.
     --install)
         pkill -f "iTunes Remote.app/Contents/MacOS/iTunesRemote" 2>/dev/null || true
         sleep 1
         dest="/Applications/iTunes Remote.app"
-        # An icon pasted onto the app in Finder lives in a resource fork on the
-        # bundle itself, not in Resources/AppIcon.icns, so a plain reinstall
-        # would throw it away. Keep it and put it back.
-        custom=$(mktemp -d)
-        had_custom=no
-        if [ -e "$dest/Icon"$'\r' ]; then
-            cp -p "$dest/Icon"$'\r' "$custom/icon" 2>/dev/null && had_custom=yes
+        mkdir -p "$dest"
+        rsync -a --delete --exclude 'Icon*' "$APP/" "$dest/"
+        # Re-assert the custom-icon bit. The icon data lives in the resource
+        # fork of the Icon file; the bit that tells Finder to use it lives on
+        # the bundle, and it does not always survive a rewrite.
+        if [ -e "$dest/Icon"$'\r' ] && command -v SetFile >/dev/null 2>&1; then
+            SetFile -a C "$dest"
+            SetFile -a V "$dest/Icon"$'\r'
+            touch "$dest"
+            echo "kept your custom icon"
         fi
-        rm -rf "$dest"
-        cp -R "$APP" "$dest"
-        if [ "$had_custom" = yes ]; then
-            cp -p "$custom/icon" "$dest/Icon"$'\r'
-            # The bundle needs its custom-icon flag set for Finder to use it.
-            if command -v SetFile >/dev/null 2>&1; then
-                SetFile -a C "$dest"
-                SetFile -a V "$dest/Icon"$'\r'
-            else
-                echo "note: SetFile is missing (install the Xcode command line tools);" \
-                     "the custom icon was kept but Finder may not show it until you re-paste it"
-            fi
-            echo "kept the custom icon you set in Finder"
-        fi
-        rm -rf "$custom"
         echo "installed $dest"
         ;;
 esac

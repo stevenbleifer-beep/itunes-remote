@@ -263,6 +263,14 @@ final class PlayerController {
         }
     }
 
+    /// The AirPlay speaker in use, when it is not this machine's own output.
+    /// Nil when iTunes is playing through the MacBook Pro itself.
+    var selectedOutputName: String? {
+        let chosen = outputs.filter { $0.selected && $0.kind.lowercased() != "computer" }
+        guard !chosen.isEmpty else { return nil }
+        return chosen.count == 1 ? chosen[0].name : "\(chosen.count) speakers"
+    }
+
     var nonComputerOutputSelected: Bool {
         mode == .local || outputs.contains { $0.selected && $0.kind.lowercased() != "computer" }
     }

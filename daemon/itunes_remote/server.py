@@ -106,6 +106,7 @@ class Api(object):
         self.last_request = 0.0
         self.warmer = None
         self.device_images = {}
+        self._facet_cache = None
         # None = not tried, True = Accessibility works, False = give up.
         # Without the permission the System Events call hangs rather than
         # failing, so one bad result disables it: a 20 s block on every poll
@@ -142,6 +143,7 @@ class Api(object):
             ("GET", r"/api/devices/(?P<name>[^/]+)", self.get_device),
             ("GET", r"/api/devices/(?P<name>[^/]+)/image", self.get_device_image),
             ("GET", r"/api/devices/(?P<name>[^/]+)/tracks", self.get_device_tracks),
+            ("GET", r"/api/devices/(?P<name>[^/]+)/facets", self.get_device_facets),
             ("POST", r"/api/devices/(?P<name>[^/]+)/tracks", self.post_device_tracks),
             ("POST", r"/api/devices/(?P<name>[^/]+)/sync", self.post_source_sync),
             ("POST", r"/api/devices/(?P<name>[^/]+)/eject", self.post_source_eject),
@@ -918,6 +920,44 @@ class Api(object):
                 "the MacBook Pro, or drop the tracks on a playlist that %s syncs." % (name, name)
             )
         return out
+
+    def get_device_facets(self, params, query, body):
+        """Which artists, albums and genres reached the device.
+
+        iTunes' Music pane ticks the ones its sync selection names. That
+        selection lives in the library database and is readable by nothing —
+        not AppleScript, not the preference files, not the accessibility tree.
+        What is on the device is readable, so the pane marks that instead, and
+        says so. Cached until the device's track count changes, because the
+        answer only moves when a sync runs."""
+        name = self._ipod_name(params)
+        detail = self.get_device({"name": params["name"]}, None, None)
+        signature = (name, detail.get("trackCount"), detail.get("freeSpace"))
+        cached = getattr(self, "_facet_cache", None)
+        if cached and cached[0] == signature:
+            return cached[1]
+        out = self._script("device_facets", name, timeout=120)
+        artists, album_artists, albums, genres = [], [], [], []
+        buckets = {"artist": artists, "albumartist": album_artists,
+                   "album": albums, "genre": genres}
+        for rec in self.itunes.records(out):
+            target = buckets.get(rec[0])
+            if target is not None:
+                target.extend(rec[1:])
+        pairs = set()
+        for i, album in enumerate(albums):
+            who = (album_artists[i] if i < len(album_artists) and album_artists[i].strip()
+                   else (artists[i] if i < len(artists) else ""))
+            if album.strip():
+                pairs.add("%s - %s" % (who.strip(), album.strip()) if who.strip() else album.strip())
+        result = {
+            "device": name,
+            "artists": sorted({a.strip() for a in artists if a.strip()}, key=str.casefold),
+            "albums": sorted(pairs, key=str.casefold),
+            "genres": sorted({g.strip() for g in genres if g.strip()}, key=str.casefold),
+        }
+        self._facet_cache = (signature, result)
+        return result
 
     def get_device(self, params, query, body):
         """One device in full: identity, what is on it by category, and its

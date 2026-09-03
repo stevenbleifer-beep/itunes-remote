@@ -979,10 +979,41 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func closeDevicePage() {
         guard openDevice != nil else { return }
         openDevice = nil
+        musicListsLoadedFor = nil
         devicePageTimer?.invalidate()
         devicePageTimer = nil
         devicePage.isHidden = true
         mainSplit.isHidden = false
+    }
+
+    /// The four lists on the Music pane. Fetched once per device: the device
+    /// side costs iTunes about a second, and the library side is large.
+    private var musicListsLoadedFor: String?
+
+    private func loadDeviceMusicLists() {
+        guard let name = openDevice, let api = controller.api, musicListsLoadedFor != name else { return }
+        musicListsLoadedFor = name
+        Task { @MainActor in
+            async let facetsTask = api.deviceFacets(name)
+            async let artistsTask = api.facet("artist", filter: TrackFilter())
+            async let genresTask = api.facet("genre", filter: TrackFilter())
+            async let albumsTask = api.albumList(filter: TrackFilter())
+            guard let facets = try? await facetsTask,
+                  let artists = try? await artistsTask,
+                  let genres = try? await genresTask,
+                  let albums = try? await albumsTask else {
+                self.musicListsLoadedFor = nil          // let it try again
+                return
+            }
+            guard self.openDevice == name else { return }
+            self.devicePage.showMusicLibrary(
+                playlists: self.controller.playlists,
+                artists: artists.map { $0.name },
+                genres: genres.map { $0.name },
+                // iTunes labels its album rows "Artist - Album".
+                albums: albums.map { $0.artist.isEmpty ? $0.album : "\($0.artist) - \($0.album)" },
+                device: facets)
+        }
     }
 
     private func refreshDevicePage() {
@@ -996,6 +1027,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 guard self.openDevice == name else { return }
                 self.devicePage.show(detail)
                 self.devicePage.setRead(at: Date())
+                self.loadDeviceMusicLists()
             } catch {
                 guard self.openDevice == name else { return }
                 self.devicePage.setStatus("Could not read \(name): \(error.localizedDescription)")
@@ -1481,7 +1513,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             display.duration = t.duration
             display.position = player.displayPosition
             display.primary = t.name
-            let parts = [t.artist, t.album].filter { !$0.isEmpty }
+            var parts = [t.artist, t.album].filter { !$0.isEmpty }
+            // In local mode the audio comes out of this Mac while iTunes on
+            // the MacBook Pro sits paused on whatever it had. Two players,
+            // two volumes — say which one this is, or the two windows look
+            // like they have simply fallen out of sync.
+            if player.mode == .local { parts.append("on this Mac") }
+            else if let out = player.selectedOutputName { parts.append("on \(out)") }
             display.secondary = parts.joined(separator: " — ")
         } else {
             display.duration = nil

@@ -86,7 +86,10 @@ final class MiniPlayerWindowController: NSWindowController, NSWindowDelegate {
             display.duration = t.duration
             display.position = player.displayPosition
             display.primary = t.name
-            display.secondary = [t.artist, t.album].filter { !$0.isEmpty }.joined(separator: " — ")
+            var parts = [t.artist, t.album].filter { !$0.isEmpty }
+            if player.mode == .local { parts.append("on this Mac") }
+            else if let out = player.selectedOutputName { parts.append("on \(out)") }
+            display.secondary = parts.joined(separator: " — ")
         } else {
             display.duration = nil
             display.primary = "iTunes Remote"

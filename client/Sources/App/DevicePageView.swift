@@ -281,6 +281,14 @@ final class DevicePageView: NSView {
         updateStatusLine()
     }
 
+    /// The library's own playlists, artists, genres and albums, marked
+    /// against what reached the device.
+    func showMusicLibrary(playlists: [Playlist], artists: [String], genres: [String],
+                          albums: [String], device: DeviceFacets) {
+        musicPane.showLibrary(playlists: playlists, artists: artists, genres: genres,
+                              albums: albums, device: device)
+    }
+
     private static func icon(for category: String) -> SidebarIcon {
         switch category {
         case "Music": return .music
@@ -906,67 +914,298 @@ final class DeviceNavBar: NSView {
 
 // MARK: - Music settings
 
-/// iTunes' Music pane, as far as it can honestly be reproduced: what is on
-/// the device, whether the whole library or selected playlists reach it, and
-/// which playlists those are. iTunes' checkboxes are its own — the selection
-/// lives in its library database — so this shows what actually synced rather
-/// than a copy of the switches.
+/// iTunes' Music pane, laid out as iTunes lays it out: the Sync Music header
+/// and song count, the source options, and the four lists of Playlists,
+/// Artists, Genres and Albums with a search field over them.
+///
+/// The marks are read, not set. iTunes keeps its sync selection in its library
+/// database — not in the scripting dictionary, not in any preference file, and
+/// not in the accessibility tree, since iTunes 12.9.5's window reports no UI
+/// elements at all. So a mark here means "this reached the iPod", which is
+/// readable and is what the selection produced. The pane says so above the
+/// lists rather than offering switches that could not take.
 @MainActor
 final class DeviceMusicView: NSView {
+    /// Adds or removes the tracks of one list row from the sync.
+    var onEdit: (DeviceMusicView.Row, Bool) -> Void = { _, _ in }
+
+    struct Row {
+        enum Kind { case playlist, artist, genre, album }
+        let kind: Kind
+        let name: String
+        /// Set for playlists, so a change can be made without a name lookup.
+        let playlistId: String?
+        let onDevice: Bool
+    }
+
+    private let scroll = NSScrollView()
+    private let doc = NSView()
     private let heading = NSTextField(labelWithString: "")
-    private let mode = NSTextField(labelWithString: "")
-    private let hint = NSTextField(labelWithString: "")
-    private let table = SimpleTable(columns: [("Playlist", 320), ("On the iPod", 100), ("In the library", 100)])
+    private let count = NSTextField(labelWithString: "")
+    private let search = NSSearchField()
+    private let optionsBox = SyncOptionsBox()
+    private let caveat = NSTextField(labelWithString: "")
+    private let lists: [CheckListView] = [
+        CheckListView(title: "Playlists"), CheckListView(title: "Artists"),
+        CheckListView(title: "Genres"), CheckListView(title: "Albums"),
+    ]
+    private var sync: DeviceSync?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        for v in [heading, mode, hint, table.scrollView] {
+        scroll.hasVerticalScroller = true
+        scroll.scrollerStyle = .legacy
+        scroll.verticalScroller = AquaScroller()
+        scroll.drawsBackground = false
+        scroll.documentView = doc
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        heading.font = Aqua.font(19)
+        heading.stringValue = "Sync Music"
+        count.font = Aqua.font(15)
+        count.textColor = NSColor(white: 0.35, alpha: 1)
+        caveat.font = Aqua.font(11)
+        caveat.textColor = NSColor(white: 0.42, alpha: 1)
+        caveat.lineBreakMode = .byWordWrapping
+        caveat.maximumNumberOfLines = 2
+        caveat.stringValue = "A tick means the item is on the iPod. iTunes keeps its sync selection "
+            + "in its library database, where nothing outside iTunes can read or set it — so these "
+            + "show what the selection produced. Use Add to iPod on a track to change what syncs."
+        search.placeholderString = "Search"
+        search.controlSize = .small
+        search.font = Aqua.font(11)
+        search.target = self
+        search.action = #selector(searchChanged(_:))
+        for v in [heading, count, search, optionsBox, caveat] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            doc.addSubview(v)
+        }
+        for l in lists {
+            l.translatesAutoresizingMaskIntoConstraints = false
+            l.onToggle = { [weak self] row in self?.toggle(row) }
+            doc.addSubview(l)
+        }
+        doc.translatesAutoresizingMaskIntoConstraints = false
+        let listH: CGFloat = 260
+        NSLayoutConstraint.activate([
+            doc.widthAnchor.constraint(equalTo: scroll.widthAnchor),
+            doc.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+
+            heading.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            heading.topAnchor.constraint(equalTo: doc.topAnchor, constant: 2),
+            count.leadingAnchor.constraint(equalTo: heading.trailingAnchor, constant: 10),
+            count.lastBaselineAnchor.constraint(equalTo: heading.lastBaselineAnchor),
+            search.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -16),
+            search.centerYAnchor.constraint(equalTo: heading.centerYAnchor),
+            search.widthAnchor.constraint(equalToConstant: 190),
+
+            optionsBox.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            optionsBox.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -16),
+            optionsBox.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 12),
+            optionsBox.heightAnchor.constraint(equalToConstant: 96),
+
+            caveat.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            caveat.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -16),
+            caveat.topAnchor.constraint(equalTo: optionsBox.bottomAnchor, constant: 10),
+        ])
+        // Two columns of two, as iTunes arranges them.
+        let mid = doc.leadingAnchor.anchorWithOffset(to: doc.trailingAnchor)
+        _ = mid
+        for (i, l) in lists.enumerated() {
+            let left = i % 2 == 0
+            let topAnchor: NSLayoutYAxisAnchor = i < 2 ? caveat.bottomAnchor : lists[i - 2].bottomAnchor
+            NSLayoutConstraint.activate([
+                l.topAnchor.constraint(equalTo: topAnchor, constant: 14),
+                l.heightAnchor.constraint(equalToConstant: listH),
+                left ? l.leadingAnchor.constraint(equalTo: doc.leadingAnchor)
+                     : l.leadingAnchor.constraint(equalTo: doc.centerXAnchor, constant: 8),
+                left ? l.trailingAnchor.constraint(equalTo: doc.centerXAnchor, constant: -8)
+                     : l.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -16),
+            ])
+        }
+        lists[3].bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -16).isActive = true
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    @objc private func searchChanged(_ sender: Any?) {
+        let text = search.stringValue
+        for l in lists { l.filter = text }
+    }
+
+    private func toggle(_ row: Row) {
+        onEdit(row, !row.onDevice)
+    }
+
+    func show(_ sync: DeviceSync) {
+        self.sync = sync
+        let n = NumberFormatter.localizedString(from: NSNumber(value: sync.songsOnDevice), number: .decimal)
+        count.stringValue = "\(n) songs"
+        optionsBox.wholeLibrary = sync.syncsWholeLibrary
+        lists[0].rows = sync.playlists.map {
+            Row(kind: .playlist, name: $0.name, playlistId: $0.playlistId, onDevice: true)
+        }
+    }
+
+    /// The library's own lists, marked against what is on the device.
+    func showLibrary(playlists: [Playlist], artists: [String], genres: [String], albums: [String],
+                     device: DeviceFacets) {
+        func key(_ s: String) -> String { s.trimmingCharacters(in: .whitespaces).lowercased() }
+        let onDeviceArtists = Set(device.artists.map(key))
+        let onDeviceGenres = Set(device.genres.map(key))
+        let onDeviceAlbums = Set(device.albums.map(key))
+        let syncedNames = Set((sync?.playlists ?? []).map { key($0.name) })
+        lists[0].rows = playlists.map {
+            Row(kind: .playlist, name: $0.name, playlistId: $0.persistentId,
+                onDevice: syncedNames.contains(key($0.name)))
+        }
+        lists[1].rows = artists.map {
+            Row(kind: .artist, name: $0, playlistId: nil, onDevice: onDeviceArtists.contains(key($0)))
+        }
+        lists[2].rows = genres.map {
+            Row(kind: .genre, name: $0, playlistId: nil, onDevice: onDeviceGenres.contains(key($0)))
+        }
+        lists[3].rows = albums.map {
+            Row(kind: .album, name: $0, playlistId: nil, onDevice: onDeviceAlbums.contains(key($0)))
+        }
+    }
+}
+
+/// The box under the Sync Music heading: the two source choices and the two
+/// extra switches, drawn as the read-only marks they are.
+final class SyncOptionsBox: NSView {
+    var wholeLibrary = false { didSet { needsDisplay = true } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        DeviceSummaryView.drawBox(bounds)
+        let text: [NSAttributedString.Key: Any] = [
+            .font: Aqua.font(12), .foregroundColor: NSColor(white: 0.20, alpha: 1),
+        ]
+        let dim: [NSAttributedString.Key: Any] = [
+            .font: Aqua.font(12), .foregroundColor: NSColor(white: 0.48, alpha: 1),
+        ]
+        var y = bounds.maxY - 26
+        SyncOptionsBox.radio(at: NSPoint(x: bounds.minX + 20, y: y + 5), on: wholeLibrary)
+        ("Entire music library" as NSString).draw(at: NSPoint(x: bounds.minX + 36, y: y), withAttributes: text)
+        y -= 22
+        SyncOptionsBox.radio(at: NSPoint(x: bounds.minX + 20, y: y + 5), on: !wholeLibrary)
+        ("Selected playlists, artists, albums, and genres" as NSString)
+            .draw(at: NSPoint(x: bounds.minX + 36, y: y), withAttributes: text)
+        y -= 24
+        for label in ["Include videos", "Automatically fill free space with songs"] {
+            DeviceSummaryView.drawMark(at: NSPoint(x: bounds.minX + 21, y: y + 6), value: nil)
+            (label as NSString).draw(at: NSPoint(x: bounds.minX + 36, y: y), withAttributes: dim)
+            y -= 21
+        }
+    }
+
+    static func radio(at p: NSPoint, on: Bool) {
+        let r = NSRect(x: p.x - 6, y: p.y - 6, width: 12, height: 12)
+        let ring = NSBezierPath(ovalIn: r.insetBy(dx: 0.5, dy: 0.5))
+        NSColor(white: on ? 0.99 : 0.95, alpha: 1).setFill()
+        ring.fill()
+        NSColor(white: 0.55, alpha: 1).setStroke()
+        ring.lineWidth = 1
+        ring.stroke()
+        guard on else { return }
+        Aqua.accent.setFill()
+        NSBezierPath(ovalIn: r.insetBy(dx: 3.5, dy: 3.5)).fill()
+    }
+}
+
+/// One of the four boxed lists, with a title above it and a mark per row.
+@MainActor
+final class CheckListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
+    var rows: [DeviceMusicView.Row] = [] { didSet { applyFilter() } }
+    var filter = "" { didSet { applyFilter() } }
+    var onToggle: (DeviceMusicView.Row) -> Void = { _ in }
+
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let table = NSTableView()
+    private let scroll = NSScrollView()
+    private var shown: [DeviceMusicView.Row] = []
+
+    init(title: String) {
+        super.init(frame: .zero)
+        titleLabel.stringValue = title
+        titleLabel.font = Aqua.font(15)
+        titleLabel.textColor = NSColor(white: 0.12, alpha: 1)
+        table.headerView = nil
+        table.rowHeight = 20
+        table.usesAlternatingRowBackgroundColors = true
+        table.gridStyleMask = []
+        table.intercellSpacing = NSSize(width: 0, height: 0)
+        table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("row")))
+        table.dataSource = self
+        table.delegate = self
+        table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.scrollerStyle = .legacy
+        scroll.verticalScroller = AquaScroller()
+        scroll.borderType = .bezelBorder
+        for v in [titleLabel, scroll] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
-        heading.font = Aqua.font(17)
-        heading.textColor = NSColor(white: 0.12, alpha: 1)
-        mode.font = Aqua.font(12)
-        mode.textColor = NSColor(white: 0.25, alpha: 1)
-        hint.font = Aqua.font(11)
-        hint.textColor = NSColor(white: 0.42, alpha: 1)
-        hint.lineBreakMode = .byWordWrapping
-        hint.maximumNumberOfLines = 3
         NSLayoutConstraint.activate([
-            heading.leadingAnchor.constraint(equalTo: leadingAnchor),
-            heading.topAnchor.constraint(equalTo: topAnchor),
-            mode.leadingAnchor.constraint(equalTo: leadingAnchor),
-            mode.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 8),
-            hint.leadingAnchor.constraint(equalTo: leadingAnchor),
-            hint.trailingAnchor.constraint(equalTo: trailingAnchor),
-            hint.topAnchor.constraint(equalTo: mode.bottomAnchor, constant: 6),
-            table.scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            table.scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            table.scrollView.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 12),
-            table.scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func show(_ sync: DeviceSync) {
-        let n = NumberFormatter.localizedString(from: NSNumber(value: sync.songsOnDevice), number: .decimal)
-        heading.stringValue = "Sync Music — \(n) songs"
-        mode.stringValue = sync.syncsWholeLibrary
-            ? "Entire music library"
-            : "Selected playlists, artists, albums, and genres"
-        hint.stringValue = sync.syncsWholeLibrary
-            ? "Everything in the library reaches the iPod, so anything added to the library syncs."
-            : "These are the playlists that actually reached the iPod. To add or remove songs from "
-            + "the sync, add or remove them from one of these playlists — right-click a track and "
-            + "use Add to iPod, or drag it onto the playlist in the source list."
-        table.rows = sync.playlists.map {
-            [$0.name + ($0.smart ? "  (smart)" : ""),
-             NumberFormatter.localizedString(from: NSNumber(value: $0.deviceCount), number: .decimal),
-             NumberFormatter.localizedString(from: NSNumber(value: $0.libraryCount), number: .decimal)]
-        }
-        if sync.playlists.isEmpty {
-            table.rows = [["No library playlist matched what is on the iPod.", "", ""]]
-        }
+    private func applyFilter() {
+        let f = filter.trimmingCharacters(in: .whitespaces).lowercased()
+        shown = f.isEmpty ? rows : rows.filter { $0.name.lowercased().contains(f) }
+        table.reloadData()
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { shown.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row < shown.count else { return nil }
+        let ident = NSUserInterfaceItemIdentifier("cell.checkRow")
+        let cell = (tableView.makeView(withIdentifier: ident, owner: nil) as? CheckRowView) ?? {
+            let v = CheckRowView()
+            v.identifier = ident
+            return v
+        }()
+        cell.configure(shown[row])
+        return cell
+    }
+}
+
+/// A row: the mark, then the name. The mark is drawn rather than being a
+/// control, because nothing outside iTunes can change what it reports.
+final class CheckRowView: NSView {
+    private var name = ""
+    private var onDevice = false
+
+    func configure(_ row: DeviceMusicView.Row) {
+        name = row.name
+        onDevice = row.onDevice
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        DeviceSummaryView.drawMark(at: NSPoint(x: 12, y: bounds.midY), value: onDevice ? true : false)
+        (name as NSString).draw(in: NSRect(x: 26, y: bounds.midY - 8, width: bounds.width - 32, height: 16),
+                                withAttributes: [
+                                    .font: Aqua.font(12),
+                                    .foregroundColor: onDevice ? NSColor(white: 0.12, alpha: 1)
+                                                               : NSColor(white: 0.42, alpha: 1),
+                                ])
     }
 }
