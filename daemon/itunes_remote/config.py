@@ -22,6 +22,8 @@ DEFAULTS = {
     "artwork_warm": True,
     # Seconds of quiet before the warmer will take the Apple Events lock.
     "artwork_warm_idle": 20,
+    # The app's own record of what should be on a device. See syncplan.py.
+    "sync_plan_path": "~/Library/Application Support/iTunesRemote/sync.json",
 }
 
 
@@ -39,6 +41,7 @@ class Config(object):
         self.artwork_cache_dir = os.path.expanduser(merged["artwork_cache_dir"])
         self.artwork_warm = bool(merged["artwork_warm"])
         self.artwork_warm_idle = float(merged["artwork_warm_idle"])
+        self.sync_plan_path = os.path.expanduser(merged["sync_plan_path"])
         if not self.token:
             raise ValueError("config has no token; run with --init-config first")
 

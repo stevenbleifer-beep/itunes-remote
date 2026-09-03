@@ -13,11 +13,12 @@ import time
 from collections import OrderedDict
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import artwork as artwork_mod
 from .applescript import AppleScriptError, AppleScriptTimeout, ITunesNotRunning
 from .library import Track
+from .syncplan import SyncPlans
 
 log = logging.getLogger("itunes_remote.server")
 
@@ -107,6 +108,8 @@ class Api(object):
         self.warmer = None
         self.device_images = {}
         self._facet_cache = None
+        self.plans = SyncPlans(getattr(config, "sync_plan_path",
+                                       "~/Library/Application Support/iTunesRemote/sync.json"))
         # None = not tried, True = Accessibility works, False = give up.
         # Without the permission the System Events call hangs rather than
         # failing, so one bad result disables it: a 20 s block on every poll
@@ -139,6 +142,10 @@ class Api(object):
             ("POST", r"/api/player/repeat", self.post_repeat),
             ("POST", r"/api/player/position", self.post_position),
             ("GET", r"/api/sources", self.get_sources),
+            ("GET", r"/api/sync", self.get_sync_plan),
+            ("PUT", r"/api/sync", self.put_sync_plan),
+            ("POST", r"/api/sync/toggle", self.post_sync_toggle),
+            ("POST", r"/api/sync/rebuild", self.post_sync_rebuild),
             ("GET", r"/api/devices", self.get_devices),
             ("GET", r"/api/devices/(?P<name>[^/]+)", self.get_device),
             ("GET", r"/api/devices/(?P<name>[^/]+)/image", self.get_device_image),
@@ -624,6 +631,137 @@ class Api(object):
                 "capacity": None if cap < 0 else int(cap),
             })
         return {"sources": out}
+
+    # -- the app's own sync plan ----------------------------------------
+
+    def _connected_pod(self):
+        """The iPod iTunes currently has open, with its serial. Serial is the
+        plan key: Steven has five iPods and two are the same model, so names
+        would collide."""
+        try:
+            devices = self.get_devices({}, None, None)["devices"]
+        except ApiError:
+            return None
+        pod = next((d for d in devices if d["kind"] == "iPod" and d.get("itunesSource")), None)
+        if pod is None:
+            return None
+        detail = self.get_device({"name": quote(pod["name"], safe="")}, None, None)
+        return {
+            "name": detail.get("name"),
+            "serial": detail.get("deviceSerialNumber") or detail.get("serialNumber"),
+            "detail": detail,
+        }
+
+    def _resolve_plan(self, body, query, create=True):
+        """Finds the plan a request is about: an explicit device key, else the
+        iPod that is plugged in."""
+        key = (body or {}).get("device") or self._one(query or {}, "device")
+        label = (body or {}).get("label")
+        if not key:
+            pod = self._connected_pod()
+            if pod is None or not pod["serial"]:
+                raise ApiError(404, "no iPod is connected; pass a device serial")
+            key, label = pod["serial"], label or pod["name"]
+        try:
+            plan = self.plans.plan_for(key, label=label, create=create)
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        if plan is None:
+            raise ApiError(404, "no plan for device %r" % key)
+        return plan
+
+    def _plan_status(self, plan):
+        """Where a plan stands against iTunes. Reads only."""
+        lib = self.store.lib
+        existing = next((p for p in lib.playlist_summaries()
+                         if p["name"] == plan.playlist_name), None)
+        on_device = None
+        pod = self._connected_pod()
+        if pod is not None:
+            if pod["serial"] and pod["serial"] != plan.key:
+                on_device = None          # a different iPod is plugged in
+            else:
+                on_device = any(p["name"] == plan.playlist_name
+                                for p in pod["detail"].get("playlists", []))
+        return {
+            "playlistExists": existing is not None,
+            "playlistId": existing["persistentId"] if existing else None,
+            "playlistTrackCount": existing["count"] if existing else 0,
+            # None means it could not be checked, not that the answer is no.
+            "playlistOnDevice": on_device,
+            "connectedSerial": pod["serial"] if pod else None,
+            "isConnected": bool(pod and pod["serial"] == plan.key),
+            "ready": bool(existing) and on_device is True,
+            "setupHint": (
+                "In iTunes on the MacBook Pro, on this iPod's Music pane, leave your own "
+                "playlists ticked and tick %r as well, then untick the individual artists, "
+                "albums and genres. Until then this plan changes nothing."
+                % plan.playlist_name
+            ),
+        }
+
+    def get_sync_plan(self, params, query, body):
+        """Every device's plan, plus the one for whatever is plugged in."""
+        pod = self._connected_pod()
+        out = self.plans.to_dict()
+        out["connected"] = {"name": pod["name"], "serial": pod["serial"]} if pod else None
+        wanted = self._one(query or {}, "device") or (pod["serial"] if pod else None)
+        if wanted:
+            plan = self.plans.plan_for(wanted, label=(pod["name"] if pod else None))
+            out["plan"] = plan.to_dict()
+            out["status"] = self._plan_status(plan)
+        return out
+
+    def put_sync_plan(self, params, query, body):
+        """Replaces a device's selection. Recorded only — nothing reaches
+        iTunes until /api/sync/rebuild is called for that device."""
+        plan = self._resolve_plan(body, query)
+        body = body or {}
+        try:
+            plan.replace(playlist_name=body.get("playlistName"),
+                         selections=body.get("selections"),
+                         label=body.get("label"))
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        if self.write_log:
+            self.write_log.record("sync-plan", plan.playlist_name, None, None, "ok",
+                                  json.dumps(plan.to_dict()["counts"]))
+        return {"plan": plan.to_dict(), "status": self._plan_status(plan)}
+
+    def post_sync_toggle(self, params, query, body):
+        """Adds or removes one item for a device. Recorded only; no rebuild."""
+        plan = self._resolve_plan(body, query)
+        body = body or {}
+        kind, value = body.get("kind"), body.get("value")
+        if kind is None or value is None:
+            raise ApiError(400, "body needs kind and value")
+        try:
+            plan.toggle(kind, value, bool(body.get("on", True)))
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        return {"plan": plan.to_dict(), "status": self._plan_status(plan)}
+
+    def post_sync_rebuild(self, params, query, body):
+        """Writes a device's plan to its playlist in iTunes. The only call here
+        that changes anything, and it is never automatic."""
+        plan = self._resolve_plan(body, query, create=False)
+        if plan.is_empty():
+            raise ApiError(400, "the plan for %r is empty; nothing would be synced"
+                                % plan.label)
+        spec = plan.write_spec()
+        try:
+            out = self._script("sync_rebuild", plan.playlist_name, spec, timeout=1800)
+        finally:
+            try:
+                os.unlink(spec)
+            except OSError:
+                pass
+        total = int(self._num(out.strip(), 0))
+        if self.write_log:
+            self.write_log.record("sync-rebuild", plan.playlist_name, None, None, "ok",
+                                  "%d tracks" % total)
+        return {"plan": plan.to_dict(), "status": self._plan_status(plan),
+                "rebuilt": {"playlist": plan.playlist_name, "trackCount": total}}
 
     # -- devices --------------------------------------------------------
 
@@ -1517,6 +1655,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self._handle("POST")
+
+    def do_PUT(self):
+        self._handle("PUT")
 
     def do_PATCH(self):
         self._handle("PATCH")
