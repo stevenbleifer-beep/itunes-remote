@@ -190,7 +190,7 @@ Measured after: the 14 albums at the top of the library return in 0.77 s total.
 - MacBook Pro (daemon host): `ssh -i ~/.ssh/id_ed25519_mbp2012 stevenbleifer@Stevens-MacBook-Pro.local`. Python 3.13.15 at `/usr/local/bin/python3`. iTunes 12.9.5.
 - Daemon at `~/iTunesRemote/daemon` on the MBP, deployed with
   `rsync -a -e "ssh -i ~/.ssh/id_ed25519_mbp2012" --exclude __pycache__ --exclude tests daemon/ stevenbleifer@Stevens-MacBook-Pro.local:~/iTunesRemote/daemon/`.
-  Config `~/Library/Application Support/iTunesRemote/config.json`, token `<the token is in config.json on the MacBook Pro>`, port 8765. Logs in `~/Library/Logs/iTunesRemote/` (`daemon.log`, `writes.log`).
+  Config `~/Library/Application Support/iTunesRemote/config.json` (which holds the bearer token — read it from there, never paste it into a tracked file), port 8765. Logs in `~/Library/Logs/iTunesRemote/` (`daemon.log`, `writes.log`).
 - **The daemon is a LaunchAgent now. Never start it by hand.** After an rsync, restart it with
   `ssh ... 'launchctl kickstart -k gui/$(id -u)/local.stevenbleifer.itunesremote'`
   About 25 s to come up. A hand-started copy steals the port and the agent then crash-loops every 10 s on "address already in use" (this happened once). AppleScript files are read per call, so script-only changes need no restart.
