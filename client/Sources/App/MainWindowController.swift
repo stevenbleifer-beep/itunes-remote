@@ -295,6 +295,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         coverFlow.isHidden = true
         coverFlow.onSelectionChanged = { [weak self] _ in self?.coverSelectionChanged() }
         coverFlow.onOpen = { [weak self] i in self?.playAlbum(at: i) }
+        coverFlow.onToggleFullStage = { [weak self] in self?.toggleFullStage() }
         coverFlow.imageProvider = { [weak self] pid, done in
             guard let self = self else { done(nil); return }
             self.artworkCache.image(for: pid, then: done)
@@ -349,6 +350,20 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             albums = []
             refreshRows()
             window?.makeFirstResponder(trackTable)
+        }
+    }
+
+    private var fullStage = false
+
+    /// Cover Flow's corner button: give the stage the whole right side, or
+    /// bring the track table back.
+    private func toggleFullStage() {
+        fullStage.toggle()
+        let total = rightSplit.bounds.height
+        let top = fullStage ? total - 1 : round(total * 0.58)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.25
+            rightSplit.animator().setPosition(top, ofDividerAt: 0)
         }
     }
 
@@ -465,6 +480,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         trackTable.addTableColumn(AquaTables.column("artist", title: "Artist", width: 180, min: 60))
         trackTable.addTableColumn(AquaTables.column("album", title: "Album", width: 180, min: 60))
         trackTable.addTableColumn(AquaTables.column("genre", title: "Genre", width: 110, min: 50))
+        trackTable.addTableColumn(AquaTables.column("rating", title: "Rating", width: 70, min: 66))
+        trackTable.addTableColumn(AquaTables.column("playCount", title: "Plays", width: 46, min: 40, rightAligned: true))
         trackTable.addTableColumn(AquaTables.column("year", title: "Year", width: 48, min: 40, rightAligned: true))
         trackTable.addTableColumn(AquaTables.column("trackNumber", title: "Track #", width: 64, min: 40, rightAligned: true))
         AquaTables.style(trackTable, rowHeight: 18, header: true)
@@ -596,6 +613,23 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.2
             artworkHeight?.animator().constant = show ? 200 : 0
+        }
+    }
+
+    @objc private func ratingChanged(_ sender: AquaRatingView) {
+        let row = trackTable.row(for: sender)
+        guard row >= 0, row < rows.count, let api = controller.api else { return }
+        let track = rows[row]
+        let value = sender.rating
+        Task { @MainActor in
+            do {
+                _ = try await api.patchTracks(ids: [track.persistentId], fields: ["rating": value])
+                controller.setRating(track.persistentId, value)
+                refreshRows()
+            } catch {
+                sender.rating = track.rating
+                flashStatus("Could not set the rating: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -1100,7 +1134,20 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 box.isOn = t.enabled
                 return box
             }
-            let right = ["totalTime", "year", "trackNumber"].contains(id)
+            if id == "rating" {
+                let ident = NSUserInterfaceItemIdentifier("cell.rating")
+                let stars = (tableView.makeView(withIdentifier: ident, owner: nil) as? AquaRatingView) ?? {
+                    let v = AquaRatingView()
+                    v.identifier = ident
+                    v.target = self
+                    v.action = #selector(ratingChanged(_:))
+                    return v
+                }()
+                stars.rating = t.rating
+                stars.isEmphasized = tableView.isRowSelected(row) && tableView.window?.firstResponder === tableView
+                return stars
+            }
+            let right = ["totalTime", "year", "trackNumber", "playCount"].contains(id)
             let cell = AquaTables.labelCell(tableView, id: right ? "trackR" : "track", rightAligned: right)
             let text: String
             switch id {
@@ -1111,6 +1158,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             case "genre": text = t.genre
             case "year": text = t.year.map(String.init) ?? ""
             case "trackNumber": text = t.trackNumber.map(String.init) ?? ""
+            case "playCount": text = t.playCount > 0 ? String(t.playCount) : ""
             default: text = ""
             }
             cell.textField?.stringValue = text

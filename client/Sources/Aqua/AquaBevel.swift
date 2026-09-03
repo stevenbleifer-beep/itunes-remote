@@ -179,3 +179,53 @@ final class AquaCheckbox: NSView {
         tick.stroke()
     }
 }
+
+
+/// Five stars, as the Rating column drew them: faint dots when unrated,
+/// solid stars once set. Click a star to rate; click the first star twice
+/// to clear. Sends `action` with `rating` in 0...100.
+final class AquaRatingView: NSView {
+    var rating = 0 { didSet { needsDisplay = true } }
+    var isEmphasized = false { didSet { needsDisplay = true } }
+    weak var target: AnyObject?
+    var action: Selector?
+    private let step: CGFloat = 12
+
+    override var intrinsicContentSize: NSSize { NSSize(width: step * 5 + 4, height: 14) }
+
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let star = max(1, min(5, Int((p.x - 2) / step) + 1))
+        let value = star * 20
+        rating = (rating == value && star == 1) ? 0 : value
+        if let a = action { NSApp.sendAction(a, to: target, from: self) }
+    }
+
+    private func starPath(center: NSPoint, radius: CGFloat) -> NSBezierPath {
+        let p = NSBezierPath()
+        for k in 0..<10 {
+            let r = k % 2 == 0 ? radius : radius * 0.45
+            let a = CGFloat(k) * .pi / 5 + .pi / 2
+            let pt = NSPoint(x: center.x + cos(a) * r, y: center.y + sin(a) * r)
+            if k == 0 { p.move(to: pt) } else { p.line(to: pt) }
+        }
+        p.close()
+        return p
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let stars = rating / 20
+        let on: NSColor = isEmphasized ? .white : NSColor(white: 0.30, alpha: 1)
+        let off: NSColor = isEmphasized ? NSColor(white: 1, alpha: 0.45) : NSColor(white: 0.72, alpha: 1)
+        for i in 0..<5 {
+            let c = NSPoint(x: 2 + step * CGFloat(i) + step / 2, y: bounds.midY)
+            if i < stars {
+                on.setFill()
+                starPath(center: c, radius: 5.2).fill()
+            } else {
+                off.setFill()
+                NSBezierPath(ovalIn: NSRect(x: c.x - 1.5, y: c.y - 1.5, width: 3, height: 3)).fill()
+            }
+        }
+    }
+}

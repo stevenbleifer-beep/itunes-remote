@@ -127,7 +127,9 @@ final class AquaDisplayPanel: NSView {
 
         NSGraphicsContext.saveGraphicsState()
         path.addClip()
-        NSGradient(starting: NSColor(white: 0.90, alpha: 1), ending: NSColor(white: 0.97, alpha: 1))!
+        // The pale yellow-green of the iTunes 10 display.
+        NSGradient(starting: NSColor(srgbRed: 0.85, green: 0.88, blue: 0.78, alpha: 1),
+                   ending: NSColor(srgbRed: 0.93, green: 0.95, blue: 0.87, alpha: 1))!
             .draw(in: r, angle: -90)
         let inset = NSShadow()
         inset.shadowColor = NSColor.black.withAlphaComponent(0.35)

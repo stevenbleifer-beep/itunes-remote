@@ -39,6 +39,9 @@ final class CoverFlowView: NSView {
 
     var onSelectionChanged: (Int) -> Void = { _ in }
     var onOpen: (Int) -> Void = { _ in }
+    /// The small arrows button at the bottom right of the stage.
+    var onToggleFullStage: () -> Void = {}
+    private let fullStageButton = CoverFlowCornerButton()
     /// Supplies a cover image for a track persistent ID, on the main actor.
     var imageProvider: (String, @escaping (NSImage?) -> Void) -> Void = { _, done in done(nil) }
 
@@ -95,6 +98,8 @@ final class CoverFlowView: NSView {
             self.select(self.selectedIndex + delta, animated: true)
         }
         addSubview(scrubber)
+        fullStageButton.onClick = { [weak self] in self?.onToggleFullStage() }
+        addSubview(fullStageButton)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -160,6 +165,7 @@ final class CoverFlowView: NSView {
         titleLayer.frame = NSRect(x: 12, y: scrubberHeight + 20, width: bounds.width - 24, height: 18)
         artistLayer.frame = NSRect(x: 12, y: scrubberHeight + 4, width: bounds.width - 24, height: 15)
         scrubber.frame = NSRect(x: 60, y: 6, width: bounds.width - 120, height: 14)
+        fullStageButton.frame = NSRect(x: bounds.width - 34, y: 4, width: 26, height: 22)
         CATransaction.commit()
         relayout(animated: false)
     }
@@ -491,6 +497,52 @@ final class CoverFlowScrubber: NSView {
         NSColor(white: 0.25, alpha: 0.9).setFill()
         for dx in [-4, 0, 4] as [CGFloat] {
             NSRect(x: k.midX + dx - 0.5, y: k.minY + 3, width: 1, height: k.height - 6).fill()
+        }
+    }
+}
+
+
+/// The dark rounded button with diagonal arrows that expanded Cover Flow.
+final class CoverFlowCornerButton: NSView {
+    var onClick: () -> Void = {}
+    private var pressed = false
+
+    override func mouseDown(with event: NSEvent) {
+        pressed = true; needsDisplay = true
+        while true {
+            guard let e = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) else { break }
+            if e.type == .leftMouseUp {
+                pressed = false; needsDisplay = true
+                if bounds.contains(convert(e.locationInWindow, from: nil)) { onClick() }
+                return
+            }
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let r = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let p = NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4)
+        NSGradient(starting: NSColor(white: pressed ? 0.20 : 0.34, alpha: 1), ending: NSColor(white: pressed ? 0.10 : 0.16, alpha: 1))!
+            .draw(in: p, angle: -90)
+        NSColor(white: 0.55, alpha: 1).setStroke()
+        p.lineWidth = 1
+        p.stroke()
+        NSColor(white: 0.92, alpha: 1).setStroke()
+        NSColor(white: 0.92, alpha: 1).setFill()
+        let c = NSPoint(x: bounds.midX, y: bounds.midY)
+        for (dx, dy) in [(-1.0, -1.0), (1.0, 1.0)] as [(CGFloat, CGFloat)] {
+            let tip = NSPoint(x: c.x + dx * 6, y: c.y + dy * 5)
+            let line = NSBezierPath()
+            line.lineWidth = 1.4
+            line.move(to: NSPoint(x: c.x + dx * 1.5, y: c.y + dy * 1.5))
+            line.line(to: tip)
+            line.stroke()
+            let head = NSBezierPath()
+            head.move(to: tip)
+            head.line(to: NSPoint(x: tip.x - dx * 4, y: tip.y))
+            head.line(to: NSPoint(x: tip.x, y: tip.y - dy * 4))
+            head.close()
+            head.fill()
         }
     }
 }

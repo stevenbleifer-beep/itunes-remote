@@ -87,6 +87,12 @@ final class LibraryController {
         reload()
     }
 
+    func setRating(_ persistentId: String, _ value: Int) {
+        if let i = tracks.firstIndex(where: { $0.persistentId == persistentId }) {
+            tracks[i].rating = value
+        }
+    }
+
     /// Mirrors a checkbox change locally without refetching the whole list.
     func setEnabled(_ persistentId: String, _ on: Bool) {
         if let i = tracks.firstIndex(where: { $0.persistentId == persistentId }) {
@@ -194,6 +200,8 @@ final class LibraryController {
         case "year": tracks.sort { $0.year == $1.year ? albumOrder($0, $1) : cmpInt($0.year, $1.year) }
         case "totalTime": tracks.sort { cmpInt($0.totalTime, $1.totalTime) }
         case "trackNumber": tracks.sort { cmpInt($0.trackNumber, $1.trackNumber) }
+        case "rating": tracks.sort { $0.rating == $1.rating ? albumOrder($0, $1) : cmpInt($0.rating, $1.rating) }
+        case "playCount": tracks.sort { $0.playCount == $1.playCount ? albumOrder($0, $1) : cmpInt($0.playCount, $1.playCount) }
         default: break
         }
     }

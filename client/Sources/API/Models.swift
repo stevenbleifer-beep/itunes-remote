@@ -27,6 +27,8 @@ struct Track {
     var size: Int?           // bytes
     var compilation: Bool
     var enabled: Bool = true // the checkbox column
+    var rating: Int = 0      // 0-100, five stars of 20
+    var playCount: Int = 0
 
     /// The artist shown in the browser and used for grouping.
     var displayArtist: String { albumArtist.isEmpty ? artist : albumArtist }

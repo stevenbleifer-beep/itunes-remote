@@ -212,7 +212,9 @@ final class APIClient {
                 totalTime: i(row, "totalTime"),
                 size: i(row, "size"),
                 compilation: (row[idx["compilation"]!] as? Bool) ?? false,
-                enabled: idx["enabled"].flatMap { row[$0] as? Bool } ?? true
+                enabled: idx["enabled"].flatMap { row[$0] as? Bool } ?? true,
+                rating: idx["rating"].flatMap { row[$0] as? Int } ?? 0,
+                playCount: idx["playCount"].flatMap { row[$0] as? Int } ?? 0
             ))
         }
         return TrackPage(

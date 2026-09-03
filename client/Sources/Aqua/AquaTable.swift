@@ -24,11 +24,11 @@ final class AquaRowView: NSTableRowView {
             let bottom = isEmphasized ? Aqua.selectionBottomKey : Aqua.selectionBottomInactive
             NSGradient(starting: top, ending: bottom)!.draw(in: bounds, angle: -90)
         case .sidebar:
-            // The dark slate bar iTunes drew behind the chosen source.
-            let top = isEmphasized ? NSColor(srgbRed: 0.36, green: 0.44, blue: 0.55, alpha: 1) : NSColor(white: 0.66, alpha: 1)
-            let bottom = isEmphasized ? NSColor(srgbRed: 0.19, green: 0.26, blue: 0.36, alpha: 1) : NSColor(white: 0.52, alpha: 1)
+            // iTunes 10's sidebar bar: the blue gradient with a darker top line.
+            let top = isEmphasized ? NSColor(srgbRed: 0.40, green: 0.58, blue: 0.87, alpha: 1) : NSColor(white: 0.70, alpha: 1)
+            let bottom = isEmphasized ? NSColor(srgbRed: 0.18, green: 0.39, blue: 0.78, alpha: 1) : NSColor(white: 0.56, alpha: 1)
             NSGradient(starting: top, ending: bottom)!.draw(in: bounds, angle: -90)
-            (isEmphasized ? NSColor(srgbRed: 0.13, green: 0.19, blue: 0.28, alpha: 1) : NSColor(white: 0.45, alpha: 1)).setFill()
+            (isEmphasized ? NSColor(srgbRed: 0.14, green: 0.32, blue: 0.68, alpha: 1) : NSColor(white: 0.48, alpha: 1)).setFill()
             NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
         }
     }
