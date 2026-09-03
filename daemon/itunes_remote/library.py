@@ -228,16 +228,39 @@ COMPILATIONS = "Compilations"
 # iTunes drops a leading article when sorting, so "The Beatles" files under B.
 _ARTICLES = ("the ", "a ", "an ")
 
+# Quotation marks are ignored wherever they fall, so "Weird Al" Yankovic files
+# under W and 'N Sync under N.
+_QUOTES = "\"'\u2018\u2019\u201c\u201d\u00ab\u00bb"
+
+# Names that start with a digit go after Z, as iTunes lists them. Any code
+# point above every letter does; this one is private-use, so it never occurs
+# in a real tag.
+_DIGITS_LAST = "\uf8ff"
+
+
+def _plain(value):
+    """Letters, digits and spaces only: punctuation, brackets and symbols are
+    ignored and accents dropped, so (Sandy) Alex G sorts under S, R.E.M. as
+    "rem", and Björk beside Bjork."""
+    value = unicodedata.normalize("NFKD", value)
+    return "".join(c for c in value
+                   if (c.isalnum() or c == " ") and not unicodedata.combining(c)).strip()
+
 
 def sort_form(text, override=None):
     """iTunes' sort order for one field: its Sort override if the track has
-    one, otherwise the text with a leading article removed."""
+    one, otherwise the text with a leading article removed, quotes ignored,
+    leading punctuation skipped, and digits after letters."""
     # Leading whitespace in a tag must not sort the row to the very top;
     # iTunes ignores it. Found on an artist tagged " Marduk".
     value = fold((override or text or "").strip())
+    value = _plain("".join(c for c in value if c not in _QUOTES))
     for article in _ARTICLES:
         if value.startswith(article) and len(value) > len(article):
-            return value[len(article):]
+            value = _plain(value[len(article):])
+            break
+    if value and value[0].isdigit():
+        return _DIGITS_LAST + value
     return value
 
 

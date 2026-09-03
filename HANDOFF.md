@@ -80,7 +80,9 @@ What was found and fixed, in the order Steven listed them:
   each album's songs in disc/track order, instead of plain date order (which
   scrambled a rip's sides). Album views always show an album in track order.
 - **Sorting.** Compact rows carry `sortArtist`/`sortAlbum`/`sortName`
-  (iTunes' sort forms: Sort field, else article dropped, folded). The client
+  (iTunes' sort forms: Sort field, else article dropped, quotes and other
+  punctuation ignored, accents dropped, names starting with a digit after Z —
+  `sort_form` in library.py, which the browser panes and album lists use too). The client
   sorts on those, so Artist matches the default order (artist → year → album →
   disc → track), Album is album → artist → disc → track, and every other
   column falls back to artist order. Descending reverses the lot.
