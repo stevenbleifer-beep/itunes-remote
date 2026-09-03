@@ -4,7 +4,7 @@ import Cocoa
 /// search; source list and artwork on the left; genre/artist/album browser
 /// over the track table on the right; status bar along the bottom.
 @MainActor
-final class MainWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSMenuDelegate {
+final class MainWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSMenuDelegate, NSSplitViewDelegate {
 
     let controller = LibraryController()
     let player = PlayerController()
@@ -49,12 +49,24 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var columnMenu: NSMenu?
     private var sourceMenu: NSMenu?
     private let mainSplit = NSSplitView()
+    /// Holds the browser-and-tracks split and the device page, one at a time.
+    private let rightContainer = NSView()
+    private let devicePage = DevicePageView()
+    /// The device whose page is showing, if any.
+    private var openDevice: String?
     private let rightSplit = NSSplitView()
     private let browserSplit = NSSplitView()
     /// Which browser panes are shown, in order. iTunes offered these five.
     private var browserFields: [String] = (UserDefaults.standard.array(forKey: "browserFields") as? [String])
         ?? ["genre", "artist", "album"]
     private var browserVisible = UserDefaults.standard.object(forKey: "browserVisible") as? Bool ?? true
+    /// The height the user dragged the column browser to. Kept so switching to
+    /// Cover Flow, Grid or Album List and back restores it instead of
+    /// resetting to the default.
+    private var browserHeight: CGFloat = {
+        let saved = UserDefaults.standard.double(forKey: "browserHeight")
+        return saved >= 60 ? CGFloat(saved) : 150
+    }()
     private var browserScrolls: [String: NSScrollView] = [:]
     private var browserTables: [String: NSTableView] = [:]
     private let sourceList = NSTableView()
@@ -299,10 +311,21 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         ])
         mainSplit.addArrangedSubview(leftPane)
 
-        rightSplit.frame = NSRect(x: 0, y: 0, width: mainSplit.bounds.width - 191, height: mainSplit.bounds.height)
+        rightContainer.frame = NSRect(x: 0, y: 0, width: mainSplit.bounds.width - 191, height: mainSplit.bounds.height)
+        rightContainer.autoresizesSubviews = true
+        rightSplit.frame = rightContainer.bounds
+        rightSplit.autoresizingMask = [.width, .height]
         rightSplit.isVertical = false
         rightSplit.dividerStyle = .thin
-        mainSplit.addArrangedSubview(rightSplit)
+        rightSplit.delegate = self
+        rightContainer.addSubview(rightSplit)
+        devicePage.frame = rightContainer.bounds
+        devicePage.autoresizingMask = [.width, .height]
+        devicePage.isHidden = true
+        devicePage.onSync = { [weak self] in self?.syncOpenDevice() }
+        devicePage.onEject = { [weak self] in self?.ejectOpenDevice() }
+        rightContainer.addSubview(devicePage)
+        mainSplit.addArrangedSubview(rightContainer)
         mainSplit.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
 
         // Browser panes (or Cover Flow) over the track table
@@ -350,10 +373,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         configureTrackTable()
         mainSplit.adjustSubviews()
         window.initialFirstResponder = trackTable
-        if let saved = ViewMode(rawValue: UserDefaults.standard.integer(forKey: "viewMode")), saved != .list {
-            // The split view has no real height until the window is on screen,
-            // so the divider position must be applied after the first pass.
-            DispatchQueue.main.async { [weak self] in self?.setViewMode(saved, animated: false) }
+        // The split view has no real height until the window is on screen, so
+        // the divider position must be applied after the first layout pass —
+        // including for List view, whose browser otherwise comes up collapsed.
+        let saved = ViewMode(rawValue: UserDefaults.standard.integer(forKey: "viewMode")) ?? .list
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if saved == .list {
+                self.applyBrowserVisibility()
+            } else {
+                self.setViewMode(saved, animated: false)
+            }
         }
     }
 
@@ -371,7 +401,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         fullStage = false
         // Cover Flow and Grid need room; Album List hides the browser; List keeps it short.
         let total = rightSplit.bounds.height
-        let top: CGFloat = (flow || isGrid) ? round(total * 0.62) : (mode == .albumList ? 0 : 150)
+        let top: CGFloat = (flow || isGrid) ? round(total * 0.62) : (mode == .albumList ? 0 : browserHeight)
         rightSplit.setPosition(top, ofDividerAt: 0)
         rightSplit.layoutSubtreeIfNeeded()
         trackTable.floatsGroupRows = false
@@ -679,15 +709,125 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func loadDevices() {
         guard let api = controller.api else { return }
         Task { @MainActor in
-            guard let list = try? await api.sources() else { return }
-            let ipods = list.filter { $0.isIPod }
-            if ipods != devices {
-                devices = ipods
+            // /api/devices, not /api/sources: it also reports an iPhone or
+            // iPad sitting on the USB bus that iTunes has not opened as a
+            // source, so the device still gets a row and a page that explains
+            // itself rather than silently not appearing.
+            guard let list = try? await api.devices() else { return }
+            if list != devices {
+                devices = list
                 reloadSourceList()
+                if let open = openDevice, !list.contains(where: { $0.name == open }) {
+                    closeDevicePage()
+                    selectSourceRow(forLibrary: true)
+                } else if openDevice != nil {
+                    refreshDevicePage()
+                }
             }
+            let ipods = list.filter { $0.isIPod }
             syncButton.isHidden = ipods.isEmpty
             ejectButton.isHidden = ipods.isEmpty
         }
+    }
+
+    // MARK: Device page
+
+    /// Selecting a device in the source list replaces the browser and track
+    /// table with its page, the way iTunes did.
+    private func openDevicePage(for device: DeviceSource) {
+        openDevice = device.name
+        devicePage.isHidden = false
+        rightSplit.isHidden = true
+        devicePage.setStatus("Reading \(device.name)…")
+        devicePage.setBusy(true)
+        refreshDevicePage()
+    }
+
+    private func closeDevicePage() {
+        guard openDevice != nil else { return }
+        openDevice = nil
+        devicePage.isHidden = true
+        rightSplit.isHidden = false
+    }
+
+    private func refreshDevicePage() {
+        guard let name = openDevice, let api = controller.api else { return }
+        Task { @MainActor in
+            do {
+                let detail = try await api.deviceDetail(name)
+                // The user may have moved on while iTunes was answering.
+                guard self.openDevice == name else { return }
+                self.devicePage.show(detail)
+            } catch {
+                guard self.openDevice == name else { return }
+                self.devicePage.setStatus("Could not read \(name): \(error.localizedDescription)")
+                self.devicePage.setBusy(false)
+            }
+        }
+    }
+
+    private func syncOpenDevice() {
+        guard let name = openDevice, let api = controller.api else { return }
+        devicePage.setBusy(true)
+        devicePage.setStatus("Syncing \(name)…")
+        Task { @MainActor in
+            do {
+                try await api.syncSource(name)
+                self.devicePage.setStatus("Sync started on \(name). iTunes reports no progress; the page will show the new totals once it finishes.")
+                self.flashStatus("Sync started on \(name).")
+            } catch {
+                self.devicePage.setStatus("Sync failed: \(error.localizedDescription)")
+            }
+            self.devicePage.setBusy(false)
+            self.refreshDevicePage()
+        }
+    }
+
+    private func ejectOpenDevice() {
+        guard let name = openDevice, let api = controller.api else { return }
+        devicePage.setBusy(true)
+        Task { @MainActor in
+            do {
+                try await api.ejectSource(name)
+                self.flashStatus("Ejected \(name).")
+                self.devices.removeAll { $0.name == name }
+                self.closeDevicePage()
+                self.reloadSourceList()
+                self.selectSourceRow(forLibrary: true)
+                self.syncButton.isHidden = self.devices.isEmpty
+                self.ejectButton.isHidden = self.devices.isEmpty
+            } catch {
+                self.devicePage.setStatus("Eject failed: \(error.localizedDescription)")
+                self.devicePage.setBusy(false)
+            }
+        }
+    }
+
+    /// After ejecting there is no device row left to keep selected.
+    private func selectSourceRow(forLibrary: Bool) {
+        guard forLibrary else { return }
+        for (i, row) in sourceRows.enumerated() {
+            if case .library = row {
+                updatingUI = true
+                sourceList.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false)
+                updatingUI = false
+                controller.source = .library
+                return
+            }
+        }
+    }
+
+    // MARK: Split view
+
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        // Only the List view's divider is the browser's own height; the other
+        // views set it themselves.
+        guard (notification.object as? NSSplitView) === rightSplit,
+              viewMode == .list, !browserSplit.isHidden else { return }
+        let h = topPane.frame.height
+        guard h >= 60, abs(h - browserHeight) > 0.5 else { return }
+        browserHeight = h
+        UserDefaults.standard.set(Double(h), forKey: "browserHeight")
     }
 
     @objc private func syncDevice(_ sender: Any?) {
@@ -805,6 +945,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             sourceList.selectRowIndexes(IndexSet(integer: select), byExtendingSelection: false)
             controller.source = .recentlyAdded
             return
+        }
+        if let wanted = initialSource, wanted.hasPrefix("device:") {
+            let name = String(wanted.dropFirst("device:".count))
+            for (i, row) in sourceRows.enumerated() {
+                guard case .device(let d) = row else { continue }
+                if name.isEmpty || d.name == name {
+                    initialSource = nil
+                    updatingUI = false
+                    sourceList.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false)
+                    openDevicePage(for: d)
+                    return
+                }
+            }
         }
         sourceList.selectRowIndexes(IndexSet(integer: select), byExtendingSelection: false)
         updatingUI = false
@@ -1350,11 +1503,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func applyBrowserVisibility() {
         let showBrowser = browserVisible && viewMode == .list
         browserSplit.isHidden = !showBrowser
-        let total = rightSplit.bounds.height
         if viewMode == .list {
-            rightSplit.setPosition(showBrowser ? 150 : 0, ofDividerAt: 0)
+            rightSplit.setPosition(showBrowser ? browserHeight : 0, ofDividerAt: 0)
         }
-        _ = total
     }
 
     /// The View menu's four view items, tagged 0 to 3 in switcher order.
@@ -1590,7 +1741,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         if Tag(rawValue: tableView.tag) == .source {
             switch sourceRows[row] {
-            case .header, .device: return false
+            case .header: return false
             default: return true
             }
         }
@@ -1609,10 +1760,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         case .source:
             guard row >= 0 else { return }
             switch sourceRows[row] {
-            case .library: controller.source = .library
-            case .recentlyAdded: controller.source = .recentlyAdded
-            case .playlist(let p): controller.source = .playlist(p)
-            case .header, .device: break
+            case .library: closeDevicePage(); controller.source = .library
+            case .recentlyAdded: closeDevicePage(); controller.source = .recentlyAdded
+            case .playlist(let p): closeDevicePage(); controller.source = .playlist(p)
+            case .device(let d): openDevicePage(for: d)
+            case .header: break
             }
         case .browser:
             guard let field = table.identifier?.rawValue else { return }

@@ -138,13 +138,15 @@ final class APIClient {
     }
 
     func deviceDetail(_ name: String) async throws -> DeviceDetail {
-        let escaped = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
-        return try await get("/api/devices/\(escaped)")
+        try await get("/api/devices/\(name)")
     }
 
+    // Device names are passed raw. `request` builds the URL with
+    // appendingPathComponent, which percent-encodes the component itself; a
+    // name escaped here first came out double-encoded ("iPod%2520classic") and
+    // the daemon answered 404.
     private func sourcePath(_ name: String, _ op: String) -> String {
-        let safe = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
-        return "/api/sources/\(safe)/\(op)"
+        "/api/sources/\(name)/\(op)"
     }
 
     func syncSource(_ name: String) async throws {

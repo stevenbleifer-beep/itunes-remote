@@ -3,6 +3,7 @@ import Cocoa
 // Command line, for development and screenshots:
 //   --host H --port P --token T   use these instead of the saved settings (not persisted)
 //   --snapshot PATH               render the main window to PATH after the first load, then quit
+//   --source recent|device:NAME  open that source at launch (device: with no name takes the first)
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {

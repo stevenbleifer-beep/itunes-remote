@@ -18,6 +18,8 @@ This file is the state of play and the traps that are not in the spec.
 | Recently Added | Added 2026-09-03. A source under LIBRARY with a clock icon, showing the 600 newest tracks and their albums, newest first, in whichever view is selected. The daemon does the ordering: `recent=N` on `/api/tracks` and `/api/albumlist`, where an album's recency is its newest track's. There is also a Date Added column. |
 | iTunes alerts | Added 2026-09-03. `GET /api/itunes/alert` reads any modal dialog iTunes is showing and `POST /api/itunes/alert/dismiss` clicks one of its buttons. Needs Accessibility for the agent's Python; without it the System Events call *hangs* rather than failing, so one bad result disables the check for the life of the process. `?recheck=1` re-arms it. This is how the sync warning dialog was found. |
 | 8 Polish | Done: legacy scrollers, toned button, sidebar icons and dark selection, DEVICES section, View/Search captions, title, bottom-bar buttons (add, shuffle, repeat, artwork toggle, sync, eject), checkbox column, Cover Flow scrubber arrows, Apple's AirPlay symbol. Not done: a drawn capsule search field (the small-size system field was accepted); square bezels on sheet text fields. |
+| Device page | Added 2026-09-03. Picking a device in the source list replaces the browser and track table with an iTunes 10 device page: Summary / Music / Playlists tabs, the identity panel, the segmented capacity bar with its legend, and Sync and Eject. `GET /api/devices` merges iTunes' own sources with the Apple devices on the USB bus, so an iPhone or iPad iTunes has not opened as a source still gets a row and a page that says why it is empty rather than silently not appearing. `GET /api/devices/{name}` adds the per-category item counts and byte totals, and the device's playlists. The chosen tab persists in `defaults` under `deviceTab`. |
+| Browser grouping | Corrected 2026-09-03 against iTunes' own column browser. See "iTunes browser grouping" below. |
 | 9 iPod sync | Verified 2026-09-03: `update` on "iPod classic" returned "sync started", and afterwards 160 files had been written under `/Volumes/iPod/iPod_Control` with fresh MP3s at 23:26, so the sync engine really ran. Built: DEVICES row with free space, Sync and Eject buttons, `/api/sources`, `/api/sources/{name}/sync` and `/eject`. Eject is untested because it would have disconnected the iPod. iTunes logs a harmless read-only `com.apple.iPod` prefs warning on that machine. |
 | Play on This Mac | Added 2026-09-03 at Steven's request. iTunes 12.9.5 cannot AirPlay to a current Mac (error -15022; iTunes shows "not compatible with the current AirPlay playback configuration"), so `GET /api/tracks/{id}/audio` streams the file with range support and the client plays it with AVFoundation. Transport, seek, volume and auto-advance drive the local player in that mode; picking any AirPlay device switches back and stops local playback. Verified headless: ready in ~2 s, seeks land within a second. |
 | SPEC section 9 deployment | Done. Steven ran `setup.sh` on 2026-09-02 23:40; the LaunchAgent is loaded and Automation is approved for the agent's Python. `check.py` passes everything except "No iPod volume mounted" while the iPod is attached, which is informational. |
@@ -48,6 +50,29 @@ Git: everything is committed on the default branch; `git log --oneline`.
 2. Nothing outstanding from the references: all four views, the mini player and the icon are built. Ideas left: a drawn capsule search field, square bezels on sheet text fields, and the Genius / Ping panes, which have no offline equivalent and were deliberately skipped.
 3. Cover Flow artwork at scale. Only 61.7% of tracks have embedded art; the rest fall through to an AppleScript export under the global Apple Events lock (about 0.3 s each). It works, with a 300-entry daemon cache and a 400-entry client cache, but flying fast through thousands of albums queues behind that lock and slows the player poll.
 
+## iTunes browser grouping, measured not guessed
+
+iTunes 12.9.5's column browser on this library reports 76 genres, 2,909
+artists and 9,214 albums. Reproducing those numbers took four rules, each
+checked by dumping the live Music playlist through AppleScript and counting in
+Python:
+
+1. Only the Music library counts. Podcasts, movies and TV shows are excluded.
+2. A track files under its **album artist**, and anything flagged as a
+   compilation gathers under one **Compilations** row.
+3. Artists group by the **Sort Artist / Sort Album Artist** field where the
+   track has one, so "JAY Z" and "Jay-Z" share a row. **Albums do not**: Sort
+   Album is usually just the title with its article stripped, and grouping on
+   it merges genuinely different albums (9,203 against the real 9,214).
+4. Grouping is accent- and punctuation-insensitive — "Motorhead" and
+   "Motörhead" are one row — and a blank tag gets no row and is not counted.
+
+Result: genres 76 exactly, artists 2,905, albums 9,213. The residue is the
+52-track difference between the daemon's audio filter and iTunes' Music
+playlist, not the rule. `browse_key` in `library.py` is the grouping key;
+`_filter` matches on the same key so a browser click selects exactly the rows
+it counted.
+
 ## Traps found, all verified
 
 - AppleScript `id` of a track is not the XML Track ID (that is `database ID`). Look up by `persistent ID`: 0.2 s standalone, 75 ms batched. `whose persistent ID is in {...}` fails with -10014.
@@ -57,6 +82,19 @@ Git: everything is committed on the default branch; `git log --oneline`.
 - `add` re-imports a track already in the library; use `duplicate t to pl`. `delete` from a `user playlist` only removes membership.
 - CPython empties a list during `list.sort`; never sort a list readers iterate. `patch_many` rebinds a `sorted()` copy.
 - An autoresizing NSView never receives `layout()`; hook `setFrameSize`.
+- `URL.appendingPathComponent` does **not** re-encode a `%`, so a path
+  component escaped before it is passed in comes out double-encoded:
+  `iPod classic` became `iPod%2520classic` and the daemon answered 404. Pass
+  device names raw. This had silently broken the client's Sync and Eject
+  buttons for the whole life of the feature; the daemon endpoint was fine.
+- `whose special kind is "Music"` fails with -1728 on a device source. Iterate
+  the playlists and read `special kind` instead.
+- Summing `size of every track` for a 23,000-track device by looping the
+  AppleScript list takes 21 s (the O(n^2) index trap). Join the list with a
+  text item delimiter and add the numbers in Python: 1.1 s.
+- `NSSplitView.setPosition` does nothing before the window is on screen, which
+  left the column browser collapsed on every launch in List view. Apply it in
+  a `DispatchQueue.main.async` after the first layout pass.
 - `zPosition` is a real z coordinate under a perspective `sublayerTransform`; keep it tiny.
 - A regular-size NSSearchField with an 11-point font sits its text low; use `.small`.
 - An attributed `stringValue` ignores the field's `alignment`; put the paragraph style in the attributes.

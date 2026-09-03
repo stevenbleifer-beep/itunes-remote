@@ -159,6 +159,9 @@ struct DeviceSource: Decodable, Equatable {
     let kind: String
     let freeSpace: Int?
     let capacity: Int?
+    /// False for an Apple device seen on the USB bus that iTunes has not
+    /// opened as a source. It still gets a row; its page says why it is empty.
+    var itunesSource: Bool? = nil
     var isIPod: Bool { kind == "iPod" }
 }
 
