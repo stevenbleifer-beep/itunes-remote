@@ -308,7 +308,7 @@ final class AquaAirPlayButton: NSView {
     /// Apple's own AirPlay symbol, obtained through the system-symbol API at
     /// run time. Nothing is bundled; the system draws it.
     private static let symbol: NSImage? = {
-        let base = NSImage(systemSymbolName: "airplayvideo", accessibilityDescription: "AirPlay")
+        let base = NSImage(systemSymbolName: "airplayaudio", accessibilityDescription: "AirPlay")
         return base?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .medium))
     }()
 
@@ -332,14 +332,22 @@ final class AquaAirPlayButton: NSView {
 final class ArtworkView: NSView {
     var image: NSImage? { didSet { needsDisplay = true } }
     var caption: String = "" { didSet { needsDisplay = true } }
+    /// Thumbnail mode: the cover fills the view with no background or caption.
+    var fillsBounds = false { didSet { needsDisplay = true } }
 
     override func draw(_ dirtyRect: NSRect) {
-        Aqua.sidebarBackground.setFill()
-        bounds.fill()
-
-        let side = min(bounds.width, bounds.height - 16) - 16
-        guard side > 20 else { return }
-        let box = NSRect(x: round(bounds.midX - side / 2), y: bounds.maxY - side - 6, width: side, height: side)
+        let side: CGFloat
+        let box: NSRect
+        if fillsBounds {
+            side = min(bounds.width, bounds.height) - 2
+            box = NSRect(x: round(bounds.midX - side / 2), y: round(bounds.midY - side / 2), width: side, height: side)
+        } else {
+            Aqua.sidebarBackground.setFill()
+            bounds.fill()
+            side = min(bounds.width, bounds.height - 16) - 16
+            box = NSRect(x: round(bounds.midX - side / 2), y: bounds.maxY - side - 6, width: side, height: side)
+        }
+        guard side > 12 else { return }
 
         if let img = image {
             NSGraphicsContext.saveGraphicsState()

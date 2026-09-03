@@ -168,3 +168,26 @@ enum AquaTables {
         return v
     }
 }
+
+
+/// A table whose column grid lines stop at album header rows, so the Album
+/// List's headers are not sliced by dividers.
+final class AquaTableView: NSTableView {
+    var isGroupRowProvider: (Int) -> Bool = { _ in false }
+
+    override func drawGrid(inClipRect clipRect: NSRect) {
+        let range = rows(in: clipRect)
+        guard range.length > 0 else {
+            super.drawGrid(inClipRect: clipRect)
+            return
+        }
+        for row in range.location..<(range.location + range.length) where !isGroupRowProvider(row) {
+            let r = rect(ofRow: row).intersection(clipRect)
+            if !r.isEmpty { super.drawGrid(inClipRect: r) }
+        }
+        let last = rect(ofRow: range.location + range.length - 1)
+        if clipRect.maxY > last.maxY {
+            super.drawGrid(inClipRect: NSRect(x: clipRect.minX, y: last.maxY, width: clipRect.width, height: clipRect.maxY - last.maxY))
+        }
+    }
+}

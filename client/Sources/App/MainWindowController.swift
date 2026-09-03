@@ -44,6 +44,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var artworkHeight: NSLayoutConstraint?
     private var devices: [DeviceSource] = []
     private var deviceTimer: Timer?
+    private var miniPlayer: MiniPlayerWindowController?
     private let mainSplit = NSSplitView()
     private let rightSplit = NSSplitView()
     private let browserSplit = NSSplitView()
@@ -51,7 +52,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let genreTable = NSTableView()
     private let artistTable = NSTableView()
     private let albumTable = NSTableView()
-    private let trackTable = NSTableView()
+    private let trackTable = AquaTableView()
     private let artworkView = ArtworkView()
 
     private var searchTimer: Timer?
@@ -63,13 +64,15 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     // View mode
     enum ViewMode: Int {
-        case list = 0, coverFlow = 1, albumList = 2
+        case list = 0, coverFlow = 1, albumList = 2, grid = 3
         /// Segment order in the switcher, as iTunes had it.
-        static let segments: [ViewMode] = [.list, .albumList, .coverFlow]
+        static let segments: [ViewMode] = [.list, .albumList, .grid, .coverFlow]
         var segment: Int { ViewMode.segments.firstIndex(of: self) ?? 0 }
     }
     private(set) var viewMode: ViewMode = .list
-    private let viewSwitcher = AquaSegmentedControl(glyphs: [.list, .albumList, .coverFlow])
+    private let viewSwitcher = AquaSegmentedControl(glyphs: [.list, .albumList, .grid, .coverFlow])
+    private let grid = AlbumGridView()
+    private let gridScroll = NSScrollView()
 
     /// What each table row is: an album header in Album List, or a track.
     private enum DisplayRow {
@@ -313,6 +316,21 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             self.artworkCache.image(for: pid, then: done)
         }
         topPane.addSubview(coverFlow)
+        gridScroll.frame = topPane.bounds
+        gridScroll.autoresizingMask = [.width, .height]
+        gridScroll.hasVerticalScroller = true
+        gridScroll.scrollerStyle = .legacy
+        gridScroll.verticalScroller = AquaScroller()
+        gridScroll.borderType = .lineBorder
+        gridScroll.documentView = grid
+        gridScroll.isHidden = true
+        grid.onSelect = { [weak self] _ in self?.coverSelectionChanged() }
+        grid.onOpen = { [weak self] i in self?.playAlbum(at: i) }
+        grid.imageProvider = { [weak self] pid, done in
+            guard let self = self else { done(nil); return }
+            self.artworkCache.image(for: pid, then: done)
+        }
+        topPane.addSubview(gridScroll)
         rightSplit.addArrangedSubview(topPane)
         let trackScroll = scroll(for: trackTable)
         rightSplit.addArrangedSubview(trackScroll)
@@ -344,15 +362,18 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         UserDefaults.standard.set(mode.rawValue, forKey: "viewMode")
         viewSwitcher.selectedIndex = mode.segment
         let flow = mode == .coverFlow
-        browserSplit.isHidden = flow
+        let isGrid = mode == .grid
+        browserSplit.isHidden = flow || isGrid
         coverFlow.isHidden = !flow
+        gridScroll.isHidden = !isGrid
         fullStage = false
-        // Cover Flow needs room; Album List hides the browser; List keeps it short.
+        // Cover Flow and Grid need room; Album List hides the browser; List keeps it short.
         let total = rightSplit.bounds.height
-        let top: CGFloat = flow ? round(total * 0.58) : (mode == .albumList ? 0 : 150)
+        let top: CGFloat = (flow || isGrid) ? round(total * 0.62) : (mode == .albumList ? 0 : 150)
         rightSplit.setPosition(top, ofDividerAt: 0)
         rightSplit.layoutSubtreeIfNeeded()
         trackTable.floatsGroupRows = false
+        trackTable.gridStyleMask = mode == .albumList ? [] : [.solidVerticalGridLineMask]
         if mode == .list {
             albums = []
             refreshRows()
@@ -363,7 +384,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             controller.selectedArtist = nil
             controller.selectedAlbum = nil
             loadAlbums()
-            window?.makeFirstResponder(flow ? coverFlow : trackTable)
+            window?.makeFirstResponder(flow ? coverFlow : (isGrid ? grid : trackTable))
         }
     }
 
@@ -393,6 +414,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 guard gen == albumGeneration else { return }
                 albums = list
                 if viewMode == .coverFlow { coverFlow.albums = list }
+                if viewMode == .grid { grid.albums = list }
                 if let k = keep, viewMode == .coverFlow,
                    let i = list.firstIndex(where: { $0.album == k.album && $0.artist == k.artist }) {
                     coverFlow.select(i, animated: false)
@@ -413,16 +435,25 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     /// Recomputes the rows the table shows and reloads it.
+    private var selectedAlbum: AlbumEntry? {
+        switch viewMode {
+        case .coverFlow: return albums.indices.contains(coverFlow.selectedIndex) ? albums[coverFlow.selectedIndex] : nil
+        case .grid: return grid.selectedIndex.flatMap { albums.indices.contains($0) ? albums[$0] : nil }
+        default: return nil
+        }
+    }
+
     private func refreshRows() {
-        if viewMode == .coverFlow, albums.indices.contains(coverFlow.selectedIndex) {
-            let a = albums[coverFlow.selectedIndex]
-            let artist = a.artist.lowercased()
-            let album = a.album.lowercased()
-            rows = controller.tracks.filter {
-                $0.displayArtist.lowercased() == artist && $0.album.lowercased() == album
+        if viewMode == .coverFlow || viewMode == .grid {
+            if let a = selectedAlbum {
+                let artist = a.artist.lowercased()
+                let album = a.album.lowercased()
+                rows = controller.tracks.filter {
+                    $0.displayArtist.lowercased() == artist && $0.album.lowercased() == album
+                }
+            } else {
+                rows = []
             }
-        } else if viewMode == .coverFlow {
-            rows = []
         } else {
             rows = controller.tracks
         }
@@ -463,6 +494,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func playAlbum(at index: Int) {
         guard albums.indices.contains(index) else { return }
+        if viewMode == .coverFlow { coverFlow.select(index, animated: false) }
         refreshRows()
         guard let first = rows.first else { return }
         player.play(first, playlist: controller.source.playlistId)
@@ -518,6 +550,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func configureTrackTable() {
         trackTable.tag = Tag.tracks.rawValue
+        trackTable.isGroupRowProvider = { [weak self] row in
+            guard let self = self, row < self.displayRows.count, case .group = self.displayRows[row] else { return false }
+            return true
+        }
         let check = AquaTables.column("enabled", title: "", width: 22, min: 22, sortable: false)
         check.maxWidth = 22
         check.resizingMask = []
@@ -866,7 +902,29 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     // MARK: Player UI
 
+    @objc func toggleMiniPlayer(_ sender: Any?) {
+        if let mini = miniPlayer, mini.window?.isVisible == true {
+            mini.close()
+            return
+        }
+        let mini = miniPlayer ?? MiniPlayerWindowController(player: player)
+        mini.onRestore = { [weak self] in
+            self?.window?.makeKeyAndOrderFront(nil)
+        }
+        mini.onStep = { [weak self] delta in self?.step(by: delta) }
+        mini.onAirPlay = { [weak self] sender in self?.showOutputMenu(sender) }
+        miniPlayer = mini
+        mini.update()
+        if mini.window?.frame.origin == .zero {
+            mini.window?.center()
+        }
+        mini.showWindow(nil)
+        mini.window?.makeKeyAndOrderFront(nil)
+        window?.orderOut(nil)
+    }
+
     private func updatePlayerUI() {
+        miniPlayer?.update()
         let state = player.state
         let playing = state?.isPlaying ?? false
         playButton.glyph = playing ? .pause : .play

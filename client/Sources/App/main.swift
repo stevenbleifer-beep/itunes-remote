@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main = MainWindowController()
         main.snapshotPath = arg("--snapshot")
         main.initialFlowIndex = arg("--flow-index").flatMap { Int($0) }
+        if args.contains("--mini") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak main] in main?.toggleMiniPlayer(nil) }
+        }
         main.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
 
@@ -90,6 +93,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        let mini = windowMenu.addItem(withTitle: "Switch to Mini Player", action: #selector(MainWindowController.toggleMiniPlayer(_:)), keyEquivalent: "M")
+        mini.keyEquivalentModifierMask = [.command, .shift]
         let windowItem = NSMenuItem()
         windowItem.submenu = windowMenu
         mainMenu.addItem(windowItem)

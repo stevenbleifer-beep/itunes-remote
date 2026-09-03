@@ -13,7 +13,8 @@ final class AlbumGroupView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         art.caption = ""
-        art.frame = NSRect(x: 4, y: 4, width: 58, height: 58)
+        art.fillsBounds = true
+        art.frame = NSRect(x: 6, y: 4, width: 58, height: 58)
         art.autoresizingMask = [.maxXMargin]
         addSubview(art)
         title.font = Aqua.font(12, bold: true)
@@ -31,10 +32,9 @@ final class AlbumGroupView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSGradient(starting: NSColor(white: 0.975, alpha: 1), ending: NSColor(white: 0.93, alpha: 1))!
-            .draw(in: bounds, angle: -90)
-        NSColor(white: 0.80, alpha: 1).setFill()
-        NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()
+        NSColor.white.setFill()
+        bounds.fill()
+        NSColor(white: 0.84, alpha: 1).setFill()
         NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
     }
 
