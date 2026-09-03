@@ -946,8 +946,8 @@ final class DeviceMusicView: NSView {
     private let optionsBox = SyncOptionsBox()
     private let caveat = NSTextField(labelWithString: "")
     private let lists: [CheckListView] = [
-        CheckListView(title: "Playlists"), CheckListView(title: "Artists"),
-        CheckListView(title: "Genres"), CheckListView(title: "Albums"),
+        CheckListView(title: "Playlists"), CheckListView(title: "Artists on iPod"),
+        CheckListView(title: "Genres on iPod"), CheckListView(title: "Albums on iPod"),
     ]
     private var sync: DeviceSync?
 
@@ -976,9 +976,11 @@ final class DeviceMusicView: NSView {
         caveat.textColor = NSColor(white: 0.42, alpha: 1)
         caveat.lineBreakMode = .byWordWrapping
         caveat.maximumNumberOfLines = 2
-        caveat.stringValue = "A tick means the item is on the iPod. iTunes keeps its sync selection "
-            + "in its library database, where nothing outside iTunes can read or set it — so these "
-            + "show what the selection produced. Use Add to iPod on a track to change what syncs."
+        caveat.stringValue = "Playlists shows what syncs to the iPod. The Artists, Genres and Albums "
+            + "lists show what is on the iPod — a Beatles album can be there through a synced "
+            + "playlist even when the Beatles artist itself was never ticked. iTunes keeps its own "
+            + "artist/album/genre selection in its library database, which nothing outside iTunes can "
+            + "read. Use Add to iPod on a track to change what syncs."
         search.placeholderString = "Search"
         search.controlSize = .small
         search.font = Aqua.font(11)
@@ -988,9 +990,12 @@ final class DeviceMusicView: NSView {
             v.translatesAutoresizingMaskIntoConstraints = false
             doc.addSubview(v)
         }
-        for l in lists {
+        for (i, l) in lists.enumerated() {
             l.translatesAutoresizingMaskIntoConstraints = false
             l.onToggle = { [weak self] row in self?.toggle(row) }
+            // Playlists is the one true selection list; the other three report
+            // what is actually on the device.
+            l.onlyOnDevice = i != 0
             doc.addSubview(l)
         }
         doc.translatesAutoresizingMaskIntoConstraints = false
@@ -1153,6 +1158,10 @@ final class CheckListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var rows: [DeviceMusicView.Row] = [] { didSet { applyFilter() } }
     var filter = "" { didSet { applyFilter() } }
     var onToggle: (DeviceMusicView.Row) -> Void = { _ in }
+    /// When set, only rows that are on the device are listed — for the lists
+    /// that report contents rather than a selection iTunes won't reveal.
+    var onlyOnDevice = false { didSet { applyFilter() } }
+    var title: String = "" { didSet { titleLabel.stringValue = title } }
 
     private let titleLabel = NSTextField(labelWithString: "")
     private let table = NSTableView()
@@ -1195,8 +1204,10 @@ final class CheckListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     private func applyFilter() {
+        var base = onlyOnDevice ? rows.filter { $0.onDevice } : rows
         let f = filter.trimmingCharacters(in: .whitespaces).lowercased()
-        shown = f.isEmpty ? rows : rows.filter { $0.name.lowercased().contains(f) }
+        if !f.isEmpty { base = base.filter { $0.name.lowercased().contains(f) } }
+        shown = base
         table.reloadData()
     }
 

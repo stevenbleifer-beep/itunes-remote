@@ -168,6 +168,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         toolbar.frame = NSRect(x: 0, y: H - toolbarH, width: W, height: toolbarH)
         toolbar.autoresizingMask = [.width, .minYMargin]
         toolbar.bottomLine = true
+        toolbar.actsAsTitleBar = true
         content.addSubview(toolbar)
 
         let midY: CGFloat = 28   // keeps the controls clear of the traffic lights

@@ -46,8 +46,22 @@ class ChromeView: NSView {
     var bottomLine = false
     var gradientTop: NSColor = Aqua.chromeTop
     var gradientBottom: NSColor = Aqua.chromeBottom
+    /// Makes this bar behave like a title bar: drag it to move the window, and
+    /// double-click an empty part to zoom the window to fill the screen. The
+    /// toolbar's buttons and display panel handle their own clicks first, so
+    /// only clicks on the empty chrome reach this.
+    var actsAsTitleBar = false
 
     override var isOpaque: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        guard actsAsTitleBar else { super.mouseDown(with: event); return }
+        if event.clickCount == 2 {
+            window?.zoom(nil)
+            return
+        }
+        window?.performDrag(with: event)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         NSGradient(starting: gradientTop, ending: gradientBottom)!.draw(in: bounds, angle: -90)
