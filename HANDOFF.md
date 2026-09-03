@@ -14,9 +14,10 @@ This file is the state of play and the traps that are not in the spec.
 | 5 Single-track write | Done. Verified from iTunes' own side, with revert. |
 | 6 Bulk genre edit | Done. 300 of 300 updated and reverted; 52 s for 300 (173 ms/track, mostly iTunes rewriting file tags). |
 | 7 Playlists | Done. Create, add, remove; verified in iTunes. |
-| 7a Cover Flow | Done, plus the view switcher. List and Cover Flow only; no Album List or Grid yet. |
+| 7a Cover Flow | Done, plus the view switcher and the Album List view (album header rows with cover, title, artist, year, song count). No Grid view yet. |
 | 8 Polish | Done: legacy scrollers, toned button, sidebar icons and dark selection, DEVICES section, View/Search captions, title, bottom-bar buttons (add, shuffle, repeat, artwork toggle, sync, eject), checkbox column, Cover Flow scrubber arrows, Apple's AirPlay symbol. Not done: a drawn capsule search field (the small-size system field was accepted); square bezels on sheet text fields. |
-| 9 iPod sync | Probe passed 2026-09-03: `update` on "iPod classic" returned "sync started". Built: DEVICES row with free space, Sync and Eject buttons, `/api/sources`, `/api/sources/{name}/sync` and `/eject`. Eject is untested because it would have disconnected the iPod. |
+| 9 iPod sync | Verified 2026-09-03: `update` on "iPod classic" returned "sync started", and afterwards 160 files had been written under `/Volumes/iPod/iPod_Control` with fresh MP3s at 23:26, so the sync engine really ran. Built: DEVICES row with free space, Sync and Eject buttons, `/api/sources`, `/api/sources/{name}/sync` and `/eject`. Eject is untested because it would have disconnected the iPod. iTunes logs a harmless read-only `com.apple.iPod` prefs warning on that machine. |
+| Play on This Mac | Added 2026-09-03 at Steven's request. iTunes 12.9.5 cannot AirPlay to a current Mac (error -15022; iTunes shows "not compatible with the current AirPlay playback configuration"), so `GET /api/tracks/{id}/audio` streams the file with range support and the client plays it with AVFoundation. Transport, seek, volume and auto-advance drive the local player in that mode; picking any AirPlay device switches back and stops local playback. Verified headless: ready in ~2 s, seeks land within a second. |
 | SPEC section 9 deployment | Done. Steven ran `setup.sh` on 2026-09-02 23:40; the LaunchAgent is loaded and Automation is approved for the agent's Python. `check.py` passes everything except "No iPod volume mounted" while the iPod is attached, which is informational. |
 
 Git: everything is committed on the default branch; `git log --oneline`.
@@ -42,7 +43,7 @@ Git: everything is committed on the default branch; `git log --oneline`.
 ## What to do next, in order
 
 1. Exercise in the live app what was only verified through the daemon: the Get Info sheet, Add to Playlist and Remove from Playlist, the checkbox column, shuffle and repeat, Eject.
-2. Album List and Grid views if wanted; the switcher already supports four glyphs and `/api/albumlist` feeds them.
+2. Grid view and the mini player from the references, if wanted; the switcher supports four glyphs and `/api/albumlist` feeds a grid.
 3. Cover Flow artwork at scale. Only 61.7% of tracks have embedded art; the rest fall through to an AppleScript export under the global Apple Events lock (about 0.3 s each). It works, with a 300-entry daemon cache and a 400-entry client cache, but flying fast through thousands of albums queues behind that lock and slows the player poll.
 
 ## Traps found, all verified
