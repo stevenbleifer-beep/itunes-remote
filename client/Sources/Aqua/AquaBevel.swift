@@ -1,7 +1,7 @@
 import Cocoa
 
 enum BevelGlyph {
-    case plus, shuffle, repeatAll, repeatOne, artwork, eject, sync, reconnect
+    case plus, shuffle, repeatAll, repeatOne, artwork, eject, sync, reconnect, upNext
 }
 
 /// The small square buttons along the bottom bar of iTunes 10: a light
@@ -113,6 +113,16 @@ final class AquaBevelButton: NSView {
             hill.move(to: NSPoint(x: cx - 5, y: cy - 4)); hill.line(to: NSPoint(x: cx - 1, y: cy + 1))
             hill.line(to: NSPoint(x: cx + 1.5, y: cy - 1.5)); hill.line(to: NSPoint(x: cx + 3, y: cy))
             hill.line(to: NSPoint(x: cx + 5, y: cy - 4)); hill.close(); hill.fill()
+        case .upNext:
+            // Three stacked lines with a small play triangle beside the first:
+            // the queue, and what comes off the top of it.
+            let t = NSBezierPath()
+            t.move(to: NSPoint(x: cx - 6, y: cy + 6)); t.line(to: NSPoint(x: cx - 6, y: cy + 1.5))
+            t.line(to: NSPoint(x: cx - 2.5, y: cy + 3.75)); t.close(); t.fill()
+            for (i, y) in [cy + 3.75, cy - 0.5, cy - 4.5].enumerated() {
+                let x = i == 0 ? cx - 0.5 : cx - 6
+                NSRect(x: x, y: y - 0.9, width: cx + 6 - x, height: 1.8).fill()
+            }
         case .eject:
             let t = NSBezierPath()
             t.move(to: NSPoint(x: cx - 6, y: cy - 1)); t.line(to: NSPoint(x: cx + 6, y: cy - 1)); t.line(to: NSPoint(x: cx, y: cy + 5))

@@ -46,6 +46,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let repeatButton = AquaBevelButton(glyph: .repeatAll)
     private let artworkButton = AquaBevelButton(glyph: .artwork)
     private let reconnectButton = AquaBevelButton(glyph: .reconnect)
+    private let upNextButton = AquaBevelButton(glyph: .upNext)
     private let syncButton = AquaBevelButton(glyph: .sync)
     private let ejectButton = AquaBevelButton(glyph: .eject)
     private var artworkHeight: NSLayoutConstraint?
@@ -279,6 +280,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             (shuffleButton, #selector(toggleShuffle(_:)), "Shuffle"),
             (repeatButton, #selector(cycleRepeat(_:)), "Repeat"),
             (artworkButton, #selector(toggleArtworkPane(_:)), "Show or hide artwork"),
+            (upNextButton, #selector(showUpNext(_:)), "Up Next"),
             (reconnectButton, #selector(reconnect(_:)), "Reconnect to the MacBook Pro and reload everything"),
         ] {
             button.frame = NSRect(x: bx, y: 2, width: 34, height: 20)
@@ -886,6 +888,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         add.submenu = NSMenu()
         menu.addItem(add)
         addToPlaylistItem = add
+        for (title, sel) in [("Play Next", #selector(playNext(_:))), ("Add to Up Next", #selector(addToUpNext(_:)))] {
+            let item = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+            item.target = self
+            item.attributedTitle = NSAttributedString(string: title, attributes: [.font: Aqua.font(13)])
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
         let remove = NSMenuItem(title: "Remove from Playlist", action: #selector(removeFromPlaylist(_:)), keyEquivalent: "")
         remove.target = self
         remove.attributedTitle = NSAttributedString(string: "Remove from Playlist", attributes: [.font: Aqua.font(13)])
@@ -1846,6 +1855,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             let moved = [lastBoldId, boldId].compactMap { $0 }
             lastBoldId = boldId
             reloadRows(forTrackIds: moved)
+            if upNextPanel?.panel.isVisible == true { refreshUpNext() }
         }
         // The speaker beside the source the music is coming from. iTunes
         // reports the playlist it is playing from; when it reports none —
@@ -1877,6 +1887,86 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func startPlayback(_ track: Track, playlist: String?) {
         startedFromPlaylistId = playlist
         player.play(track, playlist: playlist)
+    }
+
+    // MARK: Up Next
+
+    /// Songs queued ahead of the list. `play <track>` gives iTunes a one-item
+    /// queue, so the app has always decided what follows; this is the part of
+    /// that decision the user gets to make directly.
+    private var upNext: [Track] = []
+    private var upNextPanel: UpNextPanel?
+
+    @objc func showUpNext(_ sender: Any?) {
+        let p = upNextPanel ?? makeUpNextPanel()
+        upNextPanel = p
+        refreshUpNext()
+        p.show(near: window)
+    }
+
+    private func makeUpNextPanel() -> UpNextPanel {
+        let p = UpNextPanel()
+        p.onQueueChanged = { [weak self] q in
+            self?.upNext = q
+            self?.refreshUpNext()
+        }
+        p.onPlayQueued = { [weak self] i in
+            guard let self = self, i < self.upNext.count else { return }
+            let track = self.upNext[i]
+            // Playing something from further down the queue consumes what was
+            // ahead of it, the way skipping forward would have.
+            self.upNext.removeFirst(i + 1)
+            self.startPlayback(track, playlist: self.controller.source.playlistId)
+            self.refreshUpNext()
+        }
+        p.onPlayUpcoming = { [weak self] i in
+            guard let self = self else { return }
+            let list = self.upcomingTracks()
+            guard i < list.count,
+                  let j = self.rows.firstIndex(where: { $0.persistentId == list[i].persistentId })
+            else { return }
+            self.playRow(j)
+        }
+        return p
+    }
+
+    /// What the current list would play after the current song, ignoring the
+    /// manual queue. Shuffle picks at random each time, so there is no honest
+    /// order to show for it.
+    private func upcomingTracks(limit: Int = 100) -> [Track] {
+        guard !(player.state?.shuffle ?? false) else { return [] }
+        guard let playing = player.state?.track?.persistentId,
+              let i = rows.firstIndex(where: { $0.persistentId == playing }) else {
+            return Array(rows.prefix(limit))
+        }
+        return Array(rows.dropFirst(i + 1).prefix(limit))
+    }
+
+    private func refreshUpNext() {
+        let shuffling = player.state?.shuffle ?? false
+        upNextPanel?.update(queue: upNext,
+                            upcoming: upcomingTracks(),
+                            sourceName: shuffling ? "" : controller.source.displayName)
+        upNextButton.isOn = !upNext.isEmpty
+    }
+
+    /// Puts songs at the front of the queue, or on the end of it.
+    @objc func playNext(_ sender: Any?) {
+        let picked = selectedTracks
+        guard !picked.isEmpty else { return }
+        upNext.insert(contentsOf: picked, at: 0)
+        refreshUpNext()
+        flashStatus(picked.count == 1 ? "Playing “\(picked[0].name)” next."
+                                      : "\(picked.count) songs playing next.")
+    }
+
+    @objc func addToUpNext(_ sender: Any?) {
+        let picked = selectedTracks
+        guard !picked.isEmpty else { return }
+        upNext.append(contentsOf: picked)
+        refreshUpNext()
+        flashStatus(picked.count == 1 ? "Added “\(picked[0].name)” to Up Next."
+                                      : "Added \(picked.count) songs to Up Next.")
     }
 
     private var lastBoldId: String?
@@ -2142,6 +2232,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// this app already owns the queue in both remote and local mode — so
     /// shuffle and repeat are implemented here, where they genuinely work.
     private func step(by delta: Int) {
+        // Anything explicitly queued plays before the list carries on.
+        if delta > 0, !upNext.isEmpty {
+            let track = upNext.removeFirst()
+            startPlayback(track, playlist: controller.source.playlistId)
+            refreshUpNext()
+            return
+        }
         guard let playing = player.state?.track?.persistentId,
               let i = rows.firstIndex(where: { $0.persistentId == playing }) else {
             delta > 0 ? player.next() : player.previous()

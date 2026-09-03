@@ -136,6 +136,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         viewItem.submenu = viewMenu
         mainMenu.addItem(viewItem)
 
+        // Controls, as iTunes had it: the queue commands live here as well as
+        // in the track context menu, so they have keyboard shortcuts.
+        let controlsMenu = NSMenu(title: "Controls")
+        let playNext = controlsMenu.addItem(withTitle: "Play Next",
+                                            action: #selector(MainWindowController.playNext(_:)), keyEquivalent: "n")
+        playNext.keyEquivalentModifierMask = [NSEvent.ModifierFlags.command, NSEvent.ModifierFlags.option]
+        let addUpNext = controlsMenu.addItem(withTitle: "Add to Up Next",
+                                             action: #selector(MainWindowController.addToUpNext(_:)), keyEquivalent: "e")
+        addUpNext.keyEquivalentModifierMask = [NSEvent.ModifierFlags.command, NSEvent.ModifierFlags.option]
+        controlsMenu.addItem(.separator())
+        let showQueue = controlsMenu.addItem(withTitle: "Show Up Next",
+                                             action: #selector(MainWindowController.showUpNext(_:)), keyEquivalent: "u")
+        showQueue.keyEquivalentModifierMask = [NSEvent.ModifierFlags.command, NSEvent.ModifierFlags.option]
+        let controlsItem = NSMenuItem()
+        controlsItem.submenu = controlsMenu
+        mainMenu.addItem(controlsItem)
+
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")
