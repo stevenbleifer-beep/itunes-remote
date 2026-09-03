@@ -15,9 +15,9 @@ authority. This file is the state of play and the traps that are not in it.
 
 **Reviewed 2026-09-02 by a later session. One bug fixed, two items below corrected. See "Review findings" at the end.**
 
-Git: the repo has never been committed. Everything is on disk and staged
-from an earlier `git add -A`; newer files are untracked. Commit when Steven
-asks.
+Git: two commits on the default branch. `203e0f6` is milestones 1 to 3 plus
+the milestone 4 daemon work; `e6fe882` is the concurrency fix and tests below.
+The working tree is clean. Commit further work when Steven asks.
 
 ## The machines
 
