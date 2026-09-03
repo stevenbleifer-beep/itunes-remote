@@ -9,6 +9,7 @@ reload of a stale XML does not undo them.
 import logging
 import os
 import plistlib
+import re
 import threading
 import time
 import unicodedata
@@ -21,6 +22,31 @@ log = logging.getLogger("itunes_remote.library")
 def fold(s):
     """Normalise for case-insensitive comparison. XML is NFC; be safe anyway."""
     return unicodedata.normalize("NFC", s or "").casefold()
+
+
+# iTunes' browser merges spellings that differ only in accents or in the shape
+# of a quote or dash: "Motorhead" and "Motörhead" are one artist to it, and so
+# are "Roadkill Rising..." and "Roadkill Rising…". Measured against iTunes
+# 12.9.5's own column browser on the real library, 2026-09-03.
+_SPACES = re.compile(r"\s+")
+
+_PUNCT = {
+    "\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"',
+    "\u2013": "-", "\u2014": "-", "\u2026": "...", "\u00a0": " ",
+}
+
+
+def browse_key(s):
+    """The key iTunes groups a browser row under. Accent- and punctuation-
+    insensitive, whitespace collapsed. Only for grouping; never displayed."""
+    s = (s or "").strip()
+    for bad, good in _PUNCT.items():
+        if bad in s:
+            s = s.replace(bad, good)
+    s = _SPACES.sub(" ", s)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return unicodedata.normalize("NFC", s).casefold()
 
 
 def _iso(dt):
@@ -39,6 +65,7 @@ class Track(object):
         "compilation", "enabled", "rating", "play_count", "grouping", "bpm",
         "date_added", "date_modified", "location", "artwork_count", "search", "sort_key",
         "sort_name", "sort_artist", "sort_album", "sort_album_artist",
+        "browse_artist", "group_keys",
     )
 
     # Fields the client may edit through PATCH, mapped to the AppleScript
@@ -107,6 +134,30 @@ class Track(object):
         self.search = "\x1f".join(
             fold(x) for x in (self.name, self.artist, self.album, self.album_artist)
         )
+        # The name iTunes files this track under in the Artists browser: the
+        # album artist if there is one, and "Compilations" for anything flagged
+        # as part of a compilation, which is how iTunes gathers them.
+        if self.compilation:
+            self.browse_artist = COMPILATIONS
+            artist_group = COMPILATIONS
+        else:
+            self.browse_artist = self.album_artist or self.artist
+            # iTunes groups artists by the Sort field where the track has one,
+            # so "Jay-Z" and "JAY Z" land on the same row when they share a
+            # sort artist. Albums do NOT work this way: Sort Album is usually
+            # just the title with its article stripped, and grouping on that
+            # merges genuinely different albums. Both verified against iTunes.
+            if self.album_artist:
+                artist_group = self.sort_album_artist or self.album_artist
+            else:
+                artist_group = self.sort_artist or self.artist
+        self.group_keys = {
+            "artist": browse_key(artist_group),
+            "album": browse_key(self.album),
+            "genre": browse_key(self.genre),
+            "composer": browse_key(self.composer),
+            "grouping": browse_key(self.grouping),
+        }
         # Match iTunes: Sort fields win, and a leading article is dropped.
         if self.album_artist:
             artist = sort_form(self.album_artist, self.sort_album_artist or self.sort_artist)
@@ -163,6 +214,10 @@ class Track(object):
         return old
 
 
+# The row iTunes files compilation tracks under in the Artists browser.
+COMPILATIONS = "Compilations"
+
+
 # iTunes drops a leading article when sorting, so "The Beatles" files under B.
 _ARTICLES = ("the ", "a ", "an ")
 
@@ -170,7 +225,9 @@ _ARTICLES = ("the ", "a ", "an ")
 def sort_form(text, override=None):
     """iTunes' sort order for one field: its Sort override if the track has
     one, otherwise the text with a leading article removed."""
-    value = fold(override or text or "")
+    # Leading whitespace in a tag must not sort the row to the very top;
+    # iTunes ignores it. Found on an artist tagged " Marduk".
+    value = fold((override or text or "").strip())
     for article in _ARTICLES:
         if value.startswith(article) and len(value) > len(article):
             return value[len(article):]
@@ -285,23 +342,26 @@ class Library(object):
 
     def _filter(self, tracks, q=None, genre=None, artist=None, album=None,
                 composer=None, grouping=None):
+        # Browser selections are matched on the same key the browser grouped
+        # by, so clicking a row selects exactly the tracks it counted.
         terms = [fold(x) for x in (q or "").split() if x]
-        g = fold(genre) if genre is not None else None
-        ar = fold(artist) if artist is not None else None
-        al = fold(album) if album is not None else None
-        co = fold(composer) if composer is not None else None
-        gr = fold(grouping) if grouping is not None else None
+        g = browse_key(genre) if genre is not None else None
+        ar = browse_key(artist) if artist is not None else None
+        al = browse_key(album) if album is not None else None
+        co = browse_key(composer) if composer is not None else None
+        gr = browse_key(grouping) if grouping is not None else None
         out = []
         for t in tracks:
-            if g is not None and fold(t.genre) != g:
+            keys = t.group_keys
+            if g is not None and keys["genre"] != g:
                 continue
-            if ar is not None and fold(t.artist) != ar:
+            if ar is not None and keys["artist"] != ar:
                 continue
-            if al is not None and fold(t.album) != al:
+            if al is not None and keys["album"] != al:
                 continue
-            if co is not None and fold(t.composer) != co:
+            if co is not None and keys["composer"] != co:
                 continue
-            if gr is not None and fold(t.grouping) != gr:
+            if gr is not None and keys["grouping"] != gr:
                 continue
             if terms:
                 s = t.search
@@ -355,21 +415,31 @@ class Library(object):
         """Distinct values of `field` with counts, over the filtered set."""
         if field not in self.FACET_FIELDS:
             raise ValueError("not a browsable field: %s" % field)
-        overrides = {"artist": "sort_artist", "album": "sort_album", "name": "sort_name"}
+        overrides = {"artist": "sort_album_artist", "album": "sort_album"}
         override_attr = overrides.get(field)
         counts = {}
-        display = {}
+        spellings = {}
         order = {}
         for t in self._filter(self._candidates(playlist), q, genre, artist, album, composer, grouping):
-            value = getattr(t, field) or ""
-            key = fold(value)
+            key = t.group_keys[field]
+            # iTunes shows no blank row and does not count one; a track with an
+            # empty tag simply appears under "All".
+            if not key:
+                continue
+            value = t.browse_artist if field == "artist" else (getattr(t, field) or "")
             counts[key] = counts.get(key, 0) + 1
-            if key not in display:
-                display[key] = value
+            spelling = spellings.get(key)
+            if spelling is None:
+                spelling = spellings[key] = {}
                 override = getattr(t, override_attr) if override_attr else None
                 order[key] = sort_form(value, override)
+            spelling[value] = spelling.get(value, 0) + 1
         return [
-            {"name": display[k], "count": counts[k]}
+            # One row can gather several spellings; show the commonest, and
+            # break a tie on the text so the row name does not wander between
+            # requests.
+            {"name": max(sorted(spellings[k]), key=lambda v: spellings[k][v]).strip(),
+             "count": counts[k]}
             for k in sorted(counts, key=lambda k: (k == "", order.get(k, k)))
         ]
 
@@ -384,7 +454,9 @@ class Library(object):
         groups = {}
         for t in self._filter(self._candidates(playlist), q, genre, artist, album, composer, grouping):
             display_artist = t.album_artist or t.artist
-            key = (fold(display_artist), fold(t.album))
+            # Same folding as the browser, so an accented spelling does not
+            # split one album into two covers.
+            key = (browse_key(display_artist), browse_key(t.album))
             g = groups.get(key)
             if g is None:
                 g = groups[key] = {
