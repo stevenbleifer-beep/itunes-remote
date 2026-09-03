@@ -13,6 +13,8 @@ authority. This file is the state of play and the traps that are not in it.
 | 4 Playback, AirPlay, artwork | **In progress.** Daemon side deployed and mostly tested. Client side half written, not yet compiled. See below. |
 | 5-9 | Not started. 7a Cover Flow was added to the spec today at Steven's request. |
 
+**Reviewed 2026-09-02 by a later session. One bug fixed, two items below corrected. See "Review findings" at the end.**
+
 Git: the repo has never been committed. Everything is on disk and staged
 from an earlier `git add -A`; newer files are untracked. Commit when Steven
 asks.
@@ -39,10 +41,10 @@ asks.
 ## Open items in milestone 4, in order
 
 1. **`daemon/scripts/player_state.applescript` fails to compile**: "Expected expression but found “st”" at the `set st to "stopped"` line. `st` is evidently a term in iTunes' dictionary, same trap as `missing` and `removed` (see memory). Rename the variable, redeploy, then `GET /api/player` should work.
-2. **Two artwork 404s to investigate**: an MP3 (`036FEA1D553917B6`, Metallica "One") and a WAV (`E36AB621A1C1EA7A`) both returned 404 in about 0.35 s, meaning the file parser found nothing and the AppleScript fallback (`artwork_export`) also returned "none" or failed quietly (failures are logged at INFO in daemon.log). Check whether those tracks really have no art in iTunes before suspecting `artwork.py`'s ID3 parser. AAC and ALAC artwork work (PNG 204 KB in 70 ms, JPEG 63 KB in 40 ms) and ETag/304 works.
+2. ~~Two artwork 404s to investigate.~~ **Resolved: not a bug.** iTunes reports zero artworks for both `036FEA1D553917B6` and `E36AB621A1C1EA7A`, so 404 is the correct answer. Nothing to fix. AAC and ALAC artwork work (PNG 204 KB in 70 ms, JPEG 63 KB in 40 ms) and ETag/304 works.
 3. **Nothing audible has been tested.** `POST /api/player/play` with a track, `next`, `previous`, volume, and position are untested because they would play through Steven's receiver. Tell him before the first play test, or ask him to try it.
 4. **Client work remaining for milestone 4**, all in `client/Sources`:
-   - `App/PlayerController.swift` and the player methods in `API/APIClient.swift` and `API/Models.swift` are written but have never been compiled.
+   - `App/PlayerController.swift` and the player methods in `API/APIClient.swift` and `API/Models.swift` **do compile cleanly** (verified; the earlier note that they had never been built was wrong). They are simply not wired to any control yet.
    - `Aqua/AquaChrome.swift` `AquaDisplayPanel` still only shows two text lines. It needs the playing mode: bold title, "artist — album", a scrubber with elapsed and remaining times, drag to seek (call `PlayerController.seek`). Use `displayPosition` for smooth motion between one-second polls.
    - `App/MainWindowController.swift`: wire `previousButton` / `playButton` / `nextButton` / `volumeSlider` to the PlayerController; flip the play glyph to `.pause` while playing; double-click on the track table plays the row (pass the playlist persistent ID when the source is a playlist); space bar toggles play/pause.
    - AirPlay picker: a small drawn button with the AirPlay glyph right of the volume slider; click opens an NSMenu of `PlayerController.outputs` with checkmarks, toggling via `toggleOutput`. Use `attributedTitle` with Lucida Grande so the menu is not in San Francisco. Tint the glyph blue when a non-Computer device is selected.
@@ -56,6 +58,66 @@ asks.
 - iTunes 12.9.5 exposes `AirPlay device` objects. `outputs_list` and `outputs_set` scripts work (tested by setting Computer, which was already selected). `get name of current AirPlay devices` errors; iterate devices and read `selected` instead.
 - `artworks` of a track and `raw data of artwork 1` work; the bytes are the original PNG or JPEG. Sniff the type from the bytes.
 - Reload of the XML on the Air's Python held reads to about 1 s worst case; the same on the MBP is untested.
+
+## Review findings, 2026-09-02
+
+**Fixed: the in-memory patch made the library briefly vanish for readers.**
+`Library.patch` sorted `order` in place while HTTP reads iterated that same
+list without a lock, and CPython empties a list for the duration of
+`list.sort`. Measured against the old code, 338,754 of 338,978 concurrent
+reads returned a short library and some returned zero tracks. Milestone 5
+would have shipped a track table that flashed empty during a bulk edit.
+
+The fix is in `library.py`:
+
+- `patch_many` replaces the per-track path. It builds a new list with `sorted`
+  and rebinds the attribute, so a reader sees either the whole old list or the
+  whole new one.
+- It re-sorts only when a field in `Track.SORT_FIELDS` changed. Genre is not a
+  sort field, so the bulk genre edit does no sorting at all.
+- It validates every track and field before mutating anything, so a bad field
+  cannot leave a 300-track batch half applied.
+- Journal replay on reload goes through the same path.
+
+**Milestone 6 must call `store.patch_many(...)` once, not `patch` in a loop.**
+On the real 95,521-track library:
+
+| 300-track genre batch, no re-sort | 2.1 ms |
+| 300-track album batch, one re-sort | 65.5 ms |
+| 300 album patches one at a time | 18,284.7 ms |
+
+Regression tests are in `daemon/tests/`. Run them from `daemon/` with
+`python3 -m unittest discover`. Eleven tests, and they pass on the MacBook Pro
+under Python 3.13 as well as on the Air.
+
+**Not fixed, but know about it before Cover Flow: artwork does not scale.**
+Only 61.7% of tracks carry embedded artwork. In a stratified sample of 48
+tracks, iTunes had art for 20 that the files did not, because that art lives in
+the iTunes artwork cache rather than in the file. Each of those misses falls
+through to an AppleScript call holding the single global Apple Events lock for
+about 0.3 s, competing with the one-second player poll. Across 9,231 albums
+that is thousands of serialized calls. The artwork cache also holds only 300
+entries, is never invalidated on reload, and caches misses forever. Decide on a
+different source or a batched export before building 7a.
+
+`artwork.py` itself is sound. It parsed 1,802 real files across five containers
+with no exceptions and no false positives; the files it reports as having no
+art genuinely have none. It does not handle AIFF or WAV containers at all,
+which is why those always fall through to iTunes.
+
+**Smaller things, none urgent.**
+
+- The config binds every interface, while SPEC section 8 says bind to the LAN
+  interface.
+- `get_player` and `get_outputs` read an attribute on the AppleScript object
+  before the guard that checks it exists, so a daemon built without AppleScript
+  would return 500 rather than a clean 501.
+- `_clean_error` strips the "execution error" prefix but not "script error",
+  which is the class that actually occurred with the player state script.
+- A browser selection that disappears can fire up to three redundant reloads in
+  `LibraryController`. Harmless, the generation guard drops the stale ones.
+- SPEC section 9 item 5 requires `setup.sh` and `check.py`. Neither exists yet,
+  and the daemon still runs under nohup from SSH.
 
 ## Things Steven cares about
 

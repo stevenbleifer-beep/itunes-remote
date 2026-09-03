@@ -55,6 +55,12 @@ class Track(object):
         "compilation": "compilation",
     }
 
+    # The subset of EDITABLE that appears in sort_key. Editing anything else,
+    # genre above all, cannot change the row order, so it needs no re-sort.
+    SORT_FIELDS = frozenset((
+        "name", "artist", "album_artist", "album", "year", "track_number", "disc_number",
+    ))
+
     def __init__(self, raw):
         self.persistent_id = raw["Persistent ID"]
         self.track_id = raw["Track ID"]
@@ -310,10 +316,40 @@ class Library(object):
     # -- writes (in-memory only; iTunes is written elsewhere) -------------
 
     def patch(self, persistent_id, fields):
-        t = self.tracks[persistent_id]
-        old = t.apply(fields)
-        # Keep default ordering correct if a sort-affecting field changed.
-        self.order.sort(key=lambda x: x.sort_key)
+        return self.patch_many({persistent_id: fields})[persistent_id]
+
+    def patch_many(self, patches):
+        """Applies {persistent_id: fields} and returns {persistent_id: old fields}.
+
+        Two rules matter here, and both exist because readers run concurrently
+        on other threads without taking a lock:
+
+        1. Never sort `order` in place. CPython empties a list for the duration
+           of `list.sort`, so a reader iterating it mid-sort sees no tracks at
+           all. Build a new list with `sorted` and rebind the attribute, which
+           is atomic; a reader either sees the whole old list or the whole new
+           one.
+        2. Validate every field before mutating anything, so a bad field name
+           partway through a 300-track batch cannot leave it half applied.
+        """
+        targets = {}
+        for pid, fields in patches.items():
+            track = self.tracks.get(pid)
+            if track is None:
+                raise KeyError(pid)
+            for key in fields:
+                if key not in Track.EDITABLE:
+                    raise ValueError("field not editable: %s" % key)
+            targets[pid] = track
+
+        old = {}
+        resort = False
+        for pid, fields in patches.items():
+            old[pid] = targets[pid].apply(fields)
+            if not resort and not Track.SORT_FIELDS.isdisjoint(fields):
+                resort = True
+        if resort:
+            self.order = sorted(self.order, key=lambda t: t.sort_key)
         return old
 
 
@@ -383,16 +419,20 @@ class LibraryStore(object):
             self._reloading = False
             return
         with self._lock:
-            replayed = 0
+            # Replay only patches newer than the XML we just parsed. `new` is
+            # not published until the assignment below, so nothing reads it yet,
+            # but it goes through patch_many anyway to keep one code path.
+            replay = {}
             for ts, pid, fields in self._journal:
                 if ts > new.xml_date and pid in new.tracks:
-                    try:
-                        new.tracks[pid].apply(fields)
-                        replayed += 1
-                    except ValueError:
-                        pass
-            if replayed:
-                new.order.sort(key=lambda x: x.sort_key)
+                    replay.setdefault(pid, {}).update(fields)
+            replayed = len(replay)
+            if replay:
+                try:
+                    new.patch_many(replay)
+                except (KeyError, ValueError) as e:
+                    log.warning("journal replay skipped: %s", e)
+                    replayed = 0
             self._journal = [j for j in self._journal if j[0] > new.xml_date]
             self._lib = new
         self._reloading = False
@@ -400,9 +440,15 @@ class LibraryStore(object):
         log.info("swapped in reloaded library (%d journal entries replayed)", replayed)
 
     def patch(self, persistent_id, fields):
+        return self.patch_many({persistent_id: fields})[persistent_id]
+
+    def patch_many(self, patches):
+        """One lock acquisition and at most one re-sort for the whole batch."""
         with self._lock:
-            old = self._lib.patch(persistent_id, fields)
-            self._journal.append((time.time(), persistent_id, dict(fields)))
+            old = self._lib.patch_many(patches)
+            now = time.time()
+            for pid, fields in patches.items():
+                self._journal.append((now, pid, dict(fields)))
         return old
 
     def status(self):
