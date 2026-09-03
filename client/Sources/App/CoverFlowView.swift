@@ -9,6 +9,7 @@ struct AlbumEntry: Decodable, Equatable {
     let totalTime: Int
     let coverTrackId: String?
     let hasArtwork: Bool
+    var dateAdded: String? = nil
 
     var title: String { album.isEmpty ? "Unknown Album" : album }
     var artistName: String { artist.trimmingCharacters(in: .whitespaces).isEmpty ? "Unknown Artist" : artist }

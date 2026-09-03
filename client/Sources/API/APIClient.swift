@@ -238,7 +238,8 @@ final class APIClient {
                 compilation: (row[idx["compilation"]!] as? Bool) ?? false,
                 enabled: idx["enabled"].flatMap { row[$0] as? Bool } ?? true,
                 rating: idx["rating"].flatMap { row[$0] as? Int } ?? 0,
-                playCount: idx["playCount"].flatMap { row[$0] as? Int } ?? 0
+                playCount: idx["playCount"].flatMap { row[$0] as? Int } ?? 0,
+                dateAdded: idx["dateAdded"].flatMap { row[$0] as? String } ?? ""
             ))
         }
         return TrackPage(

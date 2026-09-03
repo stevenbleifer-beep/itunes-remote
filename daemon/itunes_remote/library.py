@@ -294,8 +294,10 @@ class Library(object):
     )
 
     def query(self, q=None, genre=None, artist=None, album=None, composer=None,
-              grouping=None, playlist=None, offset=0, limit=200, compact=False):
+              grouping=None, playlist=None, offset=0, limit=200, compact=False, recent=0):
         matched = self._filter(self._candidates(playlist), q, genre, artist, album, composer, grouping)
+        if recent:
+            matched = sorted(matched, key=lambda t: t.date_added or "", reverse=True)[:recent]
         page = matched[offset:offset + limit]
         total_time = 0
         total_size = 0
@@ -348,7 +350,7 @@ class Library(object):
         ]
 
     def albums(self, q=None, genre=None, artist=None, album=None, composer=None,
-               grouping=None, playlist=None):
+               grouping=None, playlist=None, recent=0):
         """One row per album, for Cover Flow, Grid and Album List.
 
         The cover track is the earliest track in the album that iTunes says has
@@ -368,9 +370,13 @@ class Library(object):
                     "trackCount": 0,
                     "totalTime": 0,
                     "coverTrackId": None,
+                    "dateAdded": None,
                     "_coverRank": None,
                     "_sort": (t.disc_number or 0, t.track_number or 0),
                 }
+            if t.date_added and (g["dateAdded"] is None or t.date_added > g["dateAdded"]):
+                # The album's recency is that of its newest track.
+                g["dateAdded"] = t.date_added
             g["trackCount"] += 1
             g["totalTime"] += t.total_time or 0
             if g["year"] is None and t.year:
@@ -380,8 +386,12 @@ class Library(object):
                 g["_coverRank"] = rank
                 g["coverTrackId"] = t.persistent_id
                 g["hasArtwork"] = bool(t.artwork_count)
+        if recent:
+            order = sorted(groups, key=lambda k: groups[k]["dateAdded"] or "", reverse=True)[:recent]
+        else:
+            order = sorted(groups, key=lambda k: (k[0] == "", k[0], k[1]))
         out = []
-        for key in sorted(groups, key=lambda k: (k[0] == "", k[0], k[1])):
+        for key in order:
             g = groups[key]
             g.pop("_coverRank", None)
             g.pop("_sort", None)

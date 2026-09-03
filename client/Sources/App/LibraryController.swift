@@ -2,11 +2,12 @@ import Foundation
 
 enum Source: Equatable {
     case library
+    case recentlyAdded
     case playlist(Playlist)
 
     static func == (a: Source, b: Source) -> Bool {
         switch (a, b) {
-        case (.library, .library): return true
+        case (.library, .library), (.recentlyAdded, .recentlyAdded): return true
         case let (.playlist(x), .playlist(y)): return x.persistentId == y.persistentId
         default: return false
         }
@@ -15,6 +16,17 @@ enum Source: Equatable {
     var playlistId: String? {
         if case let .playlist(p) = self { return p.persistentId }
         return nil
+    }
+
+    /// How many of the newest items Recently Added shows.
+    var recentLimit: Int { self == .recentlyAdded ? 600 : 0 }
+
+    var displayName: String {
+        switch self {
+        case .library: return "Music"
+        case .recentlyAdded: return "Recently Added"
+        case .playlist(let p): return p.name
+        }
     }
 }
 
@@ -113,12 +125,13 @@ final class LibraryController {
     // MARK: Filters
 
     private var browserFilter: TrackFilter {
-        TrackFilter(q: searchText, genre: nil, artist: nil, album: nil, playlist: source.playlistId)
+        TrackFilter(q: searchText, genre: nil, artist: nil, album: nil,
+                    playlist: source.playlistId, recent: source.recentLimit)
     }
 
     var trackFilter: TrackFilter {
         TrackFilter(q: searchText, genre: selectedGenre, artist: selectedArtist,
-                    album: selectedAlbum, playlist: source.playlistId)
+                    album: selectedAlbum, playlist: source.playlistId, recent: source.recentLimit)
     }
 
     // MARK: Reload
@@ -130,8 +143,10 @@ final class LibraryController {
         loading = true
         onStatusChanged()
         let base = browserFilter
-        let artistFilter = TrackFilter(q: base.q, genre: selectedGenre, artist: nil, album: nil, playlist: base.playlist)
-        let albumFilter = TrackFilter(q: base.q, genre: selectedGenre, artist: selectedArtist, album: nil, playlist: base.playlist)
+        let artistFilter = TrackFilter(q: base.q, genre: selectedGenre, artist: nil, album: nil,
+                                       playlist: base.playlist, recent: base.recent)
+        let albumFilter = TrackFilter(q: base.q, genre: selectedGenre, artist: selectedArtist, album: nil,
+                                      playlist: base.playlist, recent: base.recent)
         let trackFilter = self.trackFilter
         Task {
             do {
@@ -182,7 +197,12 @@ final class LibraryController {
     }
 
     private func applySort() {
-        guard let key = sortKey else { return }
+        guard let key = sortKey else {
+            if source == .recentlyAdded {
+                tracks.sort { $0.dateAdded > $1.dateAdded }
+            }
+            return
+        }
         let asc = sortAscending
         func cmpStr(_ a: String, _ b: String) -> Bool {
             let r = a.localizedCaseInsensitiveCompare(b)
@@ -202,6 +222,7 @@ final class LibraryController {
         case "trackNumber": tracks.sort { cmpInt($0.trackNumber, $1.trackNumber) }
         case "rating": tracks.sort { $0.rating == $1.rating ? albumOrder($0, $1) : cmpInt($0.rating, $1.rating) }
         case "playCount": tracks.sort { $0.playCount == $1.playCount ? albumOrder($0, $1) : cmpInt($0.playCount, $1.playCount) }
+        case "dateAdded": tracks.sort { asc ? $0.dateAdded < $1.dateAdded : $0.dateAdded > $1.dateAdded }
         default: break
         }
     }

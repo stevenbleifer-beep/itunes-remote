@@ -227,8 +227,9 @@ class Api(object):
         compact = self._one(query, "compact", "0") not in ("0", "", "false")
         offset = self._int(query, "offset", 0, 0, 10 ** 9)
         limit = self._int(query, "limit", 200, 1, 200000 if compact else 5000)
+        recent = self._int(query, "recent", 0, 0, 20000)
         try:
-            return self.store.lib.query(offset=offset, limit=limit, compact=compact, **f)
+            return self.store.lib.query(offset=offset, limit=limit, compact=compact, recent=recent, **f)
         except KeyError:
             raise ApiError(404, "no such playlist")
 
@@ -270,8 +271,9 @@ class Api(object):
 
     def get_album_list(self, params, query, body):
         f = self._filters(query)
+        recent = self._int(query, "recent", 0, 0, 20000)
         try:
-            return {"albums": self.store.lib.albums(**f)}
+            return {"albums": self.store.lib.albums(recent=recent, **f)}
         except KeyError:
             raise ApiError(404, "no such playlist")
 

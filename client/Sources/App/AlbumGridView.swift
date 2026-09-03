@@ -8,6 +8,10 @@ final class AlbumGridView: NSView {
     var albums: [AlbumEntry] = [] {
         didSet {
             images.removeAll()
+            // `requested` must be cleared too, or the indices the previous
+            // album list already asked for are never fetched again and every
+            // cover stays a placeholder.
+            requested.removeAll()
             generation += 1
             if let s = selectedIndex, s >= albums.count { selectedIndex = nil }
             relayout()

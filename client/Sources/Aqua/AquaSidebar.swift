@@ -1,7 +1,7 @@
 import Cocoa
 
 enum SidebarIcon {
-    case music, playlist, smartPlaylist, ipod, none
+    case music, recent, playlist, smartPlaylist, ipod, none
 }
 
 /// The sidebar row: a small drawn icon and a label, as iTunes 10 laid out
@@ -64,6 +64,22 @@ final class SidebarIconView: NSView {
             beam.move(to: NSPoint(x: cx - 2.4, y: cy + 4.5)); beam.line(to: NSPoint(x: cx + 6.4, y: cy + 6))
             beam.line(to: NSPoint(x: cx + 6.4, y: cy + 3.5)); beam.line(to: NSPoint(x: cx - 2.4, y: cy + 2))
             beam.close(); beam.fill()
+        case .recent:
+            // A clock face, for Recently Added.
+            let r: CGFloat = 7
+            let dial = NSBezierPath(ovalIn: NSRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2))
+            (selected ? NSColor(white: 1, alpha: 0.25) : NSColor(white: 1, alpha: 0.9)).setFill()
+            dial.fill()
+            fill.setStroke()
+            dial.lineWidth = 1.6
+            dial.stroke()
+            let hands = NSBezierPath()
+            hands.lineWidth = 1.5
+            hands.lineCapStyle = .round
+            hands.move(to: NSPoint(x: cx, y: cy)); hands.line(to: NSPoint(x: cx, y: cy + 4))
+            hands.move(to: NSPoint(x: cx, y: cy)); hands.line(to: NSPoint(x: cx + 3, y: cy - 1))
+            fill.setStroke()
+            hands.stroke()
         case .playlist:
             // A note on a small square page.
             let page = NSBezierPath(roundedRect: NSRect(x: cx - 6.5, y: cy - 6.5, width: 13, height: 13), xRadius: 2, yRadius: 2)

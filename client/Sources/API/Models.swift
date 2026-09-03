@@ -29,6 +29,7 @@ struct Track {
     var enabled: Bool = true // the checkbox column
     var rating: Int = 0      // 0-100, five stars of 20
     var playCount: Int = 0
+    var dateAdded: String = ""   // ISO 8601, so it sorts as text
 
     /// The artist shown in the browser and used for grouping.
     var displayArtist: String { albumArtist.isEmpty ? artist : albumArtist }
@@ -67,6 +68,8 @@ struct TrackFilter: Equatable {
     var artist: String?
     var album: String?
     var playlist: String?
+    /// Non-zero asks the daemon for only the N most recently added, newest first.
+    var recent: Int = 0
 
     var queryItems: [URLQueryItem] {
         var items: [URLQueryItem] = []
@@ -75,6 +78,7 @@ struct TrackFilter: Equatable {
         if let v = artist { items.append(URLQueryItem(name: "artist", value: v)) }
         if let v = album { items.append(URLQueryItem(name: "album", value: v)) }
         if let v = playlist { items.append(URLQueryItem(name: "playlist", value: v)) }
+        if recent > 0 { items.append(URLQueryItem(name: "recent", value: String(recent))) }
         return items
     }
 }

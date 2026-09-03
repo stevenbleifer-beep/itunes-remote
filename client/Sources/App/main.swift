@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main = MainWindowController()
         main.snapshotPath = arg("--snapshot")
         main.initialFlowIndex = arg("--flow-index").flatMap { Int($0) }
+        main.initialSource = arg("--source")
         if args.contains("--mini") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak main] in main?.toggleMiniPlayer(nil) }
         }

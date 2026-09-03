@@ -10,78 +10,79 @@ func draw(size: CGFloat) -> NSImage {
     NSGraphicsContext.current?.imageInterpolation = .high
     let s = size / 1024
     let c = NSPoint(x: size / 2, y: size / 2)
-    // Outside the rounded square stays transparent.
+    // Everything outside the disc stays transparent.
 
-    let inset = 40 * s
-    let body = NSRect(x: inset, y: inset, width: size - inset * 2, height: size - inset * 2)
-    let radius = body.width * 0.255
-    let shape = NSBezierPath(roundedRect: body, xRadius: radius, yRadius: radius)
+    func circle(_ r: CGFloat) -> NSBezierPath {
+        NSBezierPath(ovalIn: NSRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
+    }
 
-    // Face: deep blue overall, violet in the top-left corner, a bright cyan
-    // glow behind the note, and a glossy upper half.
+    // Silver ring.
+    let ringR = 498 * s
+    NSGradient(starting: NSColor(white: 1.00, alpha: 1), ending: NSColor(white: 0.66, alpha: 1))!
+        .draw(in: circle(ringR), angle: -90)
+
+    // Dark navy rim just inside it.
+    let rimR = 468 * s
+    NSGradient(starting: NSColor(srgbRed: 0.06, green: 0.13, blue: 0.26, alpha: 1),
+               ending: NSColor(srgbRed: 0.01, green: 0.03, blue: 0.10, alpha: 1))!
+        .draw(in: circle(rimR), angle: -90)
+
+    // The face.
+    let faceR = 452 * s
+    let faceRect = NSRect(x: c.x - faceR, y: c.y - faceR, width: faceR * 2, height: faceR * 2)
+    let face = circle(faceR)
     NSGraphicsContext.saveGraphicsState()
-    shape.addClip()
-    NSColor(srgbRed: 0.07, green: 0.42, blue: 0.93, alpha: 1).setFill()
-    body.fill()
+    face.addClip()
 
-    // A bright cyan core behind the note: the dominant feature of the face.
-    let glow = NSPoint(x: c.x, y: c.y - body.height * 0.02)
+    // Steel blue at the top falling to a bright blue at the bottom.
     NSGradient(colorsAndLocations:
-        (NSColor(srgbRed: 0.58, green: 0.90, blue: 1.00, alpha: 1.0), 0.0),
-        (NSColor(srgbRed: 0.32, green: 0.76, blue: 1.00, alpha: 0.92), 0.24),
-        (NSColor(srgbRed: 0.13, green: 0.55, blue: 1.00, alpha: 0.65), 0.48),
-        (NSColor(srgbRed: 0.05, green: 0.32, blue: 0.90, alpha: 0.20), 0.74),
-        (NSColor(srgbRed: 0.03, green: 0.20, blue: 0.70, alpha: 0.0), 1.0))!
-        .draw(fromCenter: glow, radius: 0, toCenter: glow, radius: body.width * 0.56, options: [])
+        (NSColor(srgbRed: 0.24, green: 0.42, blue: 0.62, alpha: 1), 0.0),
+        (NSColor(srgbRed: 0.10, green: 0.36, blue: 0.72, alpha: 1), 0.42),
+        (NSColor(srgbRed: 0.03, green: 0.44, blue: 0.94, alpha: 1), 0.72),
+        (NSColor(srgbRed: 0.02, green: 0.34, blue: 0.82, alpha: 1), 1.0))!
+        .draw(in: faceRect, angle: -90)
 
-    // Violet, only in the top-left corner.
-    let violet = NSPoint(x: body.minX + body.width * 0.06, y: body.maxY - body.height * 0.04)
+    // Cyan core behind the note, low and centred.
+    let glow = NSPoint(x: c.x, y: c.y - faceR * 0.26)
     NSGradient(colorsAndLocations:
-        (NSColor(srgbRed: 0.48, green: 0.28, blue: 0.86, alpha: 0.95), 0.0),
-        (NSColor(srgbRed: 0.34, green: 0.30, blue: 0.88, alpha: 0.45), 0.42),
-        (NSColor(srgbRed: 0.10, green: 0.36, blue: 0.92, alpha: 0.0), 1.0))!
-        .draw(fromCenter: violet, radius: 0, toCenter: violet, radius: body.width * 0.46, options: [])
+        (NSColor(srgbRed: 0.42, green: 0.84, blue: 1.00, alpha: 0.95), 0.0),
+        (NSColor(srgbRed: 0.16, green: 0.66, blue: 1.00, alpha: 0.70), 0.32),
+        (NSColor(srgbRed: 0.04, green: 0.44, blue: 0.96, alpha: 0.28), 0.62),
+        (NSColor(srgbRed: 0.02, green: 0.28, blue: 0.78, alpha: 0.0), 1.0))!
+        .draw(fromCenter: glow, radius: 0, toCenter: glow, radius: faceR * 0.95, options: [])
 
-    // Darker corners so the face reads as domed.
-    NSGradient(colorsAndLocations:
-        (NSColor(srgbRed: 0.02, green: 0.16, blue: 0.55, alpha: 0.0), 0.62),
-        (NSColor(srgbRed: 0.02, green: 0.12, blue: 0.46, alpha: 0.45), 1.0))!
-        .draw(fromCenter: c, radius: 0, toCenter: c, radius: body.width * 0.82, options: [])
-
-    // Gloss: the top half, curving down to a soft horizon.
+    // Gloss over the top half, ending on a hard curved horizon.
     let horizon = NSBezierPath()
-    horizon.move(to: NSPoint(x: body.minX, y: body.maxY))
-    horizon.line(to: NSPoint(x: body.minX, y: body.midY + body.height * 0.10))
-    horizon.curve(to: NSPoint(x: body.maxX, y: body.midY + body.height * 0.10),
-                  controlPoint1: NSPoint(x: body.minX + body.width * 0.30, y: body.midY - body.height * 0.10),
-                  controlPoint2: NSPoint(x: body.maxX - body.width * 0.30, y: body.midY - body.height * 0.10))
-    horizon.line(to: NSPoint(x: body.maxX, y: body.maxY))
+    horizon.move(to: NSPoint(x: c.x - faceR, y: c.y + faceR))
+    horizon.line(to: NSPoint(x: c.x - faceR, y: c.y + faceR * 0.06))
+    horizon.curve(to: NSPoint(x: c.x + faceR, y: c.y + faceR * 0.06),
+                  controlPoint1: NSPoint(x: c.x - faceR * 0.35, y: c.y - faceR * 0.30),
+                  controlPoint2: NSPoint(x: c.x + faceR * 0.35, y: c.y - faceR * 0.30))
+    horizon.line(to: NSPoint(x: c.x + faceR, y: c.y + faceR))
     horizon.close()
     NSGraphicsContext.saveGraphicsState()
     horizon.addClip()
     NSGradient(colorsAndLocations:
-        (NSColor.white.withAlphaComponent(0.44), 0.0),
-        (NSColor.white.withAlphaComponent(0.16), 0.55),
-        (NSColor.white.withAlphaComponent(0.03), 1.0))!
-        .draw(in: NSRect(x: body.minX, y: body.midY, width: body.width, height: body.height / 2), angle: -90)
+        (NSColor.white.withAlphaComponent(0.42), 0.0),
+        (NSColor.white.withAlphaComponent(0.20), 0.55),
+        (NSColor.white.withAlphaComponent(0.06), 1.0))!
+        .draw(in: NSRect(x: c.x - faceR, y: c.y - faceR * 0.30, width: faceR * 2, height: faceR * 1.30), angle: -90)
     NSGraphicsContext.restoreGraphicsState()
     NSGraphicsContext.restoreGraphicsState()
 
-    // The note: two oval heads, two slim stems, one slanted beam. Measured
-    // off the reference: the beam is about 8% of the body's height and the
-    // stems about 4.5% of its width, which is far slimmer than it first looks.
+    // The note: two oval heads, two slim stems, one slanted beam.
     let note = NSBezierPath()
-    let headRX = 76 * s, headRY = 63 * s
-    let stemW = 43 * s
-    let beamH = 78 * s
-    let leftHead = NSPoint(x: c.x - 128 * s, y: c.y - 236 * s)
-    let rightHead = NSPoint(x: c.x + 130 * s, y: c.y - 178 * s)
+    let headRX = 88 * s, headRY = 72 * s
+    let stemW = 48 * s
+    let beamH = 88 * s
+    let leftHead = NSPoint(x: c.x - 150 * s, y: c.y - 232 * s)
+    let rightHead = NSPoint(x: c.x + 152 * s, y: c.y - 168 * s)
     for h in [leftHead, rightHead] {
         note.append(NSBezierPath(ovalIn: NSRect(x: h.x - headRX, y: h.y - headRY, width: headRX * 2, height: headRY * 2)))
     }
     let leftStemX = leftHead.x + headRX - stemW
     let rightStemX = rightHead.x + headRX - stemW
-    let beamTopL = c.y + 232 * s, beamTopR = c.y + 292 * s
+    let beamTopL = c.y + 262 * s, beamTopR = c.y + 330 * s
     note.append(NSBezierPath(rect: NSRect(x: leftStemX, y: leftHead.y, width: stemW, height: beamTopL - leftHead.y)))
     note.append(NSBezierPath(rect: NSRect(x: rightStemX, y: rightHead.y, width: stemW, height: beamTopR - rightHead.y)))
     let beam = NSBezierPath()
@@ -90,39 +91,26 @@ func draw(size: CGFloat) -> NSImage {
     beam.line(to: NSPoint(x: rightStemX + stemW, y: beamTopR - beamH))
     beam.line(to: NSPoint(x: leftStemX, y: beamTopL - beamH))
     beam.close()
-    beam.lineJoinStyle = .miter
     note.append(beam)
     note.windingRule = .nonZero
 
     NSGraphicsContext.saveGraphicsState()
-    shape.addClip()
-    // A soft shadow under the note lifts it off the glass.
+    face.addClip()
     let noteShadow = NSShadow()
-    noteShadow.shadowColor = NSColor(srgbRed: 0.01, green: 0.08, blue: 0.30, alpha: 0.55)
-    noteShadow.shadowBlurRadius = 26 * s
+    noteShadow.shadowColor = NSColor(srgbRed: 0.01, green: 0.06, blue: 0.24, alpha: 0.5)
+    noteShadow.shadowBlurRadius = 24 * s
     noteShadow.shadowOffset = NSSize(width: 0, height: -10 * s)
     NSGraphicsContext.saveGraphicsState()
     noteShadow.set()
     NSColor.black.setFill()
     note.fill()
     NSGraphicsContext.restoreGraphicsState()
-    // Near-black, a touch lighter at the top as the reference has it.
     NSGradient(colorsAndLocations:
-        (NSColor(srgbRed: 0.20, green: 0.21, blue: 0.24, alpha: 1), 0.0),
-        (NSColor(srgbRed: 0.09, green: 0.10, blue: 0.12, alpha: 1), 0.5),
-        (NSColor(srgbRed: 0.02, green: 0.02, blue: 0.04, alpha: 1), 1.0))!
+        (NSColor(srgbRed: 0.30, green: 0.32, blue: 0.35, alpha: 1), 0.0),
+        (NSColor(srgbRed: 0.13, green: 0.14, blue: 0.16, alpha: 1), 0.5),
+        (NSColor(srgbRed: 0.03, green: 0.03, blue: 0.05, alpha: 1), 1.0))!
         .draw(in: note, angle: -90)
     NSGraphicsContext.restoreGraphicsState()
-
-    // Border: a dark navy edge with a fine light line just inside it.
-    NSColor(srgbRed: 0.03, green: 0.09, blue: 0.30, alpha: 1).setStroke()
-    shape.lineWidth = max(1, 14 * s)
-    shape.stroke()
-    let innerEdge = NSBezierPath(roundedRect: body.insetBy(dx: 11 * s, dy: 11 * s),
-                                 xRadius: radius - 10 * s, yRadius: radius - 10 * s)
-    NSColor.white.withAlphaComponent(0.22).setStroke()
-    innerEdge.lineWidth = max(1, 5 * s)
-    innerEdge.stroke()
 
     img.unlockFocus()
     return img

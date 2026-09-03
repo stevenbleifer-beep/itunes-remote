@@ -16,6 +16,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private enum SourceRow {
         case header(String)
         case library
+        case recentlyAdded
         case playlist(Playlist)
         case device(DeviceSource)
     }
@@ -88,6 +89,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var albumGeneration = 0
     /// Development only: `--flow-index N` selects album N once the list loads.
     var initialFlowIndex: Int?
+    /// Development only: `--source recent` starts on Recently Added.
+    var initialSource: String?
     private var infoPanel: InfoPanel?          // held while its sheet is up
     private var namePrompt: NamePrompt?        // held while its sheet is up
     private var statusOverride: String?
@@ -413,8 +416,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 let list = try await api.albumList(filter: filter)
                 guard gen == albumGeneration else { return }
                 albums = list
-                if viewMode == .coverFlow { coverFlow.albums = list }
-                if viewMode == .grid { grid.albums = list }
+                switch viewMode {
+                case .coverFlow: coverFlow.albums = list
+                case .grid: grid.albums = list
+                default: break
+                }
                 if let k = keep, viewMode == .coverFlow,
                    let i = list.firstIndex(where: { $0.album == k.album && $0.artist == k.artist }) {
                     coverFlow.select(i, animated: false)
@@ -565,6 +571,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         trackTable.addTableColumn(AquaTables.column("genre", title: "Genre", width: 110, min: 50))
         trackTable.addTableColumn(AquaTables.column("rating", title: "Rating", width: 70, min: 66))
         trackTable.addTableColumn(AquaTables.column("playCount", title: "Plays", width: 46, min: 40, rightAligned: true))
+        trackTable.addTableColumn(AquaTables.column("dateAdded", title: "Date Added", width: 96, min: 70))
         trackTable.addTableColumn(AquaTables.column("year", title: "Year", width: 48, min: 40, rightAligned: true))
         trackTable.addTableColumn(AquaTables.column("trackNumber", title: "Track #", width: 64, min: 40, rightAligned: true))
         AquaTables.style(trackTable, rowHeight: 18, header: true)
@@ -606,10 +613,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         controller.onBrowserChanged = { [weak self] in self?.reloadBrowser() }
         controller.onTracksChanged = { [weak self] in
             guard let self = self else { return }
-            if self.viewMode == .coverFlow {
-                self.loadAlbums()
-            } else {
+            // Every view but the plain list is driven by the album list, so it
+            // has to be refetched whenever the track set changes.
+            if self.viewMode == .list {
                 self.refreshRows()
+            } else {
+                self.loadAlbums()
             }
             self.updateArtwork()
         }
@@ -743,7 +752,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func reloadSourceList() {
         updatingUI = true
-        sourceRows = [.header("LIBRARY"), .library]
+        sourceRows = [.header("LIBRARY"), .library, .recentlyAdded]
         if !devices.isEmpty {
             sourceRows.append(.header("DEVICES"))
             sourceRows += devices.map { .device($0) }
@@ -752,9 +761,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         sourceRows += controller.playlists.map { .playlist($0) }
         sourceList.reloadData()
         var select = 1
-        if let current = controller.source.playlistId,
-           let i = sourceRows.firstIndex(where: { if case .playlist(let p) = $0 { return p.persistentId == current }; return false }) {
+        if controller.source == .recentlyAdded {
+            select = 2
+        } else if let current = controller.source.playlistId,
+                  let i = sourceRows.firstIndex(where: { if case .playlist(let p) = $0 { return p.persistentId == current }; return false }) {
             select = i
+        }
+        if initialSource == "recent" {
+            initialSource = nil
+            select = 2
+            updatingUI = false
+            sourceList.selectRowIndexes(IndexSet(integer: select), byExtendingSelection: false)
+            controller.source = .recentlyAdded
+            return
         }
         sourceList.selectRowIndexes(IndexSet(integer: select), byExtendingSelection: false)
         updatingUI = false
@@ -948,10 +967,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             display.secondary = parts.joined(separator: " — ")
         } else {
             display.duration = nil
-            switch controller.source {
-            case .library: display.primary = "Library"
-            case .playlist(let p): display.primary = p.name
-            }
+            display.primary = controller.source.displayName
             if let e = player.lastError, !player.itunesRunning {
                 display.secondary = e
             } else if let e = controller.lastError {
@@ -1201,6 +1217,31 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
+    private static let isoParser: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let shortFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .none
+        return f
+    }()
+
+    /// "9/2/26" from the daemon's ISO timestamp.
+    static func shortDate(_ iso: String) -> String {
+        guard !iso.isEmpty else { return "" }
+        var date = isoParser.date(from: iso)
+        if date == nil {
+            let plain = ISO8601DateFormatter()
+            plain.formatOptions = [.withInternetDateTime]
+            date = plain.date(from: iso)
+        }
+        guard let d = date else { return "" }
+        return shortFormatter.string(from: d)
+    }
+
     private func facetText(_ entries: [FacetEntry], row: Int, noun: String) -> String {
         if row == 0 { return "All (\(entries.count) \(noun)\(entries.count == 1 ? "" : "s"))" }
         let name = entries[row - 1].name
@@ -1225,6 +1266,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 return cell
             case .library:
                 return sidebarCell(tableView, text: "Music", icon: .music)
+            case .recentlyAdded:
+                return sidebarCell(tableView, text: "Recently Added", icon: .recent)
             case .playlist(let p):
                 return sidebarCell(tableView, text: p.name, icon: p.smart ? .smartPlaylist : .playlist)
             case .device(let d):
@@ -1298,6 +1341,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             case "year": text = t.year.map(String.init) ?? ""
             case "trackNumber": text = t.trackNumber.map(String.init) ?? ""
             case "playCount": text = t.playCount > 0 ? String(t.playCount) : ""
+            case "dateAdded": text = MainWindowController.shortDate(t.dateAdded)
             default: text = ""
             }
             cell.textField?.stringValue = text
@@ -1368,6 +1412,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             guard row >= 0 else { return }
             switch sourceRows[row] {
             case .library: controller.source = .library
+            case .recentlyAdded: controller.source = .recentlyAdded
             case .playlist(let p): controller.source = .playlist(p)
             case .header, .device: break
             }
