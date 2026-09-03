@@ -743,6 +743,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         sourceList.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         sourceList.dataSource = self
         sourceList.delegate = self
+        // Shift- and command-click gather several playlists so one Delete, or
+        // one drag, covers the lot. Only playlists join a multiple selection;
+        // see selectionIndexesForProposedSelection below.
+        sourceList.allowsMultipleSelection = true
         sourceList.enclosingScrollView?.backgroundColor = Aqua.sidebarBackground
         sourceList.target = self
         sourceList.doubleAction = #selector(sourceDoubleClicked(_:))
@@ -1517,6 +1521,32 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         return p
     }
 
+    /// Every playlist a command acts on: the whole selection when the click
+    /// landed inside it, and just the clicked row when it landed outside —
+    /// the rule the Finder and iTunes both use for right-clicking a list.
+    private func targetPlaylists() -> [Playlist] {
+        let clicked = sourceList.clickedRow
+        let selected = sourceList.selectedRowIndexes
+        let rowsToUse: IndexSet
+        if clicked >= 0 && !selected.contains(clicked) {
+            rowsToUse = IndexSet(integer: clicked)
+        } else if selected.isEmpty && clicked >= 0 {
+            rowsToUse = IndexSet(integer: clicked)
+        } else {
+            rowsToUse = selected
+        }
+        return rowsToUse.compactMap { row in
+            guard row >= 0, row < sourceRows.count, case .playlist(let p) = sourceRows[row] else { return nil }
+            return p
+        }
+    }
+
+    /// Of those, the ones iTunes will let go of. Smart playlists are defined
+    /// by their rules and are left alone.
+    private func deletablePlaylists() -> [Playlist] {
+        targetPlaylists().filter { !$0.smart }
+    }
+
     func buildSourceMenu(_ menu: NSMenu) {
         menu.removeAllItems()
         func add(_ title: String, _ action: Selector, enabled: Bool = true) {
@@ -1532,9 +1562,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         add("New Playlist…", #selector(newPlaylist(_:)))
         let playlist = clickedPlaylist()
         let editable = playlist != nil && !(playlist!.smart)
+        let deletable = deletablePlaylists()
         menu.addItem(.separator())
-        add("Rename…", #selector(renamePlaylist(_:)), enabled: editable)
-        add("Delete Playlist", #selector(deletePlaylist(_:)), enabled: editable)
+        // Rename is one playlist at a time; deleting is not.
+        add("Rename…", #selector(renamePlaylist(_:)), enabled: editable && deletable.count <= 1)
+        let deleteTitle = deletable.count > 1 ? "Delete \(deletable.count) Playlists" : "Delete Playlist"
+        add(deleteTitle, #selector(deletePlaylist(_:)), enabled: !deletable.isEmpty)
     }
 
     @objc func renamePlaylist(_ sender: Any?) {
@@ -1558,27 +1591,51 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     @objc func deletePlaylist(_ sender: Any?) {
-        guard let playlist = clickedPlaylist(), let window = window, let api = controller.api else { return }
-        // Deleting is not undoable in iTunes, so confirm first.
+        let targets = deletablePlaylists()
+        guard !targets.isEmpty, let window = window, let api = controller.api else { return }
+        // Deleting is not undoable in iTunes, so confirm first — and name what
+        // is going, since a shift-click can gather more than the eye expects.
+        let songs = targets.reduce(0) { $0 + $1.count }
         let alert = NSAlert()
-        alert.messageText = "Delete the playlist “\(playlist.name)”?"
-        alert.informativeText = "The playlist is removed from iTunes. Its \(playlist.count) songs stay in your library."
-        alert.addButton(withTitle: "Delete")
+        if targets.count == 1 {
+            alert.messageText = "Delete the playlist “\(targets[0].name)”?"
+            alert.informativeText = "The playlist is removed from iTunes. Its \(songs) songs stay in your library."
+        } else {
+            alert.messageText = "Delete these \(targets.count) playlists?"
+            let names = targets.prefix(12).map { "  •  \($0.name)" }.joined(separator: "\n")
+            let more = targets.count > 12 ? "\n  …and \(targets.count - 12) more" : ""
+            alert.informativeText = "\(names)\(more)\n\nThey are removed from iTunes. Their \(songs) songs stay in your library."
+        }
+        alert.addButton(withTitle: targets.count == 1 ? "Delete" : "Delete \(targets.count) Playlists")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
             Task { @MainActor in
-                do {
-                    try await api.deletePlaylist(playlist.persistentId)
-                    self?.flashStatus("Deleted \(playlist.name).")
-                    if self?.controller.source.playlistId == playlist.persistentId {
-                        self?.controller.source = .library
+                guard let self = self else { return }
+                var deleted = 0
+                var failure: String?
+                for playlist in targets {
+                    do {
+                        try await api.deletePlaylist(playlist.persistentId)
+                        deleted += 1
+                        if self.controller.source.playlistId == playlist.persistentId {
+                            self.controller.source = .library
+                        }
+                    } catch {
+                        // Report the first failure but keep going, so one bad
+                        // playlist does not strand the rest of the batch.
+                        if failure == nil { failure = "\(playlist.name): \(error.localizedDescription)" }
                     }
-                    await self?.reloadPlaylists()
-                } catch {
-                    self?.flashStatus("Delete failed: \(error.localizedDescription)")
                 }
+                if let failure = failure {
+                    self.flashStatus("Deleted \(deleted) of \(targets.count). Failed on \(failure)")
+                } else if deleted == 1 {
+                    self.flashStatus("Deleted \(targets[0].name).")
+                } else {
+                    self.flashStatus("Deleted \(deleted) playlists.")
+                }
+                await self.reloadPlaylists()
             }
         }
     }
@@ -1629,17 +1686,36 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     @objc func removeFromPlaylist(_ sender: Any?) {
-        guard let playlistId = controller.source.playlistId, let api = controller.api else { return }
-        let ids = selectedTracks.map { $0.persistentId }
+        guard let playlistId = controller.source.playlistId, let api = controller.api,
+              let window = window else { return }
+        let selected = selectedTracks
+        let ids = selected.map { $0.persistentId }
         guard !ids.isEmpty else { return }
-        Task { @MainActor in
-            do {
-                let change = try await api.removeFromPlaylist(playlistId, ids: ids)
-                flashStatus(change.summary("Removed"))
-                await reloadPlaylists()
-                controller.reload()
-            } catch {
-                flashStatus("Remove failed: \(error.localizedDescription)")
+        let name = controller.source.displayName
+
+        // iTunes asked before every playlist removal, and there is no undo on
+        // the far end, so ask here too.
+        let alert = NSAlert()
+        if ids.count == 1 {
+            alert.messageText = "Remove “\(selected[0].name)” from \(name)?"
+        } else {
+            alert.messageText = "Remove these \(ids.count) songs from \(name)?"
+        }
+        alert.informativeText = "The song\(ids.count == 1 ? "" : "s") stay\(ids.count == 1 ? "s" : "") in your library."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self = self else { return }
+            Task { @MainActor in
+                do {
+                    let change = try await api.removeFromPlaylist(playlistId, ids: ids)
+                    self.flashStatus(change.summary("Removed"))
+                    await self.reloadPlaylists()
+                    self.controller.reload()
+                } catch {
+                    self.flashStatus("Remove failed: \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -2091,6 +2167,25 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 self.trackDoubleClickedFromSelection()
                 return nil
             }
+            // Delete and forward-delete act on whichever list has focus, on the
+            // whole selection. Both paths confirm first.
+            if event.keyCode == 51 || event.keyCode == 117 {
+                if self.window?.firstResponder === self.sourceList, !self.deletablePlaylists().isEmpty {
+                    self.deletePlaylist(nil)
+                    return nil
+                }
+                if self.window?.firstResponder === self.trackTable,
+                   self.controller.source.playlistId != nil, !self.selectedTracks.isEmpty {
+                    self.removeFromPlaylist(nil)
+                    return nil
+                }
+                if self.window?.firstResponder === self.trackTable, !self.selectedTracks.isEmpty {
+                    // In Music and Recently Added there is no playlist to
+                    // remove from, and this app never deletes from the library.
+                    self.flashStatus("Select a playlist to remove songs from — Music holds the whole library.")
+                    return nil
+                }
+            }
             return event
         }
     }
@@ -2514,6 +2609,23 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         return true
     }
 
+    /// Sanitises what a shift- or command-click is about to select in the
+    /// sidebar. Extending a selection is only meaningful across playlists, so
+    /// a range dragged over "PLAYLISTS", Music or the iPod keeps the playlists
+    /// and drops the rest. A single click still selects anything.
+    func tableView(_ tableView: NSTableView,
+                   selectionIndexesForProposedSelection proposed: IndexSet) -> IndexSet {
+        guard Tag(rawValue: tableView.tag) == .source, proposed.count > 1 else { return proposed }
+        let playlists = proposed.filteredIndexSet { row in
+            guard row >= 0, row < sourceRows.count else { return false }
+            if case .playlist = sourceRows[row] { return true }
+            return false
+        }
+        // Nothing selectable in the range: leave the selection alone rather
+        // than clearing it out from under the user.
+        return playlists.isEmpty ? tableView.selectedRowIndexes : playlists
+    }
+
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard let table = notification.object as? NSTableView else { return }
         if Tag(rawValue: table.tag) == .tracks {
@@ -2525,6 +2637,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         switch Tag(rawValue: table.tag) {
         case .source:
             guard row >= 0 else { return }
+            // A multiple selection is a batch to act on, not a place to go:
+            // keep showing whatever is already open rather than loading the
+            // lowest-numbered playlist of the group.
+            guard table.selectedRowIndexes.count == 1 else { return }
             switch sourceRows[row] {
             case .library: closeDevicePage(); controller.source = .library
             case .recentlyAdded: closeDevicePage(); controller.source = .recentlyAdded
