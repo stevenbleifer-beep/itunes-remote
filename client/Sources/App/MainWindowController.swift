@@ -576,7 +576,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         if viewMode == .coverFlow { coverFlow.select(index, animated: false) }
         refreshRows()
         guard let first = rows.first else { return }
-        player.play(first, playlist: controller.source.playlistId)
+        startPlayback(first, playlist: controller.source.playlistId)
     }
 
     private func scroll(for table: NSTableView) -> NSScrollView {
@@ -1732,7 +1732,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     @objc func playSelection(_ sender: Any?) {
         guard let first = selectedTracks.first else { return }
-        player.play(first, playlist: controller.source.playlistId)
+        startPlayback(first, playlist: controller.source.playlistId)
     }
 
     // MARK: Player UI
@@ -1815,6 +1815,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             lastBoldId = boldId
             reloadRows(forTrackIds: moved)
         }
+        // The speaker beside the source the music is coming from. iTunes
+        // reports the playlist it is playing from; when it reports none —
+        // which it does for a one-item queue — fall back to whatever the app
+        // last started playback from.
+        let nowPlaylist = stopped ? nil : (state?.playlist?.persistentId ?? startedFromPlaylistId)
+        if nowPlaylist != playingPlaylistId {
+            playingPlaylistId = nowPlaylist
+            let visible = sourceList.rows(in: sourceList.visibleRect)
+            sourceList.reloadData(forRowIndexes: IndexSet(integersIn: Range(visible) ?? 0..<0),
+                                  columnIndexes: IndexSet(integer: 0))
+        }
         mediaKeys.publish(title: state?.track?.name, artist: state?.track?.artist,
                           album: state?.track?.album, duration: state?.track?.duration,
                           elapsed: player.displayPosition, playing: playing, stopped: stopped)
@@ -1828,7 +1839,20 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         updateArtwork()
     }
 
+    /// Every place the window starts a song. Remembers the source so the
+    /// sidebar can mark it, since iTunes reports no playlist for the one-item
+    /// queue that `play <track>` creates.
+    private func startPlayback(_ track: Track, playlist: String?) {
+        startedFromPlaylistId = playlist
+        player.play(track, playlist: playlist)
+    }
+
     private var lastBoldId: String?
+    /// The playlist the current song is playing from, marked in the sidebar.
+    private var playingPlaylistId: String?
+    /// What the app itself last asked to play from, for when iTunes reports
+    /// no playlist of its own.
+    private var startedFromPlaylistId: String?
 
     // MARK: Sync progress on the LCD
 
@@ -2132,7 +2156,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func playRow(_ index: Int) {
         guard index >= 0, index < rows.count else { return }
-        player.play(rows[index], playlist: controller.source.playlistId)
+        startPlayback(rows[index], playlist: controller.source.playlistId)
         if let r = tableRow(forTrackIndex: index) {
             trackTable.selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
             trackTable.scrollRowToVisible(r)
@@ -2141,14 +2165,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     @objc private func trackDoubleClicked(_ sender: Any?) {
         guard let i = trackIndex(forRow: trackTable.clickedRow) else { return }
-        player.play(rows[i], playlist: controller.source.playlistId)
+        startPlayback(rows[i], playlist: controller.source.playlistId)
     }
 
     @objc private func sourceDoubleClicked(_ sender: Any?) {
         let row = sourceList.clickedRow
         guard row >= 0, row < sourceRows.count else { return }
         if case .playlist(let p) = sourceRows[row], let first = rows.first {
-            player.play(first, playlist: p.persistentId)
+            startPlayback(first, playlist: p.persistentId)
         }
     }
 
@@ -2194,7 +2218,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func trackDoubleClickedFromSelection() {
         guard let i = trackIndex(forRow: trackTable.selectedRow) else { return }
-        player.play(rows[i], playlist: controller.source.playlistId)
+        startPlayback(rows[i], playlist: controller.source.playlistId)
     }
 
     // MARK: NSMenuDelegate
@@ -2486,7 +2510,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             case .recentlyAdded:
                 return sidebarCell(tableView, text: "Recently Added", icon: .recent)
             case .playlist(let p):
-                return sidebarCell(tableView, text: p.name, icon: p.smart ? .smartPlaylist : .playlist)
+                let icon: SidebarIcon = p.persistentId == playingPlaylistId
+                    ? .speaker : (p.smart ? .smartPlaylist : .playlist)
+                return sidebarCell(tableView, text: p.name, icon: icon)
             case .device(let d):
                 var text = d.name
                 if let free = d.freeSpace, let cap = d.capacity, cap > 0 {

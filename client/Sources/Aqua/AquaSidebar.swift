@@ -1,7 +1,7 @@
 import Cocoa
 
 enum SidebarIcon {
-    case music, recent, playlist, smartPlaylist, ipod, none
+    case music, recent, playlist, smartPlaylist, ipod, speaker, none
 }
 
 /// The sidebar row: a small drawn icon and a label, as iTunes 10 laid out
@@ -115,6 +115,27 @@ final class SidebarIconView: NSView {
             (selected ? NSColor(srgbRed: 0.35, green: 0.42, blue: 0.55, alpha: 1) : NSColor(white: 0.92, alpha: 1)).setFill()
             NSRect(x: cx - 3, y: cy + 1, width: 6, height: 4.5).fill()
             NSBezierPath(ovalIn: NSRect(x: cx - 2.75, y: cy - 5.75, width: 5.5, height: 5.5)).fill()
+        case .speaker:
+            // Marks the source the current song is playing from, the way
+            // iTunes put a small speaker beside the playing playlist.
+            fill.setFill()
+            let cone = NSBezierPath()
+            cone.move(to: NSPoint(x: cx - 6, y: cy - 2.5))
+            cone.line(to: NSPoint(x: cx - 3, y: cy - 2.5))
+            cone.line(to: NSPoint(x: cx + 0.5, y: cy - 6))
+            cone.line(to: NSPoint(x: cx + 0.5, y: cy + 6))
+            cone.line(to: NSPoint(x: cx - 3, y: cy + 2.5))
+            cone.line(to: NSPoint(x: cx - 6, y: cy + 2.5))
+            cone.close()
+            cone.fill()
+            dark.setStroke()
+            for (r, w) in [(3.0, 1.2), (5.5, 1.2)] as [(CGFloat, CGFloat)] {
+                let arc = NSBezierPath()
+                arc.appendArc(withCenter: NSPoint(x: cx + 0.5, y: cy), radius: r,
+                              startAngle: -42, endAngle: 42)
+                arc.lineWidth = w
+                arc.stroke()
+            }
         }
     }
 }
