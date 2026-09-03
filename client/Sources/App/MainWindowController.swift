@@ -579,7 +579,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         if viewMode == .coverFlow { coverFlow.select(index, animated: false) }
         refreshRows()
         guard let first = rows.first else { return }
-        startPlayback(first, playlist: controller.source.playlistId)
+        startPlayback(first, playlist: controller.source.playlistId, context: rows)
     }
 
     private func scroll(for table: NSTableView) -> NSScrollView {
@@ -1774,7 +1774,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     @objc func playSelection(_ sender: Any?) {
         guard let first = selectedTracks.first else { return }
-        startPlayback(first, playlist: controller.source.playlistId)
+        startPlayback(first, playlist: controller.source.playlistId, context: rows)
     }
 
     // MARK: Player UI
@@ -1885,10 +1885,29 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// Every place the window starts a song. Remembers the source so the
     /// sidebar can mark it, since iTunes reports no playlist for the one-item
     /// queue that `play <track>` creates.
-    private func startPlayback(_ track: Track, playlist: String?) {
+    ///
+    /// `context` is the list Next and Previous step through from here on: a
+    /// snapshot, not the live `rows`. Stepping used to read whatever list was
+    /// on screen, so once you clicked away from the album you had started —
+    /// another cover, a browser column, the sidebar — the playing song was no
+    /// longer in it and Next fell through to iTunes' own Next, which carried
+    /// on through the *playlist* iTunes had last been told to play inside.
+    /// Pass nil to keep the current context (a queued or searched song).
+    private func startPlayback(_ track: Track, playlist: String?, context: [Track]? = nil) {
+        if let list = context {
+            playContext = list
+            playContextPlaylist = playlist
+            playContextName = controller.source.displayName
+            shuffleHistory.removeAll()
+        }
         startedFromPlaylistId = playlist
         player.play(track, playlist: playlist)
     }
+
+    /// The list playback continues through, fixed when it started.
+    private var playContext: [Track] = []
+    private var playContextPlaylist: String?
+    private var playContextName: String?
 
     // MARK: Up Next
 
@@ -1922,11 +1941,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         p.onPlayUpcoming = { [weak self] i in
             guard let self = self else { return }
-            let list = self.upcomingTracks()
-            guard i < list.count,
-                  let j = self.rows.firstIndex(where: { $0.persistentId == list[i].persistentId })
+            let coming = self.upcomingTracks()
+            let list = self.playContext.isEmpty ? self.rows : self.playContext
+            guard i < coming.count,
+                  let j = list.firstIndex(where: { $0.persistentId == coming[i].persistentId })
             else { return }
-            self.playRow(j)
+            self.playInContext(j)
         }
         return p
     }
@@ -1936,18 +1956,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// order to show for it.
     private func upcomingTracks(limit: Int = 100) -> [Track] {
         guard !(player.state?.shuffle ?? false) else { return [] }
+        let list = playContext.isEmpty ? rows : playContext
         guard let playing = player.state?.track?.persistentId,
-              let i = rows.firstIndex(where: { $0.persistentId == playing }) else {
-            return Array(rows.prefix(limit))
+              let i = list.firstIndex(where: { $0.persistentId == playing }) else {
+            return Array(list.prefix(limit))
         }
-        return Array(rows.dropFirst(i + 1).prefix(limit))
+        return Array(list.dropFirst(i + 1).prefix(limit))
     }
 
     private func refreshUpNext() {
         let shuffling = player.state?.shuffle ?? false
         upNextPanel?.update(queue: upNext,
                             upcoming: upcomingTracks(),
-                            sourceName: shuffling ? "" : controller.source.displayName)
+                            sourceName: shuffling ? "" : (playContextName ?? controller.source.displayName))
         upNextButton.isOn = !upNext.isEmpty
     }
 
@@ -2240,53 +2261,72 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             refreshUpNext()
             return
         }
+        let list = playContext.isEmpty ? rows : playContext
         guard let playing = player.state?.track?.persistentId,
-              let i = rows.firstIndex(where: { $0.persistentId == playing }) else {
-            delta > 0 ? player.next() : player.previous()
+              let i = list.firstIndex(where: { $0.persistentId == playing }) else {
+            // Nothing of ours is playing (iTunes was started from its own
+            // window, say). Start the list on screen from the top rather
+            // than handing the step to iTunes, whose queue is whatever it
+            // was last told to play inside.
+            if let first = rows.first { startPlayback(first, playlist: controller.source.playlistId, context: rows) }
             return
         }
         let mode = player.state?.repeatMode ?? "off"
         // Repeat One holds on the same track, whichever way you step.
         if mode == "one" {
-            playRow(i)
+            playInContext(i)
             return
         }
-        guard let j = nextIndex(from: i, delta: delta,
+        guard let j = nextIndex(from: i, in: list, delta: delta,
                                 shuffle: player.state?.shuffle ?? false,
                                 repeatAll: mode == "all") else { return }
-        playRow(j)
+        playInContext(j)
     }
 
-    private func nextIndex(from i: Int, delta: Int, shuffle: Bool, repeatAll: Bool) -> Int? {
-        guard rows.count > 1 else { return repeatAll ? i : nil }
+    /// Plays an entry of the current context and highlights it if the
+    /// window happens to be showing it.
+    private func playInContext(_ index: Int) {
+        let list = playContext.isEmpty ? rows : playContext
+        guard index >= 0, index < list.count else { return }
+        let track = list[index]
+        startPlayback(track, playlist: playContext.isEmpty ? controller.source.playlistId : playContextPlaylist)
+        if let i = rows.firstIndex(where: { $0.persistentId == track.persistentId }),
+           let r = tableRow(forTrackIndex: i) {
+            trackTable.selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
+            trackTable.scrollRowToVisible(r)
+        }
+    }
+
+    private func nextIndex(from i: Int, in list: [Track], delta: Int, shuffle: Bool, repeatAll: Bool) -> Int? {
+        guard list.count > 1 else { return repeatAll ? i : nil }
         guard shuffle else {
             let j = i + delta
-            if j >= 0 && j < rows.count { return j }
+            if j >= 0 && j < list.count { return j }
             guard repeatAll else { return nil }
-            return j < 0 ? rows.count - 1 : 0
+            return j < 0 ? list.count - 1 : 0
         }
         if delta < 0 {
             // Walk back through what shuffle actually played.
             while let previous = shuffleHistory.popLast() {
-                if previous != i && previous < rows.count { return previous }
+                if previous != i && previous < list.count { return previous }
             }
             return nil
         }
         shuffleHistory.append(i)
         // Don't repeat anything from the recent past until the pool runs dry.
-        let window = min(rows.count - 1, 50)
+        let window = min(list.count - 1, 50)
         let recent = Set(shuffleHistory.suffix(window) + [i])
-        let pool = rows.indices.filter { !recent.contains($0) }
+        let pool = list.indices.filter { !recent.contains($0) }
         if let pick = pool.randomElement() { return pick }
         // Everything's been played: start over if repeating, else stop.
         guard repeatAll else { return nil }
         shuffleHistory.removeAll()
-        return rows.indices.filter { $0 != i }.randomElement()
+        return list.indices.filter { $0 != i }.randomElement()
     }
 
     private func playRow(_ index: Int) {
         guard index >= 0, index < rows.count else { return }
-        startPlayback(rows[index], playlist: controller.source.playlistId)
+        startPlayback(rows[index], playlist: controller.source.playlistId, context: rows)
         if let r = tableRow(forTrackIndex: index) {
             trackTable.selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
             trackTable.scrollRowToVisible(r)
@@ -2295,14 +2335,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     @objc private func trackDoubleClicked(_ sender: Any?) {
         guard let i = trackIndex(forRow: trackTable.clickedRow) else { return }
-        startPlayback(rows[i], playlist: controller.source.playlistId)
+        startPlayback(rows[i], playlist: controller.source.playlistId, context: rows)
     }
 
     @objc private func sourceDoubleClicked(_ sender: Any?) {
         let row = sourceList.clickedRow
         guard row >= 0, row < sourceRows.count else { return }
         if case .playlist(let p) = sourceRows[row], let first = rows.first {
-            startPlayback(first, playlist: p.persistentId)
+            startPlayback(first, playlist: p.persistentId, context: rows)
         }
     }
 
@@ -2368,7 +2408,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func trackDoubleClickedFromSelection() {
         guard let i = trackIndex(forRow: trackTable.selectedRow) else { return }
-        startPlayback(rows[i], playlist: controller.source.playlistId)
+        startPlayback(rows[i], playlist: controller.source.playlistId, context: rows)
     }
 
     // MARK: NSMenuDelegate

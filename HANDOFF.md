@@ -400,3 +400,13 @@ frontmost to see it.
 past and nothing is built. And `./build.sh --install` while the app is
 running kills it without a crash report (the bundle is replaced under the
 process); quit first, install, relaunch.
+
+- **Play context** (later the same evening). Next/Previous used to find the
+  playing song in the live `rows`; click away from the album you started
+  and it was no longer there, so `step` fell through to `player.next()` —
+  iTunes' own Next, whose queue is whatever playlist it was last told to
+  play *inside*. `startPlayback(_:playlist:context:)` now snapshots the
+  list into `playContext` when playback starts from a list (nil keeps it,
+  for queued or searched songs); `step`, `playInContext`, `nextIndex(in:)`
+  and the Up Next preview all walk that snapshot, and nothing hands a step
+  to iTunes any more.
