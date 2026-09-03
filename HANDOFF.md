@@ -75,6 +75,45 @@ playlist, not the rule. `browse_key` in `library.py` is the grouping key;
 `_filter` matches on the same key so a browser click selects exactly the rows
 it counted.
 
+## The sync selection: what is and is not reachable, tested 2026-09-03
+
+iTunes' sync selection (which playlists/artists/albums/genres go to a device)
+cannot be read or written from outside iTunes. All three routes were tested,
+not assumed:
+
+1. **AppleScript** — the dictionary has no terms for sync settings at all. It
+   can *start* a sync (`update`) but exposes no property for the selection.
+2. **Accessibility** — iTunes 12.9.5's window reports **0 UI elements**, both
+   cold and after forcing `AXEnhancedUserInterface` (which is a real, settable
+   attribute — setting it succeeded and changed nothing). There is no element
+   to read or click.
+3. **The library database** — the selection lives in the binary, undocumented
+   `iTunes Library.itl`. Readable preference plists hold only trivia.
+
+Screen control *does* work but was rejected as too unreliable: after
+`activate` + `AXRaise` the window composites and `screencapture` shows the real
+checkboxes, and a synthetic `CGEvent` click toggled "The Beatles" successfully
+(then restored it). It needs the window raised, and blind coordinates break the
+moment a list scrolls — and a wrong click silently removes music at the next
+sync. Steven's own spec forbids it (SPEC.md:183) and that stands.
+
+**The way round it: own the selection instead of reading it.** Playlist
+membership *is* fully scriptable and fast. Measured:
+
+- a whole playlist's tracks cross in **one** event: 491 tracks in ~1 s
+- `duplicate (every track of lib whose artist is "X") to pl` — one event, ~0 s
+- `delete (every track of pl whose genre is "X")` — one event, ~0 s
+
+So `scripts/sync_rebuild.applescript` projects an app-held selection onto one
+app-owned playlist ("iPod Sync (Remote)"). Verified: a spec of one artist, one
+genre and one playlist built 447 tracks in ~1 s, was idempotent on a second
+run, and the contents matched exactly (Adele 79, Comedy 316, Bedroom Pop 52).
+
+This needs **one manual step, once**: in iTunes, set the iPod's Music pane to
+"Selected playlists…" and tick only that playlist. After that the app is the
+sole authority over what syncs and its checkboxes can be real controls.
+Not yet wired to the UI.
+
 ## Traps found, all verified
 
 - AppleScript `id` of a track is not the XML Track ID (that is `database ID`). Look up by `persistent ID`: 0.2 s standalone, 75 ms batched. `whose persistent ID is in {...}` fails with -10014.
