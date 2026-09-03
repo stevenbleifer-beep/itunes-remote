@@ -40,4 +40,13 @@ echo "built $APP"
 case "${1:-}" in
     --run) shift; "$BIN" "$@" & ;;
     --snapshot) out="$2"; shift 2; "$BIN" --snapshot "$out" "$@" ;;
+    # Replace the copy in /Applications. Quit it first: overwriting a running
+    # bundle leaves the old code mapped and the next launch misbehaves.
+    --install)
+        pkill -f "iTunes Remote.app/Contents/MacOS/iTunesRemote" 2>/dev/null || true
+        sleep 1
+        rm -rf "/Applications/iTunes Remote.app"
+        cp -R "$APP" "/Applications/iTunes Remote.app"
+        echo "installed /Applications/iTunes Remote.app"
+        ;;
 esac
