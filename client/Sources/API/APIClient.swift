@@ -173,6 +173,21 @@ final class APIClient {
         try await get("/api/library")
     }
 
+    /// One track's full record, for reading a value back after a write.
+    func track(_ persistentId: String) async throws -> Track {
+        let data = try await request("GET", "/api/tracks/\(persistentId)")
+        struct Row: Decodable {
+            let persistentId: String, name: String, artist: String, album: String, albumArtist: String
+            let genre: String, year: Int?, trackNumber: Int?, discNumber: Int?, totalTime: Int?
+            let size: Int?, compilation: Bool, enabled: Bool, rating: Int, playCount: Int
+        }
+        let r = try JSONDecoder().decode(Row.self, from: data)
+        return Track(persistentId: r.persistentId, name: r.name, artist: r.artist, album: r.album,
+                     albumArtist: r.albumArtist, genre: r.genre, year: r.year, trackNumber: r.trackNumber,
+                     discNumber: r.discNumber, totalTime: r.totalTime, size: r.size,
+                     compilation: r.compilation, enabled: r.enabled, rating: r.rating, playCount: r.playCount)
+    }
+
     func playlists() async throws -> [Playlist] {
         struct Wrap: Decodable { let playlists: [Playlist] }
         let w: Wrap = try await get("/api/playlists")

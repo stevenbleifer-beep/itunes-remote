@@ -723,8 +723,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         Task { @MainActor in
             do {
                 _ = try await api.patchTracks(ids: [track.persistentId], fields: ["enabled": on])
-                controller.setEnabled(track.persistentId, on)
-                refreshRows()
+                // iTunes 12.9.5 accepts `set enabled` without error and then
+                // ignores it, so read the track back rather than trusting the
+                // write. If it did not stick, put the box back.
+                let fresh = try await api.track(track.persistentId)
+                if fresh.enabled == on {
+                    controller.setEnabled(track.persistentId, on)
+                    refreshRows()
+                } else {
+                    sender.isOn = !on
+                    flashStatus("iTunes 12.9.5 ignores checkbox changes made by script. Turn on Preferences > General > Show list checkboxes in iTunes, or change it there.")
+                }
             } catch {
                 sender.isOn = !on
                 flashStatus("Could not change the checkbox: \(error.localizedDescription)")
@@ -1261,6 +1270,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                     return b
                 }()
                 box.isOn = t.enabled
+                box.toolTip = "Include this track when playing straight through, and when syncing. iTunes 12.9.5 may ignore changes made from here."
                 return box
             }
             if id == "rating" {
