@@ -46,6 +46,9 @@ on setField(t, fn, fv)
         else if fn is "enabled" then
             set old to (enabled of t) as text
             set enabled of t to (fv is "true")
+        else if fn is "rating" then
+            set old to (rating of t) as text
+            set rating of t to (fv as integer)
         else
             error "unsupported field: " & fn
         end if

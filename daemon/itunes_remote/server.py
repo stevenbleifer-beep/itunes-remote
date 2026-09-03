@@ -54,8 +54,9 @@ class Api(object):
         "discNumber": "disc_number",
         "compilation": "compilation",
         "enabled": "enabled",
+        "rating": "rating",
     }
-    NUMERIC_FIELDS = frozenset(("year", "track_number", "disc_number"))
+    NUMERIC_FIELDS = frozenset(("year", "track_number", "disc_number", "rating"))
     BOOL_FIELDS = frozenset(("compilation", "enabled"))
 
     # Small enough that the Apple Events lock is released often, so the

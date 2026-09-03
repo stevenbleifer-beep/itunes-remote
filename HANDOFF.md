@@ -17,7 +17,7 @@ This file is the state of play and the traps that are not in the spec.
 | 7a Cover Flow | Done, plus the view switcher. List and Cover Flow only; no Album List or Grid yet. |
 | 8 Polish | Done: legacy scrollers, toned button, sidebar icons and dark selection, DEVICES section, View/Search captions, title, bottom-bar buttons (add, shuffle, repeat, artwork toggle, sync, eject), checkbox column, Cover Flow scrubber arrows, Apple's AirPlay symbol. Not done: a drawn capsule search field (the small-size system field was accepted); square bezels on sheet text fields. |
 | 9 iPod sync | Probe passed 2026-09-03: `update` on "iPod classic" returned "sync started". Built: DEVICES row with free space, Sync and Eject buttons, `/api/sources`, `/api/sources/{name}/sync` and `/eject`. Eject is untested because it would have disconnected the iPod. |
-| SPEC section 9 deployment | `setup.sh` and `check.py` written; `check.py` passes 11 of 13 on the MacBook Pro. `setup.sh` has NOT been run: it installs the LaunchAgent and triggers the Automation prompt, which must be approved over Screen Sharing. Until then the daemon runs under nohup from SSH. |
+| SPEC section 9 deployment | Done. Steven ran `setup.sh` on 2026-09-02 23:40; the LaunchAgent is loaded and Automation is approved for the agent's Python. `check.py` passes everything except "No iPod volume mounted" while the iPod is attached, which is informational. |
 
 Git: everything is committed on the default branch; `git log --oneline`.
 
@@ -27,9 +27,9 @@ Git: everything is committed on the default branch; `git log --oneline`.
 - Daemon at `~/iTunesRemote/daemon` on the MBP, deployed with
   `rsync -a -e "ssh -i ~/.ssh/id_ed25519_mbp2012" --exclude __pycache__ --exclude tests daemon/ stevenbleifer@Stevens-MacBook-Pro.local:~/iTunesRemote/daemon/`.
   Config `~/Library/Application Support/iTunesRemote/config.json`, token `<the token is in config.json on the MacBook Pro>`, port 8765. Logs in `~/Library/Logs/iTunesRemote/` (`daemon.log`, `writes.log`).
-- Restart under nohup (the `< /dev/null` matters, or ssh never returns):
-  `ssh ... 'pkill -f "itunes_remote$"; sleep 1; cd ~/iTunesRemote/daemon && (nohup /usr/local/bin/python3 -m itunes_remote > ~/Library/Logs/iTunesRemote-nohup.out 2>&1 < /dev/null &)'`
-  About 25 s to come up. AppleScript files are read per call, so script-only changes need no restart.
+- **The daemon is a LaunchAgent now. Never start it by hand.** After an rsync, restart it with
+  `ssh ... 'launchctl kickstart -k gui/$(id -u)/local.stevenbleifer.itunesremote'`
+  About 25 s to come up. A hand-started copy steals the port and the agent then crash-loops every 10 s on "address already in use" (this happened once). AppleScript files are read per call, so script-only changes need no restart.
 - Use IPv4 `http://<lan-ip>:8765`; the `.local` name's IPv6 address hangs curl with short timeouts.
 - Client, from `client/`: `./build.sh`, then
   `"build/iTunes Remote.app/Contents/MacOS/iTunesRemote" --host <lan-ip> --token <token>` (`--flow-index N` opens Cover Flow at album N).
@@ -41,10 +41,9 @@ Git: everything is committed on the default branch; `git log --oneline`.
 
 ## What to do next, in order
 
-1. Run `setup.sh` on the MacBook Pro over Screen Sharing and approve the "Python wants to control iTunes" prompt; `check.py` should then pass 13 of 13. Approving from a Terminal run grants Terminal, not the agent's Python, so let the agent trigger it.
-2. Exercise in the live app what was only verified through the daemon: the Get Info sheet, Add to Playlist and Remove from Playlist, the checkbox column, shuffle and repeat, Eject.
-3. Album List and Grid views if wanted; the switcher already supports four glyphs and `/api/albumlist` feeds them.
-4. Cover Flow artwork at scale. Only 61.7% of tracks have embedded art; the rest fall through to an AppleScript export under the global Apple Events lock (about 0.3 s each). It works, with a 300-entry daemon cache and a 400-entry client cache, but flying fast through thousands of albums queues behind that lock and slows the player poll.
+1. Exercise in the live app what was only verified through the daemon: the Get Info sheet, Add to Playlist and Remove from Playlist, the checkbox column, shuffle and repeat, Eject.
+2. Album List and Grid views if wanted; the switcher already supports four glyphs and `/api/albumlist` feeds them.
+3. Cover Flow artwork at scale. Only 61.7% of tracks have embedded art; the rest fall through to an AppleScript export under the global Apple Events lock (about 0.3 s each). It works, with a 300-entry daemon cache and a 400-entry client cache, but flying fast through thousands of albums queues behind that lock and slows the player poll.
 
 ## Traps found, all verified
 

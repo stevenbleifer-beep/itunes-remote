@@ -36,8 +36,8 @@ class Track(object):
         "persistent_id", "track_id", "name", "artist", "album", "album_artist",
         "genre", "composer", "year", "track_number", "track_count",
         "disc_number", "disc_count", "total_time", "kind", "size", "bit_rate",
-        "compilation", "enabled", "date_added", "date_modified", "location", "artwork_count",
-        "search", "sort_key",
+        "compilation", "enabled", "rating", "play_count", "date_added", "date_modified",
+        "location", "artwork_count", "search", "sort_key",
     )
 
     # Fields the client may edit through PATCH, mapped to the AppleScript
@@ -55,6 +55,7 @@ class Track(object):
         "disc_number": "disc number",
         "compilation": "compilation",
         "enabled": "enabled",
+        "rating": "rating",
     }
 
     # The subset of EDITABLE that appears in sort_key. Editing anything else,
@@ -85,6 +86,8 @@ class Track(object):
         self.bit_rate = raw.get("Bit Rate")
         self.compilation = bool(raw.get("Compilation", False))
         self.enabled = not raw.get("Disabled", False)   # the track checkbox
+        self.rating = raw.get("Rating") or 0             # 0-100, stars are 20 each
+        self.play_count = raw.get("Play Count") or 0
         self.date_added = _iso(raw.get("Date Added"))
         self.date_modified = _iso(raw.get("Date Modified"))
         self.location = _posix_path(raw.get("Location"))
@@ -127,6 +130,8 @@ class Track(object):
             "bitRate": self.bit_rate,
             "compilation": self.compilation,
             "enabled": self.enabled,
+            "rating": self.rating,
+            "playCount": self.play_count,
             "dateAdded": self.date_added,
             "dateModified": self.date_modified,
         }
@@ -272,6 +277,7 @@ class Library(object):
     COMPACT_COLUMNS = (
         "persistentId", "name", "artist", "album", "albumArtist", "genre",
         "year", "trackNumber", "discNumber", "totalTime", "size", "compilation", "enabled",
+        "rating", "playCount",
     )
 
     def query(self, q=None, genre=None, artist=None, album=None,
@@ -296,7 +302,8 @@ class Library(object):
             out["columns"] = list(self.COMPACT_COLUMNS)
             out["rows"] = [
                 [t.persistent_id, t.name, t.artist, t.album, t.album_artist, t.genre,
-                 t.year, t.track_number, t.disc_number, t.total_time, t.size, t.compilation, t.enabled]
+                 t.year, t.track_number, t.disc_number, t.total_time, t.size, t.compilation, t.enabled,
+                 t.rating, t.play_count]
                 for t in page
             ]
         else:

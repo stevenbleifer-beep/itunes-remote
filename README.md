@@ -29,9 +29,16 @@ verified traps are in `HANDOFF.md`.
 
 ```
 cd ~/iTunesRemote/daemon
-./setup.sh          # installs the LaunchAgent, then runs check.py
+./setup.sh          # installs the LaunchAgent, then runs check.py (done once)
 python3 check.py    # pass/fail for everything that can break
 ./probe_ipod.sh     # re-run the iPod sync probe after an iTunes update
+```
+
+After copying new daemon code over, restart the agent rather than launching
+the daemon by hand, or the two fight over the port:
+
+```
+launchctl kickstart -k gui/$(id -u)/local.stevenbleifer.itunesremote
 ```
 
 Config: `~/Library/Application Support/iTunesRemote/config.json` (host, port,
