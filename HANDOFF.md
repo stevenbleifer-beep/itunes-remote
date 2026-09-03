@@ -185,6 +185,30 @@ Now:
 
 Measured after: the 14 albums at the top of the library return in 0.77 s total.
 
+## Ejecting the iPod
+
+There is an Eject button in the bottom bar and one on the device page's
+header; both call `POST /api/sources/{name}/eject`, which is iTunes' own
+`eject`. It fails with **"in use by another application"** when anything on
+the MacBook Pro still has a file open on `/Volumes/iPod` — and this daemon was
+one of those things:
+
+- the device page refreshes every 15 s (`device_info` against the iPod),
+- the source list every 30 s,
+- `_connected_pod` for the sync plan,
+- and, since the LCD work, `_watch_ipod_sync` polling the song count every 8 s
+  for up to four hours after a sync.
+
+So an eject now sets `device_quiet_until` for 30 s: `_connected_pod` returns
+None, `get_device` answers 409, and the sync watcher stops. The client pauses
+both of its device timers before asking and resumes them if the eject fails.
+A failure also reads back whatever dialog iTunes is showing and includes it.
+
+`lsof /Volumes/iPod` on the MacBook Pro is the way to see what is holding it.
+Expect iTunes itself to hold `iPod_Control/iTunes/iTunesControl` — that is
+normal and iTunes releases it. A `diskutil unmount` "dissented by PID …
+SystemUIServer" means the menu bar agent is refusing; that one is not ours.
+
 ## The machines
 
 - MacBook Pro (daemon host): `ssh -i ~/.ssh/id_ed25519_mbp2012 stevenbleifer@Stevens-MacBook-Pro.local`. Python 3.13.15 at `/usr/local/bin/python3`. iTunes 12.9.5.

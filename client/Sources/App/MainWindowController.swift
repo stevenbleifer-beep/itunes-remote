@@ -1194,6 +1194,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func ejectOpenDevice() {
         guard let name = openDevice, let api = controller.api else { return }
         devicePage.setBusy(true)
+        devicePage.setStatus("Ejecting \(name)…")
+        // Stop reading the device: iTunes cannot unmount a volume this app is
+        // still asking about, and reports that as "in use by another
+        // application".
+        stopDevicePolling()
         Task { @MainActor in
             do {
                 try await api.ejectSource(name)
@@ -1207,6 +1212,29 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             } catch {
                 self.devicePage.setStatus("Eject failed: \(error.localizedDescription)")
                 self.devicePage.setBusy(false)
+                self.resumeDevicePolling()
+            }
+        }
+    }
+
+    /// Pauses the 15-second device refresh, so nothing touches the iPod
+    /// while iTunes is trying to unmount it.
+    private func stopDevicePolling() {
+        devicePageTimer?.invalidate()
+        devicePageTimer = nil
+        deviceTimer?.invalidate()
+        deviceTimer = nil
+    }
+
+    private func resumeDevicePolling() {
+        if openDevice != nil, devicePageTimer == nil {
+            devicePageTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.refreshDevicePage() }
+            }
+        }
+        if deviceTimer == nil {
+            deviceTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.loadDevices() }
             }
         }
     }
@@ -1254,6 +1282,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     @objc private func ejectDevice(_ sender: Any?) {
         guard let device = devices.first, let api = controller.api else { return }
+        ejectButton.isEnabled = false
+        flashStatus("Ejecting \(device.name)…")
+        stopDevicePolling()
         Task { @MainActor in
             do {
                 try await api.ejectSource(device.name)
@@ -1263,8 +1294,18 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 syncButton.isHidden = true
                 ejectButton.isHidden = true
             } catch {
+                // The iPod is still there. Say why, put the row back, and
+                // start reading it again.
                 flashStatus("Eject failed: \(error.localizedDescription)")
+                self.report(title: "Could not eject \(device.name)",
+                            message: error.localizedDescription
+                                + "\n\niTunes cannot unmount the iPod while anything on the MacBook Pro "
+                                + "still has a file open on it. Try again in a few seconds; if it keeps "
+                                + "failing, eject it from the Finder on that machine.")
+                self.loadDevices()
             }
+            self.ejectButton.isEnabled = true
+            self.resumeDevicePolling()
         }
     }
 

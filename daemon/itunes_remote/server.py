@@ -105,6 +105,8 @@ class Api(object):
         self.artwork_lock = threading.Lock()
         # Covers a client is waiting for, exported by the warmer ahead of its sweep.
         self.artwork_priority = collections.deque()
+        # Set while an eject is in flight; background device reads stand off.
+        self.device_quiet_until = 0.0
         # What the LCD's sync view shows. One writer at a time (a rebuild or
         # an iPod sync), read by the client once a second.
         self.progress_lock = threading.Lock()
@@ -695,7 +697,13 @@ class Api(object):
     # of clicks queued up behind device reads; keep the answer briefly.
     POD_CACHE_SECONDS = 15
 
+    # After an eject request, how long every background reader stays off the
+    # device. Long enough for iTunes to finish the unmount.
+    DEVICE_QUIET_SECONDS = 30
+
     def _connected_pod(self):
+        if getattr(self, "device_quiet_until", 0) > time.time():
+            return None
         """The iPod iTunes currently has open, with its serial. Serial is the
         plan key: Steven has five iPods and two are the same model, so names
         would collide."""
@@ -1294,6 +1302,8 @@ class Api(object):
                 "on it or sync it." % name
             )
             return out
+        if self.device_quiet_until > time.time():
+            raise ApiError(409, "%s is being ejected" % name)
         recs = self.itunes.records(self._script("device_info", name, timeout=90))
         bit_rates = []
         for r in recs:
@@ -1434,6 +1444,9 @@ class Api(object):
         still = 0
         while time.time() - started < self.SYNC_WATCH_MAX_SECONDS:
             time.sleep(self.SYNC_WATCH_INTERVAL)
+            # An eject is trying to take the device away; stop touching it.
+            if self.device_quiet_until > time.time():
+                break
             try:
                 detail = self.get_device({"name": quote(name, safe="")}, None, None)
                 count = detail.get("trackCount")
@@ -1451,8 +1464,32 @@ class Api(object):
         self._progress_end()
 
     def post_source_eject(self, params, query, body):
+        """Ejects the iPod.
+
+        iTunes cannot unmount a volume anything is still reading, and it
+        reports that as "in use by another application" — including when the
+        thing reading is this daemon. So every background reader is told to
+        leave the device alone first: the sync watcher, the device page's
+        refresh, and the plan's cached device lookup.
+        """
         name = self._ipod_name(params)
-        out = self._script("ipod_eject", name, timeout=60)
+        self.device_quiet_until = time.time() + self.DEVICE_QUIET_SECONDS
+        self._pod_cache = None
+        self._progress_end()
+        time.sleep(1.0)          # let a read already in flight finish
+        try:
+            out = self._script("ipod_eject", name, timeout=30)
+        except ApiError as e:
+            self.device_quiet_until = 0
+            alert = None
+            try:
+                alert = self.get_alert({}, {}, None).get("alert")
+            except ApiError:
+                pass
+            if alert:
+                raise ApiError(e.status, "%s iTunes is showing: %s"
+                               % (e.message, alert["message"]))
+            raise
         if self.write_log:
             self.write_log.record("ipod-eject", name, None, None, "ok", out)
         return {"source": name, "result": out}
