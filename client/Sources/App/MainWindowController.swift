@@ -13,6 +13,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     var snapshotPath: String?
     /// With --snapshot, open this device's Music pane before capturing.
     var snapshotDevice: String?
+    /// With --snapshot-device: which display view to capture.
+    var snapshotLCD: String?
 
     private enum Tag: Int { case source = 0, browser, tracks }
 
@@ -1897,6 +1899,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                     self.devicePage.showMusicPane()
                 }
                 try? await Task.sleep(nanoseconds: 40_000_000_000)
+                if let lcd = self.snapshotLCD {
+                    self.display.mode = lcd == "sync" ? .sync : .player
+                }
                 self.capture(to: path, content: content)
             }
             return

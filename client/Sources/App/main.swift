@@ -4,6 +4,7 @@ import Cocoa
 //   --host H --port P --token T   use these instead of the saved settings (not persisted)
 //   --snapshot PATH               render the main window to PATH after the first load, then quit
 //   --snapshot-device NAME        open that device's Music pane first, so the pane can be checked
+//   --snapshot-lcd player|sync    with --snapshot-device: force the display's view before capturing
 //   --source recent|device:NAME  open that source at launch (device: with no name takes the first)
 
 @MainActor
@@ -30,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         main = MainWindowController()
         main.snapshotPath = arg("--snapshot")
         main.snapshotDevice = arg("--snapshot-device")
+        main.snapshotLCD = arg("--snapshot-lcd")
         main.initialFlowIndex = arg("--flow-index").flatMap { Int($0) }
         main.initialSource = arg("--source")
         if args.contains("--mini") {
