@@ -284,6 +284,12 @@ final class APIClient {
         return try JSONDecoder().decode(SyncPlanReply.self, from: data)
     }
 
+    /// Polled once a second while something is being written.
+    func syncProgress() async throws -> SyncProgress {
+        let data = try await request("GET", "/api/sync/progress", timeout: 10)
+        return try JSONDecoder().decode(SyncProgress.self, from: data)
+    }
+
     func deviceFacets(_ name: String) async throws -> DeviceFacets {
         try await get("/api/devices/\(name)/facets")
     }

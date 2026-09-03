@@ -70,10 +70,48 @@ final class PlayerController {
         Task { await loadOutputs() }
     }
 
+    // MARK: Sync progress
+
+    /// The daemon's current write, for the LCD. Read once a second while a
+    /// rebuild or an iPod sync is running and for a few seconds after, and
+    /// every ten seconds otherwise so a sync started elsewhere still shows.
+    private(set) var syncProgress: SyncProgress?
+    var onSyncProgress: (SyncProgress) -> Void = { _ in }
+    private var watchingSync = false
+    private var syncIdleSince: Date?
+    private var progressInFlight = false
+
+    /// Called when Apply or Sync is pressed: start looking straight away.
+    func watchSync() {
+        watchingSync = true
+        syncIdleSince = nil
+        Task { await pollSyncProgress() }
+    }
+
+    private func pollSyncProgress() async {
+        guard let api = api, !progressInFlight else { return }
+        progressInFlight = true
+        defer { progressInFlight = false }
+        guard let p = try? await api.syncProgress() else { return }
+        let was = syncProgress
+        syncProgress = p
+        if p.active {
+            watchingSync = true
+            syncIdleSince = nil
+        } else if watchingSync {
+            if syncIdleSince == nil { syncIdleSince = Date() }
+            if Date().timeIntervalSince(syncIdleSince!) > 5 { watchingSync = false }
+        }
+        if p != was { onSyncProgress(p) }
+    }
+
     private var tickCount = 0
 
     private func tick() {
         tickCount += 1
+        if watchingSync || tickCount % 10 == 0 {
+            Task { await pollSyncProgress() }
+        }
         if mode == .local {
             // No HTTP poll needed; AVFoundation reports its own time.
             if tickCount % 30 == 0 { Task { await refresh() } }   // keep iTunes' state warm

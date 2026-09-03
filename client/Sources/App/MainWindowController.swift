@@ -889,6 +889,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         player.onError = { [weak self] message in self?.flashStatus(message) }
         player.onLocalTrackFinished = { [weak self] in self?.step(by: 1) }
         player.onRemoteTrackFinished = { [weak self] in self?.step(by: 1) }
+        player.onSyncProgress = { [weak self] p in self?.showSyncProgress(p) }
+        display.onCycleMode = { [weak self] mode in
+            // Cycling by hand pins the choice; the automatic switch only
+            // happens on a job starting or finishing.
+            self?.syncViewPinned = true
+            _ = mode
+        }
         // The Mac's media keys go to whichever app here is the "now playing"
         // app, so the app claims that role and forwards them on.
         mediaKeys.onTogglePlayPause = { [weak self] in self?.player.playPause() }
@@ -1120,6 +1127,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         let device = devicePlan?.device
         devicePage.setBusy(true)
         devicePage.setStatus("Writing the sync playlist in iTunes… this takes a few minutes for a large selection.")
+        player.watchSync()
         Task { @MainActor in
             do {
                 let reply = try await api.syncRebuild(device: device)
@@ -1163,6 +1171,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         guard let name = openDevice, let api = controller.api else { return }
         devicePage.setBusy(true)
         devicePage.setStatus("Syncing \(name)…")
+        player.watchSync()
         Task { @MainActor in
             do {
                 try await api.syncSource(name)
@@ -1695,6 +1704,61 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     private var lastBoldId: String?
+
+    // MARK: Sync progress on the LCD
+
+    private var syncViewPinned = false
+    private var syncViewTimer: Timer?
+
+    /// Puts the daemon's current write on the display. A job starting flips
+    /// the display to the sync view; five seconds after it ends the view goes
+    /// away again, unless the arrows were used by hand in between.
+    private func showSyncProgress(_ p: SyncProgress) {
+        let n = NumberFormatter()
+        n.numberStyle = .decimal
+        let tracks = p.tracks.map { n.string(from: NSNumber(value: $0)) ?? "\($0)" }
+        let label = p.label ?? "iPod"
+        if p.active {
+            syncViewTimer?.invalidate()
+            syncViewTimer = nil
+            if p.kind == "rebuild" {
+                display.syncTitle = "Writing the sync playlist for “\(label)”…"
+                display.syncDetail = "\(p.done ?? 0) of \(p.total ?? 0) selections"
+                    + (tracks.map { " — \($0) tracks so far" } ?? "")
+            } else {
+                display.syncTitle = "Syncing “\(label)”…"
+                display.syncDetail = tracks.map { "\($0) songs on the iPod" } ?? "Waiting for iTunes"
+            }
+            display.syncFraction = p.fraction
+            let wasOffered = display.modes.contains(.sync)
+            display.modes = [.player, .sync]
+            if !wasOffered {
+                syncViewPinned = false
+                display.mode = .sync
+            }
+        } else {
+            if let e = p.error {
+                display.syncTitle = "Sync stopped"
+                display.syncDetail = e
+            } else if p.kind == "rebuild" {
+                display.syncTitle = "Sync playlist written"
+                display.syncDetail = tracks.map { "\($0) tracks — sync the iPod to send them" } ?? "Done"
+            } else {
+                display.syncTitle = "Sync finished"
+                display.syncDetail = tracks.map { "\($0) songs on “\(label)”" } ?? "Done"
+            }
+            display.syncFraction = 1
+            guard display.modes.contains(.sync) else { return }
+            syncViewTimer?.invalidate()
+            syncViewTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self = self, !self.syncViewPinned else { return }
+                    self.display.mode = .player
+                    self.display.modes = [.player]
+                }
+            }
+        }
+    }
 
     /// Redraws just the rows for these tracks.
     private func reloadRows(forTrackIds ids: [String]) {

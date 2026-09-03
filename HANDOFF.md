@@ -130,6 +130,36 @@ inactive window — the first click only activates. Real on-screen clicks were
 used for the sheet test; Steven works in Safari on the other display, so
 screen takeovers were kept to a minimum.
 
+## Sync progress on the LCD (2026-09-03, late)
+
+iTunes 10 stacked a pair of small ▲▼ arrows on the display when it had more
+than one thing to show and clicking them cycled the views. `AquaDisplayPanel`
+now has `Mode` (`.player`, `.sync`), `modes` (the arrows appear only when
+there is more than one), and a sync view: title, detail line, and a bar that
+is determinate for a plan rebuild (chunks done of total) and a barber pole
+for an iPod sync (iTunes gives no total).
+
+- Daemon: `sync_progress` under `progress_lock`; `GET /api/sync/progress`
+  → `{active, kind: rebuild|ipod_sync, label, done, total, tracks, startedAt}`
+  or `{active: false, endedAt, kind, label, tracks, error}`. `post_sync_rebuild`
+  updates it per chunk. `post_source_sync` starts it and a watcher thread reads
+  the device's song count every 8 s, calling the sync over once the count has
+  held still for four reads (SPEC §7's "no progress bar" is superseded by
+  Steven's request; the count is the only signal iTunes gives).
+- Client: `PlayerController.watchSync()` (called by Apply and Sync) polls
+  once a second while active and for 5 s after; otherwise every 10 s so a
+  sync started elsewhere still shows. `MainWindowController.showSyncProgress`
+  flips the display to `.sync` when a job starts, and 5 s after it ends drops
+  the view unless the arrows were used by hand meanwhile (`syncViewPinned`).
+- Verified end to end: Apply on the Music pane → LCD reads "Writing the sync
+  playlist for “iPod classic”… 0 of 384 selections" with the arrows; the
+  arrows switch to Now Playing and back while the rebuild runs; the daemon
+  reported `active: true, done/total` throughout; writes.log shows the
+  rebuild finishing (25,875 tracks).
+- The drawn buttons and the display accept first mouse and expose AX roles,
+  so the background app_* tools can press them now ("New Playlist",
+  "Shuffle", "Sync iPod" show up as AXButtons).
+
 ## The machines
 
 - MacBook Pro (daemon host): `ssh -i ~/.ssh/id_ed25519_mbp2012 stevenbleifer@Stevens-MacBook-Pro.local`. Python 3.13.15 at `/usr/local/bin/python3`. iTunes 12.9.5.

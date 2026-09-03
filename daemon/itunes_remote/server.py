@@ -102,6 +102,10 @@ class Api(object):
         self.write_log = write_log
         self.artwork_cache = OrderedDict()   # persistent id -> (mime, bytes) or None
         self.artwork_lock = threading.Lock()
+        # What the LCD's sync view shows. One writer at a time (a rebuild or
+        # an iPod sync), read by the client once a second.
+        self.progress_lock = threading.Lock()
+        self.sync_progress = {"active": False}
         self.artwork_disk = artwork_mod.DiskCache(getattr(config, "artwork_cache_dir", ""))
         # When the last request was served, so the warmer can stay out of the
         # way while someone is actually using the app.
@@ -147,6 +151,7 @@ class Api(object):
             ("PUT", r"/api/sync", self.put_sync_plan),
             ("POST", r"/api/sync/toggle", self.post_sync_toggle),
             ("POST", r"/api/sync/rebuild", self.post_sync_rebuild),
+            ("GET", r"/api/sync/progress", self.get_sync_progress),
             ("GET", r"/api/devices", self.get_devices),
             ("GET", r"/api/devices/(?P<name>[^/]+)", self.get_device),
             ("GET", r"/api/devices/(?P<name>[^/]+)/image", self.get_device_image),
@@ -793,6 +798,37 @@ class Api(object):
             raise ApiError(400, str(e))
         return {"plan": plan.to_dict(), "status": self._plan_status(plan)}
 
+    # -- sync progress, for the LCD ------------------------------------
+
+    def _progress_start(self, kind, label, total=0):
+        with self.progress_lock:
+            self.sync_progress = {"active": True, "kind": kind, "label": label, "done": 0,
+                                  "total": total, "tracks": 0, "startedAt": time.time()}
+
+    def _progress_update(self, **fields):
+        with self.progress_lock:
+            if self.sync_progress.get("active"):
+                self.sync_progress.update(fields)
+
+    def _progress_end(self, error=None):
+        with self.progress_lock:
+            p = dict(self.sync_progress)
+            p.update({"active": False, "endedAt": time.time()})
+            if error:
+                p["error"] = error
+            self.sync_progress = p
+
+    def get_sync_progress(self, params, query, body):
+        """What is being written right now: a plan rebuild (chunks done of
+        total, tracks so far) or an iPod sync (songs on the device so far;
+        iTunes gives no total). `{active: false, endedAt}` once nothing is."""
+        with self.progress_lock:
+            p = dict(self.sync_progress)
+        if not p.get("active"):
+            return {"active": False, "endedAt": p.get("endedAt"), "kind": p.get("kind"),
+                    "label": p.get("label"), "tracks": p.get("tracks"), "error": p.get("error")}
+        return {k: p.get(k) for k in ("active", "kind", "label", "done", "total", "tracks", "startedAt")}
+
     def post_sync_rebuild(self, params, query, body):
         """Writes a device's plan to its playlist in iTunes. The only call here
         that changes anything, and it is never automatic."""
@@ -806,27 +842,37 @@ class Api(object):
         lines = plan.spec_lines()
         total = 0
         done = 0
-        for start in range(0, len(lines), self.REBUILD_CHUNK):
-            chunk = lines[start:start + self.REBUILD_CHUNK]
-            fd, spec = tempfile.mkstemp(prefix="itr-sync-", suffix=".tsv")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write("\n".join(chunk) + "\n")
-            try:
-                mode = "replace" if start == 0 else "append"
-                out = self._script("sync_rebuild", plan.playlist_name, spec, mode, timeout=900)
-                total = int(self._num(out.strip(), 0))
-                done += len(chunk)
-                log.info("sync rebuild %s: %d/%d selections, %d tracks so far",
-                         plan.playlist_name, done, len(lines), total)
-            except ApiError as e:
-                raise ApiError(e.status,
-                               "rebuild stopped after %d of %d selections (%d tracks in the "
-                               "playlist): %s" % (done, len(lines), total, e.message))
-            finally:
+        self._progress_start("rebuild", plan.label, total=len(lines))
+        try:
+            for start in range(0, len(lines), self.REBUILD_CHUNK):
+                chunk = lines[start:start + self.REBUILD_CHUNK]
+                fd, spec = tempfile.mkstemp(prefix="itr-sync-", suffix=".tsv")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write("\n".join(chunk) + "\n")
                 try:
-                    os.unlink(spec)
-                except OSError:
-                    pass
+                    mode = "replace" if start == 0 else "append"
+                    out = self._script("sync_rebuild", plan.playlist_name, spec, mode, timeout=900)
+                    total = int(self._num(out.strip(), 0))
+                    done += len(chunk)
+                    self._progress_update(done=done, tracks=total)
+                    log.info("sync rebuild %s: %d/%d selections, %d tracks so far",
+                             plan.playlist_name, done, len(lines), total)
+                except ApiError as e:
+                    raise ApiError(e.status,
+                                   "rebuild stopped after %d of %d selections (%d tracks in the "
+                                   "playlist): %s" % (done, len(lines), total, e.message))
+                finally:
+                    try:
+                        os.unlink(spec)
+                    except OSError:
+                        pass
+        except ApiError as e:
+            self._progress_end(error=e.message)
+            raise
+        except Exception as e:
+            self._progress_end(error=str(e))
+            raise
+        self._progress_end()
         if self.write_log:
             self.write_log.record("sync-rebuild", plan.playlist_name, None, None, "ok",
                                   "%d tracks" % total)
@@ -1315,12 +1361,45 @@ class Api(object):
         return name
 
     def post_source_sync(self, params, query, body):
-        """Fires `update`. Section 7: report the verbatim result, no progress bar."""
+        """Fires `update` and reports the verbatim result. iTunes says nothing
+        about progress, so a watcher thread reads the device's song count
+        every few seconds and calls the sync over once it stops moving."""
         name = self._ipod_name(params)
         out = self._script("ipod_sync", name, timeout=60)
         if self.write_log:
             self.write_log.record("ipod-sync", name, None, None, "ok", out)
+        self._progress_start("ipod_sync", name)
+        threading.Thread(target=self._watch_ipod_sync, args=(name,),
+                         name="ipod-sync-watch", daemon=True).start()
         return {"source": name, "result": out}
+
+    # The song count on the device is the only sign of a sync in flight. Once
+    # it has held still this many reads in a row, the sync is taken as over.
+    SYNC_WATCH_INTERVAL = 8
+    SYNC_WATCH_STILL_READS = 4
+    SYNC_WATCH_MAX_SECONDS = 4 * 3600
+
+    def _watch_ipod_sync(self, name):
+        started = time.time()
+        last = None
+        still = 0
+        while time.time() - started < self.SYNC_WATCH_MAX_SECONDS:
+            time.sleep(self.SYNC_WATCH_INTERVAL)
+            try:
+                detail = self.get_device({"name": quote(name, safe="")}, None, None)
+                count = detail.get("trackCount")
+            except ApiError:
+                count = None
+            if count is not None:
+                self._progress_update(tracks=count)
+            if count == last:
+                still += 1
+                if still >= self.SYNC_WATCH_STILL_READS:
+                    break
+            else:
+                still = 0
+                last = count
+        self._progress_end()
 
     def post_source_eject(self, params, query, body):
         name = self._ipod_name(params)

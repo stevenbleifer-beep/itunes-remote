@@ -378,3 +378,23 @@ struct SyncPlanReply: Decodable {
     let plan: SyncPlan?
     let status: SyncPlanStatus?
 }
+
+/// What the daemon is writing right now, for the LCD's sync view. A plan
+/// rebuild reports chunks done of total and tracks so far; an iPod sync
+/// reports only the songs on the device so far, since iTunes gives no total.
+struct SyncProgress: Decodable, Equatable {
+    let active: Bool
+    var kind: String? = nil
+    var label: String? = nil
+    var done: Int? = nil
+    var total: Int? = nil
+    var tracks: Int? = nil
+    var endedAt: Double? = nil
+    var error: String? = nil
+
+    /// 0...1 when the job has a known size, nil for an indeterminate one.
+    var fraction: Double? {
+        guard let d = done, let t = total, t > 0 else { return nil }
+        return min(1, max(0, Double(d) / Double(t)))
+    }
+}

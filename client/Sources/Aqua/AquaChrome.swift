@@ -99,10 +99,57 @@ final class AquaDisplayPanel: NSView {
     private(set) var isScrubbing = false
     private var scrubPosition: Double = 0
 
+    /// The glyphs and arrows are controls; a click on an inactive window
+    /// should work them, as it does a real button.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // MARK: Views
+
+    /// What the display is showing. iTunes 10 stacked a pair of small arrows
+    /// on the display when it had more than one thing to show — the song and
+    /// an import or a sync — and clicking them cycled through. Same here.
+    enum Mode { case player, sync }
+    var mode: Mode = .player { didSet { needsDisplay = true; syncPulse() } }
+    /// The views on offer. The arrows appear only when there is more than one.
+    var modes: [Mode] = [.player] { didSet { if !modes.contains(mode) { mode = modes.first ?? .player }; needsDisplay = true } }
+    var onCycleMode: (Mode) -> Void = { _ in }
+
+    /// The sync view: a title, a line of detail, and a bar that is
+    /// determinate when the job has a known size and a barber pole otherwise.
+    var syncTitle: String = "" { didSet { needsDisplay = true } }
+    var syncDetail: String = "" { didSet { needsDisplay = true } }
+    var syncFraction: Double? { didSet { needsDisplay = true; syncPulse() } }
+
+    private var poleTimer: Timer?
+    private var polePhase: CGFloat = 0
+
+    /// The barber pole moves only while it is on screen.
+    private func syncPulse() {
+        let wants = mode == .sync && syncFraction == nil
+        if wants, poleTimer == nil {
+            poleTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self = self else { return }
+                    self.polePhase = (self.polePhase + 0.6).truncatingRemainder(dividingBy: 14)
+                    self.setNeedsDisplay(self.grooveRect.insetBy(dx: -2, dy: -4))
+                }
+            }
+        } else if !wants {
+            poleTimer?.invalidate()
+            poleTimer = nil
+        }
+    }
+
     // Room either side of the groove for the corner glyph and the elapsed /
     // remaining label. 40 clipped "-2:40" to "-2:".
     private let sideInset: CGFloat = 56
     private let glyphRadius: CGFloat = 6
+
+    /// The stacked ▲▼ pair, between the text column and the AirPlay glyph.
+    private var arrowsRect: NSRect {
+        NSRect(x: bounds.width - 34, y: bounds.midY - 5, width: 8, height: 10)
+    }
+    private var showsArrows: Bool { modes.count > 1 }
 
     private var grooveRect: NSRect {
         NSRect(x: sideInset, y: 6, width: bounds.width - 2 * sideInset, height: 5)
@@ -131,7 +178,17 @@ final class AquaDisplayPanel: NSView {
             onAirPlay(self)
             return
         }
-        guard let total = duration, total > 0 else { return }
+        if showsArrows, arrowsRect.insetBy(dx: -5, dy: -6).contains(p) {
+            guard let i = modes.firstIndex(of: mode) else { return }
+            // Top half steps back, bottom half forward; with two views both
+            // simply switch.
+            let next = p.y > arrowsRect.midY ? modes[(i + modes.count - 1) % modes.count]
+                                             : modes[(i + 1) % modes.count]
+            mode = next
+            onCycleMode(next)
+            return
+        }
+        guard mode == .player, let total = duration, total > 0 else { return }
         let hit = grooveRect.insetBy(dx: -6, dy: -7)
         guard hit.contains(p) else { return }
         isScrubbing = true
@@ -188,12 +245,74 @@ final class AquaDisplayPanel: NSView {
         path.lineWidth = 1
         path.stroke()
 
-        if duration == nil {
-            drawIdle()
-        } else {
-            drawPlaying()
+        switch mode {
+        case .sync: drawSync()
+        case .player: duration == nil ? drawIdle() : drawPlaying()
         }
         drawCornerGlyphs()
+        if showsArrows { drawArrows() }
+    }
+
+    /// Two small chevrons, one above the other, as iTunes 10 drew them.
+    private func drawArrows() {
+        let r = arrowsRect
+        NSColor(white: 0.40, alpha: 1).setFill()
+        let up = NSBezierPath()
+        up.move(to: NSPoint(x: r.minX, y: r.midY + 1.5))
+        up.line(to: NSPoint(x: r.midX, y: r.maxY))
+        up.line(to: NSPoint(x: r.maxX, y: r.midY + 1.5))
+        up.close()
+        up.fill()
+        let down = NSBezierPath()
+        down.move(to: NSPoint(x: r.minX, y: r.midY - 1.5))
+        down.line(to: NSPoint(x: r.midX, y: r.minY))
+        down.line(to: NSPoint(x: r.maxX, y: r.midY - 1.5))
+        down.close()
+        down.fill()
+    }
+
+    /// The sync view: what is being written, how far along, and a bar.
+    private func drawSync() {
+        let w = bounds.width - 52 - (showsArrows ? 12 : 0)
+        let titleH: CGFloat = 14, subtitleH: CGFloat = 13
+        let titleY = bounds.maxY - 3 - titleH
+        centred(syncTitle, NSRect(x: 26, y: titleY, width: w, height: titleH), size: 12, bold: true)
+        centred(syncDetail, NSRect(x: 26, y: titleY - subtitleH, width: w, height: subtitleH), size: 11)
+
+        let g = grooveRect
+        let groove = NSBezierPath(roundedRect: g, xRadius: 2, yRadius: 2)
+        NSGradient(starting: NSColor(white: 0.72, alpha: 1), ending: NSColor(white: 0.86, alpha: 1))!
+            .draw(in: groove, angle: -90)
+        NSGraphicsContext.saveGraphicsState()
+        groove.addClip()
+        if let f = syncFraction {
+            if f > 0.005 {
+                let filled = NSRect(x: g.minX, y: g.minY, width: g.width * CGFloat(f), height: g.height)
+                NSGradient(starting: NSColor(srgbRed: 0.42, green: 0.60, blue: 0.88, alpha: 1),
+                           ending: NSColor(srgbRed: 0.26, green: 0.46, blue: 0.80, alpha: 1))!
+                    .draw(in: filled, angle: -90)
+            }
+        } else {
+            // Barber pole: diagonal blue stripes sliding right.
+            NSGradient(starting: NSColor(srgbRed: 0.55, green: 0.70, blue: 0.92, alpha: 1),
+                       ending: NSColor(srgbRed: 0.42, green: 0.60, blue: 0.88, alpha: 1))!
+                .draw(in: g, angle: -90)
+            NSColor(srgbRed: 0.26, green: 0.46, blue: 0.80, alpha: 1).setFill()
+            var x = g.minX - 14 + polePhase
+            while x < g.maxX + 14 {
+                let stripe = NSBezierPath()
+                stripe.move(to: NSPoint(x: x, y: g.minY - 1))
+                stripe.line(to: NSPoint(x: x + 6, y: g.minY - 1))
+                stripe.line(to: NSPoint(x: x + 12, y: g.maxY + 1))
+                stripe.line(to: NSPoint(x: x + 6, y: g.maxY + 1))
+                stripe.close()
+                stripe.fill()
+                x += 14
+            }
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        NSColor(white: 0.56, alpha: 1).setStroke()
+        NSBezierPath(roundedRect: g.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2).stroke()
     }
 
     /// The small circled glyphs in the display's corners: play or pause at the
@@ -261,7 +380,7 @@ final class AquaDisplayPanel: NSView {
     private func drawPlaying() {
         let total = duration ?? 0
         let pos = min(total, max(0, shownPosition))
-        let w = bounds.width - 52
+        let w = bounds.width - 52 - (showsArrows ? 12 : 0)
 
         // Lay the two lines out from the top and the groove from the bottom,
         // so the subtitle no longer sits on the scrubber the way it did at
