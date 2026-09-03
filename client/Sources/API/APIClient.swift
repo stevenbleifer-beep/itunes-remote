@@ -51,10 +51,16 @@ final class APIClient {
         }
     }
 
-    private func request(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Any? = nil) async throws -> Data {
+    private func request(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Any? = nil,
+                         timeout: TimeInterval? = nil) async throws -> Data {
         var comps = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { comps.queryItems = query }
         var req = URLRequest(url: comps.url!)
+        // The player poll must give up quickly. One request left hanging on a
+        // blocked iTunes used to stall polling for the full 30 seconds, and
+        // the window sat showing the track that had been playing when it
+        // stalled while iTunes had moved on.
+        if let timeout = timeout { req.timeoutInterval = timeout }
         req.httpMethod = method
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if let body = body {
@@ -86,7 +92,8 @@ final class APIClient {
     }
 
     func playerState() async throws -> PlayerState {
-        try await get("/api/player")
+        let data = try await request("GET", "/api/player", timeout: 10)
+        return try JSONDecoder().decode(PlayerState.self, from: data)
     }
 
     func playerCommand(_ cmd: String) async throws {
@@ -115,6 +122,8 @@ final class APIClient {
     }
 
     func setOutputs(_ names: [String]) async throws -> [Output] {
+        // The daemon gives up on iTunes after 8 s and reports what it is
+        // showing; leave it room to answer with that.
         struct Wrap: Decodable { let outputs: [Output] }
         let data = try await request("POST", "/api/outputs", body: ["names": names])
         return try JSONDecoder().decode(Wrap.self, from: data).outputs

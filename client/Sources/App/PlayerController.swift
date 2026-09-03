@@ -94,6 +94,9 @@ final class PlayerController {
 
     // MARK: Commands
 
+    /// Anything the window should say out loud rather than swallow.
+    var onError: (String) -> Void = { _ in }
+
     private func command(_ body: @escaping () async throws -> Void) {
         guard api != nil else { return }
         Task {
@@ -102,6 +105,7 @@ final class PlayerController {
                 lastError = nil
             } catch {
                 lastError = error.localizedDescription
+                onError(error.localizedDescription)
             }
             await refresh()
         }
@@ -232,7 +236,12 @@ final class PlayerController {
                 outputs = try await api.setOutputs(names)
                 lastError = nil
             } catch {
+                // The switch failed — often because iTunes 12.9.5 cannot
+                // AirPlay to a modern Mac. Re-read the real state instead of
+                // leaving the menu showing a selection that never happened.
                 lastError = error.localizedDescription
+                onError("Could not switch output: \(error.localizedDescription)")
+                await loadOutputs()
             }
             onOutputsChanged()
             onChange()

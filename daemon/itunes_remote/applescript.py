@@ -21,6 +21,16 @@ US = "\x1f"
 IPOD_MOUNT = "/Volumes/iPod"
 
 
+class _NoLock(object):
+    """A lock-shaped object that locks nothing."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 class AppleScriptError(Exception):
     """The script ran and iTunes reported an error."""
     status = 502
@@ -65,14 +75,22 @@ class AppleScript(object):
     # -- running scripts ------------------------------------------------
 
     def run(self, name, *args, **kw):
-        """Runs scripts/<name>.applescript with args. Returns stdout text."""
+        """Runs scripts/<name>.applescript with args. Returns stdout text.
+
+        `serialize=False` skips the shared lock. Only for scripts that talk to
+        System Events rather than to iTunes: a script waiting on iTunes can be
+        blocked for as long as a modal dialog is up there, and reading that
+        dialog is exactly what has to keep working while it is.
+        """
         timeout = kw.get("timeout") or self.timeout
         require_running = kw.get("require_running", True)
+        serialize = kw.get("serialize", True)
         if require_running and not self.itunes_running():
             raise ITunesNotRunning("iTunes is not running on the MacBook Pro")
         path = os.path.join(self.scripts_dir, name + ".applescript")
         cmd = ["osascript", path] + [str(a) for a in args]
-        with self.lock:
+        guard = self.lock if serialize else _NoLock()
+        with guard:
             try:
                 r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
             except subprocess.TimeoutExpired:

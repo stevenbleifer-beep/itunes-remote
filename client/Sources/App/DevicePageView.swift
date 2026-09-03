@@ -22,6 +22,7 @@ final class DevicePageView: NSView {
     private enum Row {
         case header(String)
         case summary
+        case music
         /// A playlist on the device: its name and whether it is a special one.
         case content(String, SidebarIcon)
     }
@@ -32,6 +33,7 @@ final class DevicePageView: NSView {
     private let list = NSTableView()
     private let listScroll = NSScrollView()
     private let summary = DeviceSummaryView()
+    private let musicPane = DeviceMusicView()
     private let trackTable = SimpleTable(columns: [("Name", 300), ("Artist", 200), ("Album", 200), ("Time", 60)])
     private let capacity = CapacityBarView()
     private let syncButton = AquaPushButton(title: "Sync")
@@ -45,7 +47,7 @@ final class DevicePageView: NSView {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        for v in [nav as NSView, header, listScroll, summary, trackTable.scrollView,
+        for v in [nav as NSView, header, listScroll, summary, musicPane, trackTable.scrollView,
                   capacity, syncButton, doneButton, statusLabel] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
@@ -112,7 +114,7 @@ final class DevicePageView: NSView {
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: syncButton.leadingAnchor, constant: -10),
             statusLabel.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
         ])
-        for content in [summary as NSView, trackTable.scrollView] {
+        for content in [summary as NSView, musicPane, trackTable.scrollView] {
             NSLayoutConstraint.activate([
                 content.leadingAnchor.constraint(equalTo: listScroll.trailingAnchor, constant: pad),
                 content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
@@ -121,6 +123,7 @@ final class DevicePageView: NSView {
             ])
         }
         trackTable.scrollView.isHidden = true
+        musicPane.isHidden = true
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -184,6 +187,7 @@ final class DevicePageView: NSView {
         selectingFromHistory = false
         switch rows[row] {
         case .summary: showSummary()
+        case .music: showMusicSettings()
         case .content(let name, _): showTracks(name)
         case .header: break
         }
@@ -235,11 +239,13 @@ final class DevicePageView: NSView {
         detail = d
         header.show(d)
         summary.show(d)
+        if let sync = d.sync { musicPane.show(sync) }
         capacity.show(d)
         let hasBar = (d.capacity ?? 0) > 0
         capacity.isHidden = !hasBar
         capacityHeight.constant = hasBar ? 24 : 0
         var r: [Row] = [.header("Settings"), .summary]
+        if d.sync != nil { r.append(.music) }
         if !d.categories.isEmpty || !d.playlists.isEmpty {
             r.append(.header("On My Device"))
             for c in d.categories where c.trackCount > 0 {
@@ -255,8 +261,11 @@ final class DevicePageView: NSView {
         if firstLoad || list.selectedRow < 0 {
             history = []
             historyIndex = -1
-            list.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
-            showSummary()
+            // Come back to the pane last looked at, as long as it still exists.
+            let wanted = UserDefaults.standard.integer(forKey: "devicePane")
+            let row = (wanted > 0 && wanted < rows.count) ? wanted : 1
+            list.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            select(row)
             updateNav()
             loadImage { [weak self] image in self?.header.image = image }
         }
@@ -282,11 +291,19 @@ final class DevicePageView: NSView {
 
     private func showSummary() {
         summary.isHidden = false
+        musicPane.isHidden = true
+        trackTable.scrollView.isHidden = true
+    }
+
+    private func showMusicSettings() {
+        summary.isHidden = true
+        musicPane.isHidden = false
         trackTable.scrollView.isHidden = true
     }
 
     private func showTracks(_ playlist: String) {
         summary.isHidden = true
+        musicPane.isHidden = true
         trackTable.scrollView.isHidden = false
         guard loadedPlaylist != playlist else { return }
         loadedPlaylist = playlist
@@ -325,6 +342,8 @@ extension DevicePageView: NSTableViewDataSource, NSTableViewDelegate {
             return cell
         case .summary:
             return DevicePageView.sidebarCell(tableView, text: "Summary", icon: .smartPlaylist)
+        case .music:
+            return DevicePageView.sidebarCell(tableView, text: "Music", icon: .music)
         case .content(let name, let icon):
             return DevicePageView.sidebarCell(tableView, text: name, icon: icon)
         }
@@ -344,9 +363,13 @@ extension DevicePageView: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard list.selectedRow >= 0, list.selectedRow < rows.count else { return }
-        if !selectingFromHistory { record(list.selectedRow) }
+        if !selectingFromHistory {
+            record(list.selectedRow)
+            UserDefaults.standard.set(list.selectedRow, forKey: "devicePane")
+        }
         switch rows[list.selectedRow] {
         case .summary: showSummary()
+        case .music: showMusicSettings()
         case .content(let name, _): showTracks(name)
         case .header: break
         }
@@ -431,7 +454,7 @@ final class DeviceSummaryView: NSView {
     private var title = ""
     private var left: [(String, String)] = []
     private var softwareVersion: String?
-    private var options: [(String, Bool?)] = []
+    private var options: [(String, Bool?, String)] = []
     private var optionsTitle = "Options"
     private var note = ""
 
@@ -450,11 +473,27 @@ final class DeviceSummaryView: NSView {
             note = reason + "\n\nThis is everything the USB bus can say about it. Open iTunes "
                 + "on the MacBook Pro with the device connected, and the rest of this page fills in."
         } else {
-            options = [("Enable disk use", d.diskUse)]
-            note = "iTunes keeps its other sync settings — whole library or selected playlists, "
-                + "convert higher bit rate songs, sync only checked songs — inside its library "
-                + "database, where nothing outside iTunes can read or change them. Set those in "
-                + "iTunes on the MacBook Pro."
+            // Every option from iTunes' own Summary pane, in its order. A tick
+            // is a value actually established; a dash is one iTunes keeps to
+            // itself. None of them is a switch, because none can be set.
+            var o: [(String, Bool?, String)] = [
+                ("Open iTunes when this iPod is connected", nil, ""),
+                ("Sync only checked songs and videos", nil, ""),
+            ]
+            if let c = d.sync?.convert {
+                o.append(("Convert higher bit rate songs to \(c.kbps) kbps AAC", true,
+                          "\(c.atCap) of \(c.sampled) sampled tracks sit exactly at \(c.kbps) kbps, and none above it"))
+            } else {
+                o.append(("Convert higher bit rate songs to AAC", nil, ""))
+            }
+            o.append(("Manually manage music and videos", nil,
+                      "iTunes refuses tracks dropped on a device unless this is on"))
+            o.append(("Enable disk use", d.diskUse, d.mountPoint.map { "mounted at \($0)" } ?? ""))
+            options = o
+            note = "A dash means iTunes keeps that setting in its library database, where nothing "
+                + "outside iTunes can read or change it — its window reports no accessible "
+                + "controls either. The ticked ones were established from the device itself. "
+                + "Change any of them in iTunes on the MacBook Pro."
         }
         optionsTitle = d.unavailableReason == nil ? "Options" : "Why this page is short"
         needsDisplay = true
@@ -508,9 +547,19 @@ final class DeviceSummaryView: NSView {
         let obox = NSRect(x: 0, y: y - optH, width: bounds.width, height: optH)
         DeviceSummaryView.drawBox(obox)
         var oy = obox.maxY - 28
-        for (name, value) in options {
-            DeviceSummaryView.drawTick(at: NSPoint(x: obox.minX + 20, y: oy + 5), on: value == true)
-            (name as NSString).draw(at: NSPoint(x: obox.minX + 38, y: oy), withAttributes: valueAttrs)
+        let dimAttrs: [NSAttributedString.Key: Any] = [
+            .font: Aqua.font(11), .foregroundColor: NSColor(white: 0.50, alpha: 1),
+        ]
+        for (name, value, detail) in options {
+            DeviceSummaryView.drawMark(at: NSPoint(x: obox.minX + 20, y: oy + 5), value: value)
+            let attrs = value == nil ? [NSAttributedString.Key.font: Aqua.font(12),
+                                        .foregroundColor: NSColor(white: 0.45, alpha: 1)] : valueAttrs
+            (name as NSString).draw(at: NSPoint(x: obox.minX + 38, y: oy), withAttributes: attrs)
+            if !detail.isEmpty {
+                let w = (name as NSString).size(withAttributes: attrs).width
+                ("— " + detail as NSString).draw(at: NSPoint(x: obox.minX + 44 + w, y: oy + 1),
+                                                 withAttributes: dimAttrs)
+            }
             oy -= 22
         }
         let para = NSMutableParagraphStyle()
@@ -543,7 +592,18 @@ final class DeviceSummaryView: NSView {
         box.stroke()
     }
 
-    /// A read-only tick: this reflects iTunes' state, it does not set it.
+    /// A read-only mark: tick for established, empty for established-off, a
+    /// dash for a setting iTunes does not expose. It reflects iTunes' state
+    /// and never sets it, so it is drawn rather than being a control.
+    static func drawMark(at p: NSPoint, value: Bool?) {
+        guard let value = value else {
+            NSColor(white: 0.55, alpha: 1).setFill()
+            NSRect(x: p.x - 5, y: p.y - 1, width: 10, height: 1.6).fill()
+            return
+        }
+        drawTick(at: p, on: value)
+    }
+
     static func drawTick(at p: NSPoint, on: Bool) {
         let box = NSRect(x: p.x - 6, y: p.y - 6, width: 12, height: 12)
         let path = NSBezierPath(roundedRect: box.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2)
@@ -841,5 +901,72 @@ final class DeviceNavBar: NSView {
         (title as NSString).draw(in: NSRect(x: r.minX, y: r.midY - 8, width: r.width, height: 16), withAttributes: [
             .font: Aqua.font(12, bold: true), .foregroundColor: NSColor.white, .paragraphStyle: style,
         ])
+    }
+}
+
+// MARK: - Music settings
+
+/// iTunes' Music pane, as far as it can honestly be reproduced: what is on
+/// the device, whether the whole library or selected playlists reach it, and
+/// which playlists those are. iTunes' checkboxes are its own — the selection
+/// lives in its library database — so this shows what actually synced rather
+/// than a copy of the switches.
+@MainActor
+final class DeviceMusicView: NSView {
+    private let heading = NSTextField(labelWithString: "")
+    private let mode = NSTextField(labelWithString: "")
+    private let hint = NSTextField(labelWithString: "")
+    private let table = SimpleTable(columns: [("Playlist", 320), ("On the iPod", 100), ("In the library", 100)])
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        for v in [heading, mode, hint, table.scrollView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(v)
+        }
+        heading.font = Aqua.font(17)
+        heading.textColor = NSColor(white: 0.12, alpha: 1)
+        mode.font = Aqua.font(12)
+        mode.textColor = NSColor(white: 0.25, alpha: 1)
+        hint.font = Aqua.font(11)
+        hint.textColor = NSColor(white: 0.42, alpha: 1)
+        hint.lineBreakMode = .byWordWrapping
+        hint.maximumNumberOfLines = 3
+        NSLayoutConstraint.activate([
+            heading.leadingAnchor.constraint(equalTo: leadingAnchor),
+            heading.topAnchor.constraint(equalTo: topAnchor),
+            mode.leadingAnchor.constraint(equalTo: leadingAnchor),
+            mode.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 8),
+            hint.leadingAnchor.constraint(equalTo: leadingAnchor),
+            hint.trailingAnchor.constraint(equalTo: trailingAnchor),
+            hint.topAnchor.constraint(equalTo: mode.bottomAnchor, constant: 6),
+            table.scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            table.scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            table.scrollView.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 12),
+            table.scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show(_ sync: DeviceSync) {
+        let n = NumberFormatter.localizedString(from: NSNumber(value: sync.songsOnDevice), number: .decimal)
+        heading.stringValue = "Sync Music — \(n) songs"
+        mode.stringValue = sync.syncsWholeLibrary
+            ? "Entire music library"
+            : "Selected playlists, artists, albums, and genres"
+        hint.stringValue = sync.syncsWholeLibrary
+            ? "Everything in the library reaches the iPod, so anything added to the library syncs."
+            : "These are the playlists that actually reached the iPod. To add or remove songs from "
+            + "the sync, add or remove them from one of these playlists — right-click a track and "
+            + "use Add to iPod, or drag it onto the playlist in the source list."
+        table.rows = sync.playlists.map {
+            [$0.name + ($0.smart ? "  (smart)" : ""),
+             NumberFormatter.localizedString(from: NSNumber(value: $0.deviceCount), number: .decimal),
+             NumberFormatter.localizedString(from: NSNumber(value: $0.libraryCount), number: .decimal)]
+        }
+        if sync.playlists.isEmpty {
+            table.rows = [["No library playlist matched what is on the iPod.", "", ""]]
+        }
     }
 }

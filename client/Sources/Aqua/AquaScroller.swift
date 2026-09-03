@@ -23,7 +23,20 @@ final class AquaScroller: NSScroller {
 
     override func drawKnob() {
         let vertical = bounds.height > bounds.width
-        let r = rect(for: .knob).insetBy(dx: vertical ? 3 : 0, dy: vertical ? 0 : 3)
+        // Take only the length and position from AppKit. Its knob rect is
+        // already inset unevenly — x 1, width 11 inside a 15-point scroller —
+        // so insetting that again left a 5-point knob sitting off centre.
+        // The thickness is ours, centred on the bar.
+        let k = rect(for: .knob)
+        let thickness: CGFloat = 9
+        let r: NSRect
+        if vertical {
+            r = NSRect(x: round(bounds.midX - thickness / 2), y: k.minY,
+                       width: thickness, height: k.height)
+        } else {
+            r = NSRect(x: k.minX, y: round(bounds.midY - thickness / 2),
+                       width: k.width, height: thickness)
+        }
         guard r.width > 2, r.height > 2 else { return }
         let radius = (vertical ? r.width : r.height) / 2
         let pill = NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: radius, yRadius: radius)

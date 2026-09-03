@@ -65,7 +65,7 @@ class Track(object):
         "compilation", "enabled", "rating", "play_count", "grouping", "bpm",
         "date_added", "date_modified", "location", "artwork_count", "search", "sort_key",
         "sort_name", "sort_artist", "sort_album", "sort_album_artist",
-        "browse_artist", "group_keys",
+        "browse_artist", "group_keys", "artist_display_key",
     )
 
     # Fields the client may edit through PATCH, mapped to the AppleScript
@@ -151,6 +151,13 @@ class Track(object):
                 artist_group = self.sort_album_artist or self.album_artist
             else:
                 artist_group = self.sort_artist or self.artist
+        # Two keys for the artist, and a browser click matches either.
+        #
+        # The row is grouped by the Sort Artist field but labelled with the
+        # display name, and iTunes fills in a sort artist for every "The X"
+        # band. So the row said "The Beatles" while its key was "beatles", and
+        # clicking it selected nothing: 265 of 2,905 rows were dead this way.
+        self.artist_display_key = browse_key(self.browse_artist)
         self.group_keys = {
             "artist": browse_key(artist_group),
             "album": browse_key(self.album),
@@ -355,7 +362,7 @@ class Library(object):
             keys = t.group_keys
             if g is not None and keys["genre"] != g:
                 continue
-            if ar is not None and keys["artist"] != ar:
+            if ar is not None and keys["artist"] != ar and t.artist_display_key != ar:
                 continue
             if al is not None and keys["album"] != al:
                 continue

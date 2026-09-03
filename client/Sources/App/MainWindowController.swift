@@ -83,6 +83,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var artworkToken = 0
     private var addToPlaylistItem: NSMenuItem?
     private var removeFromPlaylistItem: NSMenuItem?
+    private var addToIPodItem: NSMenuItem?
+    private var removeFromIPodItem: NSMenuItem?
+    /// The playlists that actually reach the iPod, so "add to the sync" can
+    /// mean something concrete. iTunes keeps the sync selection to itself, but
+    /// the playlists sitting on the device say which ones it is.
+    private var syncedPlaylists: [DeviceSync.SyncedPlaylist] = []
+    private var syncedDevice: String?
 
     // View mode
     enum ViewMode: Int {
@@ -793,6 +800,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         remove.attributedTitle = NSAttributedString(string: "Remove from Playlist", attributes: [.font: Aqua.font(13)])
         menu.addItem(remove)
         removeFromPlaylistItem = remove
+        menu.addItem(.separator())
+        let addPod = NSMenuItem(title: "Add to iPod", action: nil, keyEquivalent: "")
+        addPod.attributedTitle = NSAttributedString(string: "Add to iPod", attributes: [.font: Aqua.font(13)])
+        addPod.submenu = NSMenu()
+        menu.addItem(addPod)
+        addToIPodItem = addPod
+        let removePod = NSMenuItem(title: "Remove from iPod", action: nil, keyEquivalent: "")
+        removePod.attributedTitle = NSAttributedString(string: "Remove from iPod", attributes: [.font: Aqua.font(13)])
+        removePod.submenu = NSMenu()
+        menu.addItem(removePod)
+        removeFromIPodItem = removePod
         menu.delegate = self
         trackTable.menu = menu
     }
@@ -817,6 +835,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         controller.onFirstLoad = { [weak self] in self?.firstLoadDone() }
         player.onChange = { [weak self] in self?.updatePlayerUI() }
         player.onOutputsChanged = { [weak self] in self?.updateAirPlayButton() }
+        player.onError = { [weak self] message in self?.flashStatus(message) }
         player.onLocalTrackFinished = { [weak self] in self?.step(by: 1) }
         updateStatus()
     }
@@ -932,6 +951,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             let ipods = list.filter { $0.isIPod }
             syncButton.isHidden = ipods.isEmpty
             ejectButton.isHidden = ipods.isEmpty
+            loadSyncedPlaylists()
         }
     }
 
@@ -1694,6 +1714,92 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         addToPlaylistItem?.submenu = submenu
         addToPlaylistItem?.isEnabled = !selectedTracks.isEmpty
         removeFromPlaylistItem?.isHidden = controller.source.playlistId == nil
+        buildIPodMenus()
+    }
+
+    /// The two iPod submenus. Adding a track to a playlist the iPod syncs is
+    /// what "add it to the sync" actually means here — iTunes' own checkbox
+    /// list lives in its library database and cannot be set from outside.
+    private func buildIPodMenus() {
+        let haveDevice = syncedDevice != nil && !syncedPlaylists.isEmpty
+        addToIPodItem?.isHidden = !haveDevice
+        removeFromIPodItem?.isHidden = !haveDevice
+        guard haveDevice else { return }
+        let editable = syncedPlaylists.filter { !$0.smart }
+        func build(_ action: Selector) -> NSMenu {
+            let m = NSMenu()
+            if editable.isEmpty {
+                let none = NSMenuItem(title: "The iPod syncs only smart playlists", action: nil, keyEquivalent: "")
+                none.isEnabled = false
+                m.addItem(none)
+                return m
+            }
+            for p in editable {
+                let title = "\(p.name)  (\(p.deviceCount))"
+                let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                item.target = self
+                item.representedObject = p.playlistId
+                item.attributedTitle = NSAttributedString(string: title, attributes: [.font: Aqua.font(13)])
+                m.addItem(item)
+            }
+            return m
+        }
+        addToIPodItem?.submenu = build(#selector(addToIPodPicked(_:)))
+        removeFromIPodItem?.submenu = build(#selector(removeFromIPodPicked(_:)))
+        addToIPodItem?.isEnabled = !selectedTracks.isEmpty
+        removeFromIPodItem?.isEnabled = !selectedTracks.isEmpty
+    }
+
+    @objc private func addToIPodPicked(_ sender: NSMenuItem) {
+        guard let playlistId = sender.representedObject as? String, let api = controller.api else { return }
+        let ids = selectedTracks.map { $0.persistentId }
+        guard !ids.isEmpty else { return }
+        let name = syncedPlaylists.first { $0.playlistId == playlistId }?.name ?? "the playlist"
+        Task { @MainActor in
+            do {
+                let change = try await api.addToPlaylist(playlistId, ids: ids)
+                flashStatus("\(change.summary("Added")) to \(name). Sync the iPod to copy them across.")
+                await reloadPlaylists()
+                if controller.source.playlistId == playlistId { controller.reload() }
+            } catch {
+                flashStatus("Could not add to \(name): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    @objc private func removeFromIPodPicked(_ sender: NSMenuItem) {
+        guard let playlistId = sender.representedObject as? String, let api = controller.api else { return }
+        let ids = selectedTracks.map { $0.persistentId }
+        guard !ids.isEmpty else { return }
+        let name = syncedPlaylists.first { $0.playlistId == playlistId }?.name ?? "the playlist"
+        Task { @MainActor in
+            do {
+                let change = try await api.removeFromPlaylist(playlistId, ids: ids)
+                flashStatus("\(change.summary("Removed")) from \(name). Sync the iPod to take them off it.")
+                await reloadPlaylists()
+                if controller.source.playlistId == playlistId { controller.reload() }
+            } catch {
+                flashStatus("Could not remove from \(name): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Reads which playlists reach the iPod, once per device change. The call
+    /// costs about a second of iTunes' time, so it is not on the 30-second
+    /// device poll.
+    private func loadSyncedPlaylists() {
+        guard let api = controller.api,
+              let device = devices.first(where: { $0.isIPod && ($0.itunesSource ?? true) }) else {
+            syncedDevice = nil
+            syncedPlaylists = []
+            return
+        }
+        guard device.name != syncedDevice else { return }
+        Task { @MainActor in
+            guard let detail = try? await api.deviceDetail(device.name), let sync = detail.sync else { return }
+            self.syncedDevice = device.name
+            self.syncedPlaylists = sync.playlists
+        }
     }
 
     // MARK: Search

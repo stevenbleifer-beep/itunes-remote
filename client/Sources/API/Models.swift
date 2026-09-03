@@ -208,6 +208,35 @@ struct DeviceDetail: Decodable {
     let formatName: String?
     let diskUse: Bool?
     let hasImage: Bool?
+    let sync: DeviceSync?
+}
+
+/// How a device syncs, worked out from what is actually on it. iTunes keeps
+/// these settings in its library database, out of reach of AppleScript, the
+/// preference files and the accessibility tree, so everything here is derived
+/// or reported as unreadable — never guessed.
+struct DeviceSync: Decodable, Equatable {
+    struct Convert: Decodable, Equatable {
+        let kbps: Int
+        let sampled: Int
+        let atCap: Int
+    }
+    struct SyncedPlaylist: Decodable, Equatable {
+        let name: String
+        let playlistId: String
+        let deviceCount: Int
+        let libraryCount: Int
+        let smart: Bool
+    }
+    let mode: String
+    let songsOnDevice: Int
+    let songsInLibrary: Int
+    let convert: Convert?
+    let playlists: [SyncedPlaylist]
+    let deviceOnlyPlaylists: [String]
+    let unreadable: [String]
+
+    var syncsWholeLibrary: Bool { mode == "entireLibrary" }
 }
 
 /// A modal dialog iTunes is showing on the MacBook Pro. Nobody is sitting in

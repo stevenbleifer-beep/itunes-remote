@@ -16,7 +16,7 @@ import threading
 import unittest
 from datetime import datetime
 
-from itunes_remote.library import LibraryStore
+from itunes_remote.library import Library, LibraryStore
 
 TRACK_COUNT = 20000
 
@@ -219,3 +219,56 @@ class TestJournalReplay(FixtureCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BrowserSelectionTest(unittest.TestCase):
+    """A browser row must select the tracks it counted.
+
+    The Artists pane groups by the Sort Artist field but shows the display
+    name, and iTunes gives every "The X" band a sort artist of "X". Matching
+    the click on the display name alone found nothing.
+    """
+
+    TRACKS = [
+        {"Persistent ID": "AAAA000000000001", "Track ID": 1, "Name": "Cinema",
+         "Artist": "The Mar\u00edas", "Sort Artist": "Mar\u00edas",
+         "Album": "Superclean", "Kind": "AAC audio file", "Track Type": "File"},
+        {"Persistent ID": "AAAA000000000002", "Track ID": 2, "Name": "Ride",
+         "Artist": "The Beatles", "Sort Artist": "Beatles",
+         "Album": "Help", "Kind": "AAC audio file", "Track Type": "File"},
+    ]
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".xml", prefix="itr-browse-")
+        os.close(fd)
+        plist = {
+            "Major Version": 1, "Minor Version": 1,
+            "Application Version": "12.9.5.5",
+            "Date": datetime(2020, 1, 1),
+            "Library Persistent ID": "0000000000000002",
+            "Tracks": {str(t["Track ID"]): t for t in self.TRACKS},
+            "Playlists": [],
+        }
+        with open(self.path, "wb") as f:
+            plistlib.dump(plist, f)
+        self.lib = Library(self.path)
+
+    def tearDown(self):
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+
+    def rows(self, **kw):
+        return [t.name for t in self.lib._filter(self.lib.order, **kw)]
+
+    def test_the_row_selects_its_tracks(self):
+        for row in self.lib.facet("artist"):
+            self.assertTrue(self.rows(artist=row["name"]),
+                            "the row %r selected nothing" % row["name"])
+
+    def test_the_sort_form_selects_them_too(self):
+        self.assertEqual(self.rows(artist="Beatles"), ["Ride"])
+
+    def test_accents_still_do_not_matter(self):
+        self.assertEqual(self.rows(artist="The Marias"), ["Cinema"])

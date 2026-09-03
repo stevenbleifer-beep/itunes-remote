@@ -491,7 +491,7 @@ class Api(object):
         if self.alerts_readable is False:
             return {"alert": None, "readable": False}
         try:
-            out = self._script("alert_read", timeout=6)
+            out = self._script("alert_read", timeout=6, serialize=False)
         except ApiError as e:
             # A timeout here means Accessibility was never granted; stop asking.
             self.alerts_readable = False
@@ -509,7 +509,9 @@ class Api(object):
             raise ApiError(400, "body needs the button name to click")
         if self.alerts_readable is False:
             raise ApiError(409, "iTunes dialogs are not readable; grant Accessibility to Python")
-        out = self._script("alert_click", button, timeout=20)
+        # Also outside the lock: the point of dismissing a dialog is usually
+        # to unblock whatever is holding it.
+        out = self._script("alert_click", button, timeout=20, serialize=False)
         if self.write_log:
             self.write_log.record("alert-dismiss", None, None, {"button": button}, "ok", out)
         return {"result": out}
@@ -945,10 +947,13 @@ class Api(object):
             )
             return out
         recs = self.itunes.records(self._script("device_info", name, timeout=90))
+        bit_rates = []
         for r in recs:
             if r[0] == "dev":
                 out["capacity"] = self._opt(r[3])
                 out["freeSpace"] = self._opt(r[4])
+            elif r[0] == "br":
+                bit_rates = [int(self._num(x, 0)) for x in (r[1] if len(r) > 1 else "").split(",") if x]
             elif r[0] == "pl":
                 pl_name, special = r[1], r[2]
                 count = int(self._num(r[3], 0))
@@ -963,6 +968,7 @@ class Api(object):
                     out["playlists"].append({"name": pl_name, "count": count})
         order = {n: i for i, n in enumerate(self.CATEGORY_ORDER)}
         out["categories"].sort(key=lambda c: (order.get(c["name"], 99), c["name"]))
+        out["sync"] = self._sync_view(out, bit_rates)
         cap, free = out.get("capacity"), out.get("freeSpace")
         known = sum(c["bytes"] for c in out["categories"])
         if cap is not None and free is not None:
@@ -971,6 +977,77 @@ class Api(object):
             out["otherBytes"] = max(0, cap - free - known)
             out["usedBytes"] = cap - free
         return out
+
+    # The bit rates iTunes offers in "Convert higher bit rate songs to".
+    CONVERT_RATES = (128, 160, 192, 256)
+
+    # The stock Summary options, in iTunes' own order, and whether this daemon
+    # can say anything true about each one.
+    STOCK_OPTIONS = (
+        ("openOnConnect", "Open iTunes when this iPod is connected"),
+        ("syncOnlyChecked", "Sync only checked songs and videos"),
+        ("convertBitRate", "Convert higher bit rate songs to AAC"),
+        ("manualManagement", "Manually manage music and videos"),
+        ("diskUse", "Enable disk use"),
+    )
+
+    @staticmethod
+    def _detect_convert_rate(bit_rates):
+        """The conversion cap, read off what is actually on the device.
+
+        iTunes keeps the setting in its library database, out of reach of
+        AppleScript, the preference files and the accessibility tree — iTunes
+        12's window reports zero UI elements. But converting to N kbps leaves
+        a signature: nothing above N, and a large cluster sitting exactly on
+        it while lower-rate files pass through untouched.
+        """
+        rates = [b for b in bit_rates if b > 0]
+        if len(rates) < 20:
+            return None
+        top = max(rates)
+        if top not in Api.CONVERT_RATES:
+            return None
+        at_cap = sum(1 for b in rates if b == top)
+        if at_cap * 4 < len(rates):        # fewer than a quarter: not a cap
+            return None
+        return {"kbps": top, "sampled": len(rates), "atCap": at_cap}
+
+    def _sync_view(self, detail, bit_rates):
+        """What can honestly be said about how this device syncs."""
+        lib = self.store.lib
+        by_name = {}
+        for p in lib.playlist_summaries():
+            by_name.setdefault(p["name"], p)
+        synced, device_only = [], []
+        for p in detail.get("playlists", []):
+            match = by_name.get(p["name"])
+            if match is None:
+                device_only.append(p["name"])
+                continue
+            synced.append({
+                "name": p["name"],
+                "playlistId": match["persistentId"],
+                "deviceCount": p["count"],
+                "libraryCount": match["count"],
+                "smart": match["smart"],
+            })
+        synced.sort(key=lambda p: p["name"].casefold())
+        music = next((c for c in detail.get("categories", []) if c["name"] == "Music"), None)
+        on_device = music["trackCount"] if music else 0
+        # Every music track in the library against what reached the device.
+        whole_library = on_device >= len(lib.tracks) - 1
+        return {
+            "mode": "entireLibrary" if whole_library else "selectedPlaylists",
+            "songsOnDevice": on_device,
+            "songsInLibrary": len(lib.tracks),
+            "convert": self._detect_convert_rate(bit_rates),
+            "playlists": synced,
+            "deviceOnlyPlaylists": device_only,
+            # Everything iTunes keeps to itself, named so the page can say so
+            # rather than showing a switch that does nothing.
+            "unreadable": [label for key, label in self.STOCK_OPTIONS
+                           if key in ("openOnConnect", "syncOnlyChecked", "manualManagement")],
+        }
 
     @staticmethod
     def _opt(raw):
@@ -1021,7 +1098,21 @@ class Api(object):
         names = (body or {}).get("names")
         if not isinstance(names, list) or not names or not all(isinstance(n, str) and n for n in names):
             raise ApiError(400, "body needs a non-empty list of device names")
-        self._script("outputs_set", *names, timeout=30)
+        # Picking an AirPlay device iTunes cannot use raises a modal dialog on
+        # the MacBook Pro, and the script then waits on it. A short timeout
+        # keeps that from holding the Apple Events lock for the whole 30 s and
+        # freezing every other request behind it; the alert reader, which no
+        # longer takes the lock, surfaces the dialog so it can be dismissed.
+        try:
+            self._script("outputs_set", *names, timeout=8)
+        except ApiError as e:
+            if e.status == 504:
+                alert = self.get_alert({}, {}, None).get("alert")
+                message = ("iTunes did not answer within 8 seconds. It is showing: %s"
+                           % alert["message"]) if alert else (
+                           "iTunes did not answer within 8 seconds; it may be showing a dialog.")
+                raise ApiError(504, message)
+            raise
         return self.get_outputs(params, query, body)
 
     # -- playlists -------------------------------------------------------
@@ -1324,8 +1415,12 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
                 remaining -= len(chunk)
-        except (BrokenPipeError, ConnectionResetError):
-            pass   # the player seeked or stopped; normal
+        except OSError as e:
+            # The player seeked, paused or stopped and dropped the socket.
+            # Normal, and not always a BrokenPipeError: macOS raises a bare
+            # OSError 41 (protocol wrong type for socket) here, which was
+            # filling the log with tracebacks on every seek.
+            log.debug("audio stream closed early: %s", e)
         finally:
             f.close()
 

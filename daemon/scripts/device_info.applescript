@@ -28,6 +28,25 @@ on run argv
             set fs to free space of dev
         end try
         set out to "dev" & US & (name of dev) & US & ((kind of dev) as text) & US & cap & US & fs & RS
+        -- A sample of what is actually on the device. iTunes exposes none of
+        -- its sync settings to scripting, but "convert higher bit rate songs
+        -- to N kbps" leaves its fingerprint here: nothing above the cap, and
+        -- a large cluster sitting exactly on it.
+        try
+            set mp to missing value
+            repeat with p in playlists of dev
+                if ((special kind of p) as text) is "Music" then set mp to p
+            end repeat
+            if mp is not missing value then
+                set n to (count of tracks of mp)
+                if n > 400 then set n to 400
+                if n > 0 then
+                    set AppleScript's text item delimiters to ","
+                    set out to out & "br" & US & ((bit rate of tracks 1 thru n of mp) as text) & RS
+                    set AppleScript's text item delimiters to od
+                end if
+            end if
+        end try
         repeat with p in playlists of dev
             set sk to (special kind of p) as text
             set n to (count of tracks of p)
