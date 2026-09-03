@@ -39,14 +39,21 @@ final class AquaRowView: NSTableRowView {
 final class AquaHeaderCell: NSTableHeaderCell {
     var sortKey: String?
 
-    private func isSortColumn(_ controlView: NSView) -> Bool {
+    /// The sort direction when this column is the one being sorted on, and
+    /// nil when it is not.
+    private func sortDirection(_ controlView: NSView) -> Bool? {
         guard let key = sortKey, let hv = controlView as? NSTableHeaderView,
-              let d = hv.tableView?.sortDescriptors.first else { return false }
-        return d.key == key
+              let d = hv.tableView?.sortDescriptors.first, d.key == key else { return nil }
+        return d.ascending
+    }
+
+    private func isSortColumn(_ controlView: NSView) -> Bool {
+        sortDirection(controlView) != nil
     }
 
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
-        let sorted = isSortColumn(controlView)
+        let ascending = sortDirection(controlView)
+        let sorted = ascending != nil
         let top = sorted ? NSColor(srgbRed: 0.85, green: 0.90, blue: 0.97, alpha: 1) : NSColor(white: 1.0, alpha: 1)
         let bottom = sorted ? NSColor(srgbRed: 0.72, green: 0.80, blue: 0.93, alpha: 1) : NSColor(white: 0.87, alpha: 1)
         NSGradient(starting: top, ending: bottom)!.draw(in: cellFrame, angle: -90)
@@ -55,6 +62,12 @@ final class AquaHeaderCell: NSTableHeaderCell {
         NSColor(white: 0.70, alpha: 1).setFill()
         NSRect(x: cellFrame.maxX - 1, y: cellFrame.minY + 1, width: 1, height: cellFrame.height - 1).fill()
         drawInterior(withFrame: cellFrame, in: controlView)
+        // AppKit only calls drawSortIndicator when the table has been given an
+        // indicator image for the column, which this app never does — so draw
+        // it here, on the sorted column, at the right-hand edge.
+        if let ascending = ascending {
+            drawSortIndicator(withFrame: cellFrame, in: controlView, ascending: ascending, priority: 0)
+        }
     }
 
     override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
@@ -65,7 +78,11 @@ final class AquaHeaderCell: NSTableHeaderCell {
             .font: Aqua.font(11), .foregroundColor: NSColor.black, .paragraphStyle: style,
         ]
         let inset = cellFrame.insetBy(dx: 5, dy: 0)
-        let textRect = NSRect(x: inset.minX, y: cellFrame.midY - 7, width: inset.width - 10, height: 15)
+        // Keep the title clear of the sort triangle, which sits at the right
+        // edge — right-aligned titles would otherwise run straight under it.
+        let reserve: CGFloat = isSortColumn(controlView) ? 13 : 0
+        let textRect = NSRect(x: inset.minX, y: cellFrame.midY - 7,
+                              width: max(0, inset.width - 10 - reserve), height: 15)
         (stringValue as NSString).draw(in: textRect, withAttributes: attrs)
     }
 
@@ -73,16 +90,19 @@ final class AquaHeaderCell: NSTableHeaderCell {
         let size: CGFloat = 7
         let x = cellFrame.maxX - size - 6
         let y = cellFrame.midY
+        // Ascending points up on screen. The header view is flipped, so the
+        // apex has to sit at the smaller y there and the larger y otherwise —
+        // hard-coding one of them drew every arrow the wrong way round.
+        let pointsUpOnScreen = ascending
+        // In a flipped view the smaller y is the top of the screen, so the
+        // apex goes there exactly when those two agree.
+        let apexAtSmallerY = pointsUpOnScreen == controlView.isFlipped
+        let apexY = apexAtSmallerY ? y - size / 2 : y + size / 2
+        let baseY = apexAtSmallerY ? y + size / 2 : y - size / 2
         let tri = NSBezierPath()
-        if ascending {
-            tri.move(to: NSPoint(x: x, y: y - size / 2))
-            tri.line(to: NSPoint(x: x + size, y: y - size / 2))
-            tri.line(to: NSPoint(x: x + size / 2, y: y + size / 2))
-        } else {
-            tri.move(to: NSPoint(x: x, y: y + size / 2))
-            tri.line(to: NSPoint(x: x + size, y: y + size / 2))
-            tri.line(to: NSPoint(x: x + size / 2, y: y - size / 2))
-        }
+        tri.move(to: NSPoint(x: x, y: baseY))
+        tri.line(to: NSPoint(x: x + size, y: baseY))
+        tri.line(to: NSPoint(x: x + size / 2, y: apexY))
         tri.close()
         NSColor(white: 0.25, alpha: 1).setFill()
         tri.fill()

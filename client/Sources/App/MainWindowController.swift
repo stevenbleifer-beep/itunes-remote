@@ -2663,5 +2663,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         guard Tag(rawValue: tableView.tag) == .tracks else { return }
         let d = tableView.sortDescriptors.first
         controller.setSort(key: d?.key, ascending: d?.ascending ?? true)
+        // The triangle lives in the header cells, which do not repaint on
+        // their own when the descriptor moves to another column.
+        tableView.headerView?.needsDisplay = true
     }
 }
