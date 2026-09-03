@@ -1,0 +1,413 @@
+"""In-memory copy of the iTunes library, loaded from the XML plist.
+
+Reads never touch iTunes. The XML is parsed once at startup and again, in a
+background thread, whenever iTunes rewrites it. Writes made through the
+daemon are patched into the in-memory copy immediately and journaled, so a
+reload of a stale XML does not undo them.
+"""
+
+import logging
+import os
+import plistlib
+import threading
+import time
+import unicodedata
+from urllib.parse import unquote, urlsplit
+from datetime import datetime, timezone
+
+log = logging.getLogger("itunes_remote.library")
+
+
+def fold(s):
+    """Normalise for case-insensitive comparison. XML is NFC; be safe anyway."""
+    return unicodedata.normalize("NFC", s or "").casefold()
+
+
+def _iso(dt):
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=timezone.utc).isoformat()
+
+
+class Track(object):
+    """One audio file track. Slots keep ~100k of these small."""
+
+    __slots__ = (
+        "persistent_id", "track_id", "name", "artist", "album", "album_artist",
+        "genre", "composer", "year", "track_number", "track_count",
+        "disc_number", "disc_count", "total_time", "kind", "size", "bit_rate",
+        "compilation", "date_added", "date_modified", "location", "search", "sort_key",
+    )
+
+    # Fields the client may edit through PATCH, mapped to the AppleScript
+    # property names used later. Kept here so the read side and the write
+    # side agree on what is editable.
+    EDITABLE = {
+        "name": "name",
+        "artist": "artist",
+        "album": "album",
+        "album_artist": "album artist",
+        "genre": "genre",
+        "composer": "composer",
+        "year": "year",
+        "track_number": "track number",
+        "disc_number": "disc number",
+        "compilation": "compilation",
+    }
+
+    def __init__(self, raw):
+        self.persistent_id = raw["Persistent ID"]
+        self.track_id = raw["Track ID"]
+        self.name = raw.get("Name", "")
+        self.artist = raw.get("Artist", "")
+        self.album = raw.get("Album", "")
+        self.album_artist = raw.get("Album Artist", "")
+        self.genre = raw.get("Genre", "")
+        self.composer = raw.get("Composer", "")
+        self.year = raw.get("Year")
+        self.track_number = raw.get("Track Number")
+        self.track_count = raw.get("Track Count")
+        self.disc_number = raw.get("Disc Number")
+        self.disc_count = raw.get("Disc Count")
+        self.total_time = raw.get("Total Time")
+        self.kind = raw.get("Kind", "")
+        self.size = raw.get("Size")
+        self.bit_rate = raw.get("Bit Rate")
+        self.compilation = bool(raw.get("Compilation", False))
+        self.date_added = _iso(raw.get("Date Added"))
+        self.date_modified = _iso(raw.get("Date Modified"))
+        self.location = _posix_path(raw.get("Location"))
+        self.reindex()
+
+    def reindex(self):
+        self.search = "\x1f".join(
+            fold(x) for x in (self.name, self.artist, self.album, self.album_artist)
+        )
+        artist = fold(self.album_artist or self.artist)
+        self.sort_key = (
+            artist == "",          # blanks sort last, as iTunes does
+            artist,
+            self.year or 0,
+            fold(self.album),
+            self.disc_number or 0,
+            self.track_number or 0,
+            fold(self.name),
+        )
+
+    def to_dict(self):
+        return {
+            "persistentId": self.persistent_id,
+            "trackId": self.track_id,
+            "name": self.name,
+            "artist": self.artist,
+            "album": self.album,
+            "albumArtist": self.album_artist,
+            "genre": self.genre,
+            "composer": self.composer,
+            "year": self.year,
+            "trackNumber": self.track_number,
+            "trackCount": self.track_count,
+            "discNumber": self.disc_number,
+            "discCount": self.disc_count,
+            "totalTime": self.total_time,
+            "kind": self.kind,
+            "size": self.size,
+            "bitRate": self.bit_rate,
+            "compilation": self.compilation,
+            "dateAdded": self.date_added,
+            "dateModified": self.date_modified,
+        }
+
+    def apply(self, fields):
+        """Patch editable fields. Returns the old values."""
+        old = {}
+        for key, value in fields.items():
+            if key not in self.EDITABLE:
+                raise ValueError("field not editable: %s" % key)
+            old[key] = getattr(self, key)
+            setattr(self, key, value)
+        self.reindex()
+        return old
+
+
+def _posix_path(url):
+    """file:///Users/x/A%20B.m4a -> /Users/x/A B.m4a (NFC)."""
+    if not url or not url.startswith("file:"):
+        return None
+    path = unquote(urlsplit(url).path)
+    return unicodedata.normalize("NFC", path)
+
+
+def _is_audio_file(raw):
+    if raw.get("Track Type") != "File":
+        return False
+    if raw.get("Podcast"):
+        return False
+    return "audio" in raw.get("Kind", "")
+
+
+class Library(object):
+    """An immutable-ish snapshot of the XML. Only `patch` mutates it."""
+
+    def __init__(self, path):
+        self.path = path
+        st = os.stat(path)
+        self.mtime = st.st_mtime
+        self.file_size = st.st_size
+        t0 = time.time()
+        with open(path, "rb") as f:
+            raw = plistlib.load(f)
+        self.parse_seconds = round(time.time() - t0, 2)
+        self.loaded_at = time.time()
+
+        xml_date = raw.get("Date")
+        self.xml_date = (
+            xml_date.replace(tzinfo=timezone.utc).timestamp() if xml_date else self.mtime
+        )
+        self.application_version = raw.get("Application Version", "")
+        self.library_persistent_id = raw.get("Library Persistent ID", "")
+        self.music_folder = raw.get("Music Folder", "")
+
+        self.tracks = {}
+        self.by_track_id = {}
+        self.total_entries = len(raw.get("Tracks", {}))
+        for entry in raw["Tracks"].values():
+            if not _is_audio_file(entry):
+                continue
+            t = Track(entry)
+            self.tracks[t.persistent_id] = t
+            self.by_track_id[t.track_id] = t.persistent_id
+
+        self.order = sorted(self.tracks.values(), key=lambda t: t.sort_key)
+
+        self.playlists = []
+        for p in raw.get("Playlists", []):
+            if p.get("Master") or "Distinguished Kind" in p:
+                continue
+            items = []
+            for item in p.get("Playlist Items", []):
+                pid = self.by_track_id.get(item.get("Track ID"))
+                if pid is not None:
+                    items.append(pid)
+            self.playlists.append({
+                "persistentId": p["Playlist Persistent ID"],
+                "playlistId": p["Playlist ID"],
+                "name": p.get("Name", ""),
+                "smart": "Smart Info" in p,
+                "count": len(items),
+                "items": items,
+            })
+        self.playlists_by_id = {p["persistentId"]: p for p in self.playlists}
+        del raw
+        log.info(
+            "loaded %s: %d audio tracks of %d entries, %d playlists, %.1fs",
+            path, len(self.tracks), self.total_entries, len(self.playlists),
+            self.parse_seconds,
+        )
+
+    # -- reads ---------------------------------------------------------
+
+    def info(self):
+        return {
+            "trackCount": len(self.tracks),
+            "xmlEntryCount": self.total_entries,
+            "playlistCount": len(self.playlists),
+            "xmlPath": self.path,
+            "xmlSizeBytes": self.file_size,
+            "xmlWrittenAt": datetime.fromtimestamp(self.xml_date, timezone.utc).isoformat(),
+            "loadedAt": datetime.fromtimestamp(self.loaded_at, timezone.utc).isoformat(),
+            "parseSeconds": self.parse_seconds,
+            "applicationVersion": self.application_version,
+            "libraryPersistentId": self.library_persistent_id,
+        }
+
+    def _candidates(self, playlist=None):
+        if playlist is None:
+            return self.order
+        p = self.playlists_by_id.get(playlist)
+        if p is None:
+            raise KeyError(playlist)
+        return [self.tracks[pid] for pid in p["items"]]
+
+    def _filter(self, tracks, q=None, genre=None, artist=None, album=None):
+        terms = [fold(x) for x in (q or "").split() if x]
+        g = fold(genre) if genre is not None else None
+        ar = fold(artist) if artist is not None else None
+        al = fold(album) if album is not None else None
+        out = []
+        for t in tracks:
+            if g is not None and fold(t.genre) != g:
+                continue
+            if ar is not None and fold(t.artist) != ar and fold(t.album_artist) != ar:
+                continue
+            if al is not None and fold(t.album) != al:
+                continue
+            if terms:
+                s = t.search
+                if not all(term in s for term in terms):
+                    continue
+            out.append(t)
+        return out
+
+    COMPACT_COLUMNS = (
+        "persistentId", "name", "artist", "album", "albumArtist", "genre",
+        "year", "trackNumber", "discNumber", "totalTime", "size", "compilation",
+    )
+
+    def query(self, q=None, genre=None, artist=None, album=None,
+              playlist=None, offset=0, limit=200, compact=False):
+        matched = self._filter(self._candidates(playlist), q, genre, artist, album)
+        page = matched[offset:offset + limit]
+        total_time = 0
+        total_size = 0
+        for t in matched:
+            total_time += t.total_time or 0
+            total_size += t.size or 0
+        out = {
+            "total": len(matched),
+            "offset": offset,
+            "limit": limit,
+            "totalTime": total_time,
+            "totalSize": total_size,
+        }
+        if compact:
+            # Arrays instead of objects: the whole library in one response is
+            # about a third the size, and the client decodes it much faster.
+            out["columns"] = list(self.COMPACT_COLUMNS)
+            out["rows"] = [
+                [t.persistent_id, t.name, t.artist, t.album, t.album_artist, t.genre,
+                 t.year, t.track_number, t.disc_number, t.total_time, t.size, t.compilation]
+                for t in page
+            ]
+        else:
+            out["tracks"] = [t.to_dict() for t in page]
+        return out
+
+    def facet(self, field, q=None, genre=None, artist=None, album=None, playlist=None):
+        """Distinct values of `field` with counts, over the filtered set."""
+        counts = {}
+        display = {}
+        for t in self._filter(self._candidates(playlist), q, genre, artist, album):
+            if field == "artist":
+                value = t.album_artist or t.artist
+            else:
+                value = getattr(t, field)
+            if not value:
+                value = ""
+            key = fold(value)
+            counts[key] = counts.get(key, 0) + 1
+            display.setdefault(key, value)
+        return [
+            {"name": display[k], "count": counts[k]}
+            for k in sorted(counts, key=lambda k: (k == "", k))
+        ]
+
+    def playlist_summaries(self):
+        return [
+            {k: v for k, v in p.items() if k != "items"} for p in self.playlists
+        ]
+
+    # -- writes (in-memory only; iTunes is written elsewhere) -------------
+
+    def patch(self, persistent_id, fields):
+        t = self.tracks[persistent_id]
+        old = t.apply(fields)
+        # Keep default ordering correct if a sort-affecting field changed.
+        self.order.sort(key=lambda x: x.sort_key)
+        return old
+
+
+class LibraryStore(object):
+    """Owns the current Library, reloads it in the background, and journals
+    patches so they survive a reload of an XML that predates them."""
+
+    def __init__(self, path, poll_interval=5.0):
+        self.path = path
+        self.poll_interval = poll_interval
+        self._lock = threading.Lock()
+        self._lib = None
+        self._journal = []  # (timestamp, persistent_id, fields)
+        self._reloading = False
+        self._stop = threading.Event()
+        self._thread = None
+        self.last_error = None
+
+    @property
+    def lib(self):
+        return self._lib
+
+    def load(self):
+        """Blocking initial load. Raises if the XML is missing or unreadable."""
+        if not os.path.exists(self.path):
+            raise FileNotFoundError(
+                "%s does not exist. In iTunes, open Preferences > Advanced and "
+                "enable 'Share iTunes Library XML with other applications', "
+                "then restart the daemon." % self.path
+            )
+        self._lib = Library(self.path)
+
+    def start_watcher(self):
+        self._thread = threading.Thread(target=self._watch, name="xml-watcher", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+
+    def _watch(self):
+        pending_mtime = None
+        pending_size = None
+        while not self._stop.wait(self.poll_interval):
+            try:
+                st = os.stat(self.path)
+            except OSError as e:
+                self.last_error = str(e)
+                continue
+            if st.st_mtime == self._lib.mtime and st.st_size == self._lib.file_size:
+                pending_mtime = None
+                continue
+            # Wait for the file to sit still for one poll before parsing, so a
+            # half-written XML is not picked up.
+            if pending_mtime != st.st_mtime or pending_size != st.st_size:
+                pending_mtime, pending_size = st.st_mtime, st.st_size
+                continue
+            self._reload()
+            pending_mtime = None
+
+    def _reload(self):
+        self._reloading = True
+        try:
+            new = Library(self.path)
+        except Exception as e:  # half-written file, or worse
+            self.last_error = "reload failed: %s" % e
+            log.warning(self.last_error)
+            self._reloading = False
+            return
+        with self._lock:
+            replayed = 0
+            for ts, pid, fields in self._journal:
+                if ts > new.xml_date and pid in new.tracks:
+                    try:
+                        new.tracks[pid].apply(fields)
+                        replayed += 1
+                    except ValueError:
+                        pass
+            if replayed:
+                new.order.sort(key=lambda x: x.sort_key)
+            self._journal = [j for j in self._journal if j[0] > new.xml_date]
+            self._lib = new
+        self._reloading = False
+        self.last_error = None
+        log.info("swapped in reloaded library (%d journal entries replayed)", replayed)
+
+    def patch(self, persistent_id, fields):
+        with self._lock:
+            old = self._lib.patch(persistent_id, fields)
+            self._journal.append((time.time(), persistent_id, dict(fields)))
+        return old
+
+    def status(self):
+        return {
+            "reloading": self._reloading,
+            "journalLength": len(self._journal),
+            "lastError": self.last_error,
+        }

@@ -1,0 +1,151 @@
+import Foundation
+
+struct LibraryInfo: Decodable {
+    let trackCount: Int
+    let xmlEntryCount: Int
+    let playlistCount: Int
+    let xmlWrittenAt: String
+    let loadedAt: String
+    let parseSeconds: Double
+    let applicationVersion: String
+    let reloading: Bool
+    let lastError: String?
+}
+
+struct Track {
+    let persistentId: String
+    var name: String
+    var artist: String
+    var album: String
+    var albumArtist: String
+    var genre: String
+    var year: Int?
+    var trackNumber: Int?
+    var discNumber: Int?
+    var totalTime: Int?      // milliseconds
+    var size: Int?           // bytes
+    var compilation: Bool
+
+    /// The artist shown in the browser and used for grouping.
+    var displayArtist: String { albumArtist.isEmpty ? artist : albumArtist }
+
+    var durationText: String {
+        guard let ms = totalTime else { return "" }
+        let s = ms / 1000
+        return String(format: "%d:%02d", s / 60, s % 60)
+    }
+}
+
+struct TrackPage {
+    let total: Int
+    let totalTime: Int
+    let totalSize: Int
+    let tracks: [Track]
+}
+
+struct FacetEntry: Decodable {
+    let name: String
+    let count: Int
+}
+
+struct Playlist: Decodable {
+    let persistentId: String
+    let playlistId: Int
+    let name: String
+    let smart: Bool
+    let count: Int
+}
+
+/// Query parameters shared by tracks and facet calls. Nil means no filter.
+struct TrackFilter: Equatable {
+    var q: String?
+    var genre: String?
+    var artist: String?
+    var album: String?
+    var playlist: String?
+
+    var queryItems: [URLQueryItem] {
+        var items: [URLQueryItem] = []
+        if let v = q, !v.isEmpty { items.append(URLQueryItem(name: "q", value: v)) }
+        if let v = genre { items.append(URLQueryItem(name: "genre", value: v)) }
+        if let v = artist { items.append(URLQueryItem(name: "artist", value: v)) }
+        if let v = album { items.append(URLQueryItem(name: "album", value: v)) }
+        if let v = playlist { items.append(URLQueryItem(name: "playlist", value: v)) }
+        return items
+    }
+}
+
+enum FacetKind: String {
+    case genre = "genres"
+    case artist = "artists"
+    case album = "albums"
+}
+
+/// Formats totals the way the iTunes status bar did: "1,234 songs, 3.2 days, 12.1 GB".
+enum StatusFormat {
+    static func summary(count: Int, totalTime ms: Int, totalSize bytes: Int) -> String {
+        let n = NumberFormatter()
+        n.numberStyle = .decimal
+        let songs = "\(n.string(from: NSNumber(value: count)) ?? "\(count)") song\(count == 1 ? "" : "s")"
+        return "\(songs), \(duration(ms)), \(size(bytes))"
+    }
+
+    static func duration(_ ms: Int) -> String {
+        let s = ms / 1000
+        if s < 3600 {
+            return String(format: "%d:%02d", s / 60, s % 60)
+        }
+        if s < 86400 {
+            let h = Double(s) / 3600
+            return String(format: "%.1f hours", h)
+        }
+        let d = Double(s) / 86400
+        return String(format: "%.1f days", d)
+    }
+
+    static func size(_ bytes: Int) -> String {
+        let b = Double(bytes)
+        if b < 1_000_000 { return String(format: "%.0f KB", b / 1000) }
+        if b < 1_000_000_000 { return String(format: "%.1f MB", b / 1_000_000) }
+        return String(format: "%.2f GB", b / 1_000_000_000)
+    }
+}
+
+// MARK: Player
+
+struct PlayerTrack: Decodable {
+    let persistentId: String
+    let name: String
+    let artist: String
+    let album: String
+    let duration: Double
+}
+
+struct PlayerPlaylist: Decodable {
+    let name: String
+    let persistentId: String
+}
+
+struct PlayerState: Decodable {
+    let state: String          // playing | paused | stopped
+    let volume: Int
+    let position: Double
+    let track: PlayerTrack?
+    let playlist: PlayerPlaylist?
+
+    var isPlaying: Bool { state == "playing" }
+}
+
+struct Output: Decodable {
+    let name: String
+    let kind: String
+    let selected: Bool
+    let active: Bool
+    let available: Bool
+    let volume: Int
+}
+
+struct ITunesStatus: Decodable {
+    let running: Bool
+    let ipodMounted: Bool
+}

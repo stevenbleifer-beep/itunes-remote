@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.DS_Store
+config.json
+*.xml
+/client/build/
+/client/.build/
+/client/DerivedData/
+xcuserdata/
