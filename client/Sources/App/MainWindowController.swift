@@ -4,7 +4,7 @@ import Cocoa
 /// search; source list and artwork on the left; genre/artist/album browser
 /// over the track table on the right; status bar along the bottom.
 @MainActor
-final class MainWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+final class MainWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSMenuDelegate {
 
     let controller = LibraryController()
     let player = PlayerController()
@@ -45,7 +45,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var updatingUI = false
     private var keyMonitor: Any?
     private var artworkToken = 0
+    private var addToPlaylistItem: NSMenuItem?
+    private var removeFromPlaylistItem: NSMenuItem?
     private var infoPanel: InfoPanel?          // held while its sheet is up
+    private var namePrompt: NamePrompt?        // held while its sheet is up
     private var statusOverride: String?
     private var statusOverrideTimer: Timer?
 
@@ -228,6 +231,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         sourceList.enclosingScrollView?.backgroundColor = Aqua.sidebarBackground
         sourceList.target = self
         sourceList.doubleAction = #selector(sourceDoubleClicked(_:))
+
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "New Playlist…", action: #selector(newPlaylist(_:)), keyEquivalent: "")
+        item.target = self
+        item.attributedTitle = NSAttributedString(string: "New Playlist…", attributes: [.font: Aqua.font(13)])
+        menu.addItem(item)
+        sourceList.menu = menu
     }
 
     private func configureBrowser(_ table: NSTableView, title: String) {
@@ -268,6 +278,18 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         play.target = self
         play.attributedTitle = NSAttributedString(string: "Play", attributes: [.font: Aqua.font(13)])
         menu.addItem(play)
+        menu.addItem(.separator())
+        let add = NSMenuItem(title: "Add to Playlist", action: nil, keyEquivalent: "")
+        add.attributedTitle = NSAttributedString(string: "Add to Playlist", attributes: [.font: Aqua.font(13)])
+        add.submenu = NSMenu()
+        menu.addItem(add)
+        addToPlaylistItem = add
+        let remove = NSMenuItem(title: "Remove from Playlist", action: #selector(removeFromPlaylist(_:)), keyEquivalent: "")
+        remove.target = self
+        remove.attributedTitle = NSAttributedString(string: "Remove from Playlist", attributes: [.font: Aqua.font(13)])
+        menu.addItem(remove)
+        removeFromPlaylistItem = remove
+        menu.delegate = self
         trackTable.menu = menu
     }
 
@@ -377,6 +399,77 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         panel.present(in: window)
         infoPanel = panel
+    }
+
+    // MARK: Playlists
+
+    @objc func newPlaylist(_ sender: Any?) {
+        guard let window = window, let api = controller.api else { return }
+        let selected = selectedTracks
+        let prompt = NamePrompt(title: "New Playlist", prompt: "Name of the new playlist:",
+                                placeholder: "untitled playlist", acceptTitle: "Create")
+        prompt.onAccept = { [weak self] name, done in
+            Task { @MainActor in
+                do {
+                    let playlist = try await api.createPlaylist(name: name)
+                    var message = "Created \(playlist.name)."
+                    // Creating with tracks selected fills the new playlist.
+                    if !selected.isEmpty {
+                        let change = try await api.addToPlaylist(playlist.persistentId,
+                                                                 ids: selected.map { $0.persistentId })
+                        message = change.summary("Added")
+                    }
+                    self?.flashStatus(message)
+                    await self?.reloadPlaylists()
+                    done(nil)
+                } catch {
+                    done(error.localizedDescription)
+                }
+            }
+        }
+        prompt.present(in: window)
+        namePrompt = prompt
+    }
+
+    @objc private func addToPlaylistPicked(_ sender: NSMenuItem) {
+        guard let playlistId = sender.representedObject as? String,
+              let api = controller.api else { return }
+        let ids = selectedTracks.map { $0.persistentId }
+        guard !ids.isEmpty else { return }
+        Task { @MainActor in
+            do {
+                let change = try await api.addToPlaylist(playlistId, ids: ids)
+                flashStatus(change.summary("Added"))
+                await reloadPlaylists()
+                if controller.source.playlistId == playlistId { controller.reload() }
+            } catch {
+                flashStatus("Add failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    @objc func removeFromPlaylist(_ sender: Any?) {
+        guard let playlistId = controller.source.playlistId, let api = controller.api else { return }
+        let ids = selectedTracks.map { $0.persistentId }
+        guard !ids.isEmpty else { return }
+        Task { @MainActor in
+            do {
+                let change = try await api.removeFromPlaylist(playlistId, ids: ids)
+                flashStatus(change.summary("Removed"))
+                await reloadPlaylists()
+                controller.reload()
+            } catch {
+                flashStatus("Remove failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func reloadPlaylists() async {
+        guard let api = controller.api else { return }
+        if let playlists = try? await api.playlists() {
+            controller.replacePlaylists(playlists)
+            reloadSourceList()
+        }
     }
 
     @objc func playSelection(_ sender: Any?) {
@@ -579,6 +672,29 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         let row = trackTable.selectedRow
         guard row >= 0, row < controller.tracks.count else { return }
         player.play(track: controller.tracks[row].persistentId, playlist: controller.source.playlistId)
+    }
+
+    // MARK: NSMenuDelegate
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === trackTable.menu else { return }
+        let editable = controller.playlists.filter { !$0.smart }
+        let submenu = NSMenu()
+        if editable.isEmpty {
+            let none = NSMenuItem(title: "No playlists", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            submenu.addItem(none)
+        }
+        for playlist in editable {
+            let item = NSMenuItem(title: playlist.name, action: #selector(addToPlaylistPicked(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = playlist.persistentId
+            item.attributedTitle = NSAttributedString(string: playlist.name, attributes: [.font: Aqua.font(13)])
+            submenu.addItem(item)
+        }
+        addToPlaylistItem?.submenu = submenu
+        addToPlaylistItem?.isEnabled = !selectedTracks.isEmpty
+        removeFromPlaylistItem?.isHidden = controller.source.playlistId == nil
     }
 
     // MARK: Search

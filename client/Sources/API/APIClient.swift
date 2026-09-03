@@ -109,6 +109,21 @@ final class APIClient {
         return try JSONDecoder().decode(PatchResult.self, from: data)
     }
 
+    func createPlaylist(name: String) async throws -> Playlist {
+        let data = try await request("POST", "/api/playlists", body: ["name": name])
+        return try JSONDecoder().decode(Playlist.self, from: data)
+    }
+
+    func addToPlaylist(_ playlistId: String, ids: [String]) async throws -> PlaylistChange {
+        let data = try await request("POST", "/api/playlists/\(playlistId)/tracks", body: ["ids": ids])
+        return try JSONDecoder().decode(PlaylistChange.self, from: data)
+    }
+
+    func removeFromPlaylist(_ playlistId: String, ids: [String]) async throws -> PlaylistChange {
+        let data = try await request("DELETE", "/api/playlists/\(playlistId)/tracks", body: ["ids": ids])
+        return try JSONDecoder().decode(PlaylistChange.self, from: data)
+    }
+
     // MARK: Reads
 
     func libraryInfo() async throws -> LibraryInfo {

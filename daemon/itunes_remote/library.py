@@ -318,6 +318,40 @@ class Library(object):
     def patch(self, persistent_id, fields):
         return self.patch_many({persistent_id: fields})[persistent_id]
 
+    # -- playlist membership --------------------------------------------
+
+    def playlist_create(self, persistent_id, name):
+        entry = {
+            "persistentId": persistent_id,
+            "playlistId": None,
+            "name": name,
+            "smart": False,
+            "count": 0,
+            "items": [],
+        }
+        self.playlists = sorted(self.playlists + [entry], key=lambda p: fold(p["name"]))
+        self.playlists_by_id[persistent_id] = entry
+        return entry
+
+    def playlist_add(self, playlist_id, track_ids):
+        p = self.playlists_by_id.get(playlist_id)
+        if p is None:
+            raise KeyError(playlist_id)
+        added = [pid for pid in track_ids if pid in self.tracks]
+        p["items"] = p["items"] + added
+        p["count"] = len(p["items"])
+        return len(added)
+
+    def playlist_remove(self, playlist_id, track_ids):
+        p = self.playlists_by_id.get(playlist_id)
+        if p is None:
+            raise KeyError(playlist_id)
+        drop = set(track_ids)
+        before = len(p["items"])
+        p["items"] = [pid for pid in p["items"] if pid not in drop]
+        p["count"] = len(p["items"])
+        return before - len(p["items"])
+
     def patch_many(self, patches):
         """Applies {persistent_id: fields} and returns {persistent_id: old fields}.
 
@@ -363,6 +397,7 @@ class LibraryStore(object):
         self._lock = threading.Lock()
         self._lib = None
         self._journal = []  # (timestamp, persistent_id, fields)
+        self._playlist_journal = []  # (timestamp, op, playlist_id, track_ids, name)
         self._reloading = False
         self._stop = threading.Event()
         self._thread = None
@@ -434,6 +469,16 @@ class LibraryStore(object):
                     log.warning("journal replay skipped: %s", e)
                     replayed = 0
             self._journal = [j for j in self._journal if j[0] > new.xml_date]
+
+            for ts, op, plid, track_ids, name in self._playlist_journal:
+                if ts <= new.xml_date:
+                    continue
+                try:
+                    self._apply_playlist_op(new, op, plid, track_ids, name)
+                except (KeyError, ValueError) as e:
+                    log.warning("playlist journal replay skipped: %s", e)
+            self._playlist_journal = [j for j in self._playlist_journal if j[0] > new.xml_date]
+
             self._lib = new
         self._reloading = False
         self.last_error = None
@@ -451,9 +496,29 @@ class LibraryStore(object):
                 self._journal.append((now, pid, dict(fields)))
         return old
 
+    # -- playlist membership, journaled the same way as field patches ------
+
+    def playlist_op(self, op, playlist_id, track_ids=(), name=None):
+        """op is "create", "add" or "remove". Returns the operation's result."""
+        with self._lock:
+            result = self._apply_playlist_op(self._lib, op, playlist_id, track_ids, name)
+            self._playlist_journal.append((time.time(), op, playlist_id, list(track_ids), name))
+        return result
+
+    @staticmethod
+    def _apply_playlist_op(lib, op, playlist_id, track_ids, name):
+        if op == "create":
+            return lib.playlist_create(playlist_id, name)
+        if op == "add":
+            return lib.playlist_add(playlist_id, track_ids)
+        if op == "remove":
+            return lib.playlist_remove(playlist_id, track_ids)
+        raise ValueError("unknown playlist op: %s" % op)
+
     def status(self):
         return {
             "reloading": self._reloading,
             "journalLength": len(self._journal),
+            "playlistJournalLength": len(self._playlist_journal),
             "lastError": self.last_error,
         }

@@ -87,6 +87,9 @@ class Api(object):
             ("GET", r"/api/outputs", self.get_outputs),
             ("POST", r"/api/outputs", self.post_outputs),
             ("PATCH", r"/api/tracks", self.patch_tracks),
+            ("POST", r"/api/playlists", self.post_playlist),
+            ("POST", r"/api/playlists/" + pid + r"/tracks", self.post_playlist_tracks),
+            ("DELETE", r"/api/playlists/" + pid + r"/tracks", self.delete_playlist_tracks),
         ]
         self.compiled = [(m, re.compile("^" + p + "$"), h) for m, p, h in self.routes]
 
@@ -365,6 +368,93 @@ class Api(object):
             raise ApiError(400, "body needs a non-empty list of device names")
         self._script("outputs_set", *names, timeout=30)
         return self.get_outputs(params, query, body)
+
+    # -- playlists -------------------------------------------------------
+
+    def _track_ids(self, body):
+        ids = (body or {}).get("ids")
+        if not isinstance(ids, list) or not ids:
+            raise ApiError(400, "body needs a non-empty ids list")
+        if len(ids) > 5000:
+            raise ApiError(400, "at most 5000 tracks per request")
+        out, seen = [], set()
+        for raw in ids:
+            if not isinstance(raw, str) or not re.match(r"^[0-9A-Fa-f]{16}$", raw):
+                raise ApiError(400, "ids must be 16-character persistent IDs")
+            p = raw.upper()
+            if p in seen:
+                continue
+            seen.add(p)
+            out.append(p)
+        return out
+
+    def _playlist(self, persistent_id):
+        p = self.store.lib.playlists_by_id.get(persistent_id)
+        if p is None:
+            raise ApiError(404, "no such playlist")
+        if p.get("smart"):
+            raise ApiError(409, "smart playlists cannot be edited")
+        return p
+
+    def post_playlist(self, params, query, body):
+        name = (body or {}).get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ApiError(400, "body needs a name")
+        name = name.strip()
+        if len(name) > 200:
+            raise ApiError(400, "name is too long")
+        out = self.itunes.fields(self._script("playlist_create", name, timeout=30))
+        if len(out) < 2 or not out[0]:
+            raise ApiError(502, "iTunes did not return a playlist id")
+        entry = self.store.playlist_op("create", out[0], name=out[1])
+        if self.write_log:
+            self.write_log.record("playlist-create", out[0], None, {"name": out[1]}, "ok")
+        return {k: v for k, v in entry.items() if k != "items"}
+
+    def _playlist_track_op(self, script, operation, playlist_pid, body):
+        playlist = self._playlist(playlist_pid)
+        pids = self._track_ids(body)
+        missing = [p for p in pids if p not in self.store.lib.tracks]
+        if missing:
+            raise ApiError(404, "no such track: %s" % missing[0])
+
+        results, ok = [], []
+        for start in range(0, len(pids), self.WRITE_CHUNK):
+            chunk = pids[start:start + self.WRITE_CHUNK]
+            try:
+                out = self._script(script, playlist_pid, *chunk, timeout=30 + 1.0 * len(chunk))
+            except ApiError as e:
+                state = "unknown" if e.status == 504 else "error"
+                for p in chunk:
+                    results.append({"persistentId": p, "result": state, "detail": e.message})
+                continue
+            for record in self.itunes.records(out):
+                if len(record) >= 2 and record[1] == "ok":
+                    ok.append(record[0])
+                    results.append({"persistentId": record[0], "result": "ok"})
+                else:
+                    detail = record[2] if len(record) > 2 else "unknown error"
+                    results.append({"persistentId": record[0], "result": "error", "detail": detail})
+
+        if ok:
+            self.store.playlist_op("add" if operation == "add" else "remove", playlist_pid, track_ids=ok)
+        if self.write_log:
+            self.write_log.record_batch("playlist-" + operation, len(pids),
+                                        {"playlist": playlist["name"]},
+                                        "%d ok, %d failed" % (len(ok), len(pids) - len(ok)))
+        return {
+            "playlist": {k: v for k, v in self._playlist(playlist_pid).items() if k != "items"},
+            "requested": len(pids),
+            "changed": len(ok),
+            "failed": len(pids) - len(ok),
+            "results": results,
+        }
+
+    def post_playlist_tracks(self, params, query, body):
+        return self._playlist_track_op("playlist_add", "add", params["pid"].upper(), body)
+
+    def delete_playlist_tracks(self, params, query, body):
+        return self._playlist_track_op("playlist_remove", "remove", params["pid"].upper(), body)
 
     # -- metadata writes -------------------------------------------------
 

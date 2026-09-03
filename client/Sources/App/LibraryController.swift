@@ -87,6 +87,16 @@ final class LibraryController {
         reload()
     }
 
+    /// Replaces the cached playlist list after a create, add or remove.
+    func replacePlaylists(_ list: [Playlist]) {
+        playlists = list
+        if case let .playlist(current) = source,
+           let fresh = list.first(where: { $0.persistentId == current.persistentId }) {
+            // Keep the selected source's count in step without reselecting it.
+            source = .playlist(fresh)
+        }
+    }
+
     // MARK: Filters
 
     private var browserFilter: TrackFilter {

@@ -1,0 +1,85 @@
+import Cocoa
+
+/// A one-field Aqua sheet, used for naming a new playlist.
+@MainActor
+final class NamePrompt: NSObject {
+    let panel: NSPanel
+    private let field = NSTextField(string: "")
+    private let okButton: AquaPushButton
+    private let cancelButton = AquaPushButton(title: "Cancel")
+    private let statusLabel = NSTextField(labelWithString: "")
+
+    /// Called with the entered name. Report an error string to keep the sheet
+    /// open, or nil to close it.
+    var onAccept: (String, @escaping (String?) -> Void) -> Void = { _, done in done(nil) }
+
+    init(title: String, prompt: String, placeholder: String, acceptTitle: String) {
+        okButton = AquaPushButton(title: acceptTitle, isDefault: true)
+        let content = ChromeView(frame: NSRect(x: 0, y: 0, width: 420, height: 140))
+        content.gradientTop = NSColor(white: 0.93, alpha: 1)
+        content.gradientBottom = NSColor(white: 0.88, alpha: 1)
+        panel = NSPanel(contentRect: content.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        panel.contentView = content
+        panel.title = title
+        super.init()
+
+        let label = NSTextField(labelWithString: prompt)
+        label.font = Aqua.font(13, bold: true)
+        label.frame = NSRect(x: 20, y: 104, width: 380, height: 18)
+        content.addSubview(label)
+
+        field.font = Aqua.font(13)
+        field.bezelStyle = .squareBezel
+        field.placeholderString = placeholder
+        field.frame = NSRect(x: 20, y: 72, width: 380, height: 24)
+        content.addSubview(field)
+
+        statusLabel.font = Aqua.font(11)
+        statusLabel.textColor = NSColor(srgbRed: 0.6, green: 0.1, blue: 0.1, alpha: 1)
+        statusLabel.frame = NSRect(x: 20, y: 20, width: 250, height: 16)
+        content.addSubview(statusLabel)
+
+        okButton.target = self
+        okButton.action = #selector(accept)
+        cancelButton.target = self
+        cancelButton.action = #selector(cancel)
+        let ok = okButton.intrinsicContentSize
+        okButton.frame = NSRect(x: 420 - 16 - ok.width, y: 14, width: ok.width, height: ok.height)
+        let cc = cancelButton.intrinsicContentSize
+        cancelButton.frame = NSRect(x: okButton.frame.minX - cc.width - 2, y: 14, width: cc.width, height: cc.height)
+        content.addSubview(okButton)
+        content.addSubview(cancelButton)
+        panel.initialFirstResponder = field
+    }
+
+    @objc private func cancel() {
+        panel.sheetParent?.endSheet(panel, returnCode: .cancel)
+    }
+
+    @objc private func accept() {
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            statusLabel.stringValue = "Enter a name."
+            return
+        }
+        okButton.isEnabled = false
+        cancelButton.isEnabled = false
+        field.isEnabled = false
+        statusLabel.stringValue = ""
+        onAccept(name) { [weak self] error in
+            guard let self = self else { return }
+            self.okButton.isEnabled = true
+            self.cancelButton.isEnabled = true
+            self.field.isEnabled = true
+            if let error = error {
+                self.statusLabel.stringValue = error
+            } else {
+                self.panel.sheetParent?.endSheet(self.panel, returnCode: .OK)
+            }
+        }
+    }
+
+    func present(in parent: NSWindow) {
+        parent.beginSheet(panel, completionHandler: nil)
+    }
+}

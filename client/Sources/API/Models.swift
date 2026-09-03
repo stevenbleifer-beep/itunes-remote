@@ -164,3 +164,17 @@ struct PatchResult: Decodable {
         return "Updated \(updated), failed \(failed)."
     }
 }
+
+struct PlaylistChange: Decodable {
+    let playlist: Playlist
+    let requested: Int
+    let changed: Int
+    let failed: Int
+
+    func summary(_ verb: String) -> String {
+        if failed == 0 {
+            return "\(verb) \(changed) track\(changed == 1 ? "" : "s") \(verb == "Added" ? "to" : "from") \(playlist.name)."
+        }
+        return "\(verb) \(changed), failed \(failed)."
+    }
+}
