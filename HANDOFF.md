@@ -52,6 +52,15 @@ built the way iTunes' Music pane is built and nothing cleverer:
 `--snapshot-device NAME` on the client opens that device's Music pane before
 capturing, which is how this pane gets checked.
 
+## The copy Steven actually runs is /Applications/iTunes Remote.app
+
+`./build.sh` alone only updates `client/build/`. Steven launches
+`/Applications/iTunes Remote.app`, so nothing reaches him until
+`./build.sh --install` (which quits the running copy, rsyncs the bundle in
+place and relaunch is a plain `open`). A whole evening of fixes was reported
+"still broken" because they had only been built, not installed. Always end a
+client change with `--install`.
+
 ## Debug pass, 2026-09-03 evening
 
 What was found and fixed, in the order Steven listed them:
@@ -67,6 +76,9 @@ What was found and fixed, in the order Steven listed them:
   none of its tracks in the newest 600 *tracks* (Miles Davis — Milestones was
   the one that showed it). `_candidates(playlist, recent)` now cuts to the
   newest N first, and tracks, facets and albums all start from that set.
+- **Recently Added order.** With no column sort it is newest album first,
+  each album's songs in disc/track order, instead of plain date order (which
+  scrambled a rip's sides). Album views always show an album in track order.
 - **Sorting.** Compact rows carry `sortArtist`/`sortAlbum`/`sortName`
   (iTunes' sort forms: Sort field, else article dropped, folded). The client
   sorts on those, so Artist matches the default order (artist → year → album →

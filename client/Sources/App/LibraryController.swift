@@ -298,7 +298,20 @@ final class LibraryController {
     private func applySort() {
         guard let key = sortKey else {
             if source == .recentlyAdded {
-                tracks.sort { $0.dateAdded > $1.dateAdded }
+                // Newest album first, but each album's songs in track order —
+                // plain date order interleaved and scrambled a rip's sides.
+                var newest: [String: String] = [:]
+                for t in tracks {
+                    let k = t.displayArtist.lowercased() + "\u{1f}" + t.album.lowercased()
+                    if t.dateAdded > (newest[k] ?? "") { newest[k] = t.dateAdded }
+                }
+                tracks.sort { a, b in
+                    let ka = a.displayArtist.lowercased() + "\u{1f}" + a.album.lowercased()
+                    let kb = b.displayArtist.lowercased() + "\u{1f}" + b.album.lowercased()
+                    let da = newest[ka] ?? "", db = newest[kb] ?? ""
+                    if da != db { return da > db }
+                    return LibraryController.artistKey(a) < LibraryController.artistKey(b)
+                }
             }
             return
         }
