@@ -1,86 +1,44 @@
 # iTunes Remote
 
-Remote control for the iTunes library on the 2012 MacBook Pro (Mojave, iTunes
-12.9.5), driven from the MacBook Air, in the look of iTunes 10. Two parts:
+A remote control for iTunes 12.9.5 running on a headless 2012 MacBook Pro,
+driven from a modern Mac. Two pieces:
 
-- `daemon/` — Python 3.13, standard library only, runs on the MacBook Pro.
-  Reads come from the library XML; every write and every playback command goes
-  through iTunes itself over AppleScript. Nothing touches the files on disk.
-- `client/` — native AppKit app for the Air. Every control is drawn in code.
+- **`daemon/`** — Python 3, no dependencies outside the standard library. Parses
+  the iTunes XML library into memory, drives iTunes through AppleScript, and
+  serves a small JSON HTTP API behind a bearer token. Runs as a LaunchAgent.
+- **`client/`** — a native AppKit app for the modern Mac, drawn to look like
+  iTunes 10: the Aqua chrome, the green LCD, the column browser, List / Album
+  List / Grid / Cover Flow, a mini player, and the iTunes 12 device pages.
 
-The specification is `SPEC.md`; the current state, run recipes and the list of
-verified traps are in `HANDOFF.md`.
+Everything the app changes goes through iTunes itself. Nothing writes to the
+library files on disk.
 
 ## What it does
 
-- Browse the whole library (95,521 tracks) and every playlist, with the
-  genre/artist/album column browser, search, and sortable columns.
-- Cover Flow across 11,026 albums, with a view switcher.
-- Play, pause, next, previous, seek, volume, shuffle, repeat, and an AirPlay
-  output picker, all acting on the MacBook Pro. Audio never leaves it.
-- Get Info for one track or a whole selection; bulk genre edits of hundreds of
-  tracks in one operation, each write verified by persistent ID and logged
-  with old and new values.
-- Create playlists, add and remove tracks.
-- Album art for the playing or selected track.
-- iPod classic: shows in the sidebar with free space; Sync and Eject.
+- Browse a 94,000-track library: column browser, search, all four views,
+  Recently Added, playlists.
+- Play through iTunes on the old Mac, through an AirPlay speaker, or stream
+  the file and play it on the Mac you are sitting at.
+- Edit tags, ratings and the checkbox column; create, rename and delete
+  playlists; drag tracks and albums onto them.
+- Read the iPod: capacity, categories, playlists, what actually reached it.
+- Drive the iPod's sync selection. iTunes keeps its own selection somewhere
+  nothing outside iTunes can read, so the app holds a selection of its own and
+  projects it onto a playlist the iPod syncs — see `SPEC.md`.
+- Surface the modal dialogs iTunes raises on a machine nobody is sitting at,
+  and dismiss them remotely.
 
-## Daemon on the MacBook Pro
+## Running it
 
-```
-cd ~/iTunesRemote/daemon
-./setup.sh          # installs the LaunchAgent, then runs check.py (done once)
-python3 check.py    # pass/fail for everything that can break
-./probe_ipod.sh     # re-run the iPod sync probe after an iTunes update
-```
+The daemon needs a config with a bearer token:
 
-After copying new daemon code over, restart the agent rather than launching
-the daemon by hand, or the two fight over the port:
+    python3 -m itunes_remote --init-config
+    python3 -m itunes_remote
 
-```
-launchctl kickstart -k gui/$(id -u)/local.stevenbleifer.itunesremote
-```
+`daemon/setup.sh` installs it as a LaunchAgent, and `daemon/check.py` verifies
+the machine (Automation permission, iTunes version, XML path). The client is
+built with `client/build.sh`; `--install` puts it in `/Applications`.
 
-Config: `~/Library/Application Support/iTunesRemote/config.json` (host, port,
-token). Logs: `~/Library/Logs/iTunesRemote/daemon.log` and `writes.log`.
-Every request needs `Authorization: Bearer <token>`.
-
-Tests, from `daemon/`: `python3 -m unittest discover`.
-
-## Client on the Air
-
-```
-cd client && ./build.sh
-open "build/iTunes Remote.app"
-```
-
-First launch asks for the daemon's host, port and token (File > Connect…).
-Command-I opens Get Info; space toggles playback; in Cover Flow the arrow keys,
-a trackpad swipe, a pinch, or typing a letter move through the albums.
-
-## API
-
-```
-GET  /api/library                       counts, XML write time, iTunes version
-GET  /api/tracks?q=&genre=&artist=&album=&playlist=&offset=&limit=&compact=1
-GET  /api/tracks/{id}                   GET /api/tracks/{id}/artwork
-GET  /api/genres  /api/artists  /api/albums  /api/albumlist   (same filters)
-GET  /api/playlists                     GET /api/playlists/{id}/tracks
-PATCH /api/tracks                       { ids: [...], fields: { genre: "..." } }
-POST /api/playlists                     POST/DELETE /api/playlists/{id}/tracks
-GET  /api/player                        POST /api/player/{play|pause|playpause|next|previous|stop}
-POST /api/player/{volume|position|shuffle|repeat}
-GET  /api/outputs                       POST /api/outputs { names: [...] }
-GET  /api/sources                       POST /api/sources/{name}/{sync|eject}
-GET  /api/itunes                        POST /api/itunes/launch
-```
-
-Persistent IDs are the only track identifiers on the wire.
-
-## Measured on the real library
-
-| XML | 163 MB, 102,354 entries, 95,521 audio tracks served |
-| Parse | 23 s on the 2012 i7 (5 s on the Air), ~370 MB resident |
-| Any read | under 50 ms; whole library in compact form 1.15 s / 13.6 MB |
-| One AppleScript call | about 0.2 s of process spawn |
-| Bulk genre edit | 173 ms per track, mostly iTunes rewriting file tags |
+`SPEC.md` is the authority on behaviour and carries dated revision notes.
+`HANDOFF.md` is the state of play, the machine setup, and the traps that are
+not in the spec — read it before changing anything.
