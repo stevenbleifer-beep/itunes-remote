@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import artwork as artwork_mod
 from .applescript import AppleScriptError, AppleScriptTimeout, ITunesNotRunning
-from .library import Track, browse_key
+from .library import Track
 from .syncplan import SyncPlans
 
 log = logging.getLogger("itunes_remote.server")
@@ -703,8 +703,10 @@ class Api(object):
     def get_sync_plan(self, params, query, body):
         """Every device's plan, plus the one for whatever is plugged in.
 
-        `artistStates` says, per artist, whether all of its albums are selected
-        or only some, which is how the Artists pane draws its ticks."""
+        Each pane's ticks stand on their own, the way iTunes' Music pane works:
+        a plan is the union of the playlists, artists, album artists, genres
+        and albums it names. Ticking an artist means that artist, not a
+        shorthand for its albums."""
         pod = self._connected_pod()
         out = self.plans.to_dict()
         out["connected"] = {"name": pod["name"], "serial": pod["serial"]} if pod else None
@@ -713,7 +715,6 @@ class Api(object):
             plan = self.plans.plan_for(wanted, label=(pod["name"] if pod else None))
             out["plan"] = plan.to_dict()
             out["status"] = self._plan_status(plan)
-            out["artistStates"] = self._artist_states(plan)
         return out
 
     def put_sync_plan(self, params, query, body):
@@ -732,62 +733,6 @@ class Api(object):
                                   json.dumps(plan.to_dict()["counts"]))
         return {"plan": plan.to_dict(), "status": self._plan_status(plan)}
 
-    def _albums_of(self, kind, value):
-        """Every (artist, album) pair a selection covers.
-
-        Albums are what the plan actually stores. Ticking an artist is a way of
-        ticking all of that artist's albums at once, exactly as iTunes' Artists
-        pane behaves — so unticking one album afterwards leaves the rest and
-        simply stops the artist reading as fully ticked.
-        """
-        lib = self.store.lib
-        wanted = browse_key(value if isinstance(value, str) else "")
-        pairs = []
-        seen = set()
-        for t in lib.tracks.values():
-            if not t.album:
-                continue
-            if kind == "artist":
-                if t.group_keys["artist"] != wanted and t.artist_display_key != wanted:
-                    continue
-            elif kind == "genre":
-                if t.group_keys["genre"] != wanted:
-                    continue
-            else:
-                raise ValueError("cannot expand %s into albums" % kind)
-            who = t.artist
-            pair = (who, t.album)
-            k = (browse_key(who), browse_key(t.album))
-            if k not in seen:
-                seen.add(k)
-                pairs.append([who, t.album])
-        return pairs
-
-    def _artist_states(self, plan):
-        """For each artist the plan touches: are all its albums selected, or
-        only some? The client draws the artist tick from this."""
-        lib = self.store.lib
-        chosen = {(browse_key(a), browse_key(b)) for a, b in plan.selections["album"]}
-        total = {}
-        picked = {}
-        for t in lib.tracks.values():
-            if not t.album:
-                continue
-            who = t.artist
-            ka = browse_key(who)
-            pair = (ka, browse_key(t.album))
-            bucket = total.setdefault(ka, set())
-            if pair not in bucket:
-                bucket.add(pair)
-                if pair in chosen:
-                    picked[ka] = picked.get(ka, 0) + 1
-        out = {}
-        for ka, albums in total.items():
-            n = picked.get(ka, 0)
-            if n:
-                out[ka] = "all" if n == len(albums) else "some"
-        return out
-
     def post_sync_toggle(self, params, query, body):
         """Adds or removes one item for a device. Recorded only; no rebuild."""
         plan = self._resolve_plan(body, query)
@@ -797,19 +742,10 @@ class Api(object):
             raise ApiError(400, "body needs kind and value")
         on = bool(body.get("on", True))
         try:
-            if kind in ("artist", "genre"):
-                # Mass-select: an artist or genre is shorthand for its albums.
-                pairs = self._albums_of(kind, value)
-                for pair in pairs:
-                    plan.toggle("album", pair, on)
-                changed = len(pairs)
-            else:
-                plan.toggle(kind, value, on)
-                changed = 1
+            plan.toggle(kind, value, on)
         except ValueError as e:
             raise ApiError(400, str(e))
-        return {"plan": plan.to_dict(), "status": self._plan_status(plan),
-                "albumsChanged": changed, "artistStates": self._artist_states(plan)}
+        return {"plan": plan.to_dict(), "status": self._plan_status(plan)}
 
     def post_sync_rebuild(self, params, query, body):
         """Writes a device's plan to its playlist in iTunes. The only call here

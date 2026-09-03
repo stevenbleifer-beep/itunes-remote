@@ -320,3 +320,41 @@ struct PlaylistChange: Decodable {
         return "\(verb) \(changed), failed \(failed)."
     }
 }
+
+/// The app's own sync selection for one device.
+///
+/// iTunes keeps its selection where nothing outside iTunes can read it, so the
+/// app holds this one and projects it onto a playlist the device syncs. The
+/// five lists stand on their own and the device gets their union, exactly as
+/// iTunes' Music pane behaves: ticking an artist means that artist, and
+/// unticking an album takes only that album out.
+struct SyncPlan: Decodable {
+    struct Selections: Decodable {
+        var playlist: [String] = []
+        var artist: [String] = []
+        var albumartist: [String] = []
+        var genre: [String] = []
+        /// Stored as [artist, album] so two albums of the same name stay apart.
+        var album: [[String]] = []
+    }
+    let device: String
+    let label: String
+    let playlistName: String
+    var selections: Selections
+}
+
+/// Where a plan stands against iTunes. Everything here is read, never assumed.
+struct SyncPlanStatus: Decodable {
+    let playlistExists: Bool
+    let playlistTrackCount: Int
+    /// nil means it could not be checked, not that the answer is no.
+    let playlistOnDevice: Bool?
+    let isConnected: Bool
+    let ready: Bool
+    let setupHint: String
+}
+
+struct SyncPlanReply: Decodable {
+    let plan: SyncPlan?
+    let status: SyncPlanStatus?
+}

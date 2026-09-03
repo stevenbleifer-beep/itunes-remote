@@ -15,6 +15,10 @@ final class DevicePageView: NSView {
     var onSync: () -> Void = {}
     var onEject: () -> Void = {}
     var onDone: () -> Void = {}
+    /// Ticks or unticks one row of the sync plan. Recorded only.
+    var onPlanEdit: (DeviceMusicView.Row, Bool) -> Void = { _, _ in }
+    /// Writes the plan into the playlist iTunes syncs — iTunes' own Apply.
+    var onApplyPlan: () -> Void = {}
     /// Asks for the tracks in one of the device's playlists.
     var loadTracks: (String, @escaping ([DeviceTrack]) -> Void) -> Void = { _, done in done([]) }
     var loadImage: (@escaping (NSImage?) -> Void) -> Void = { done in done(nil) }
@@ -36,8 +40,11 @@ final class DevicePageView: NSView {
     private let musicPane = DeviceMusicView()
     private let trackTable = SimpleTable(columns: [("Name", 300), ("Artist", 200), ("Album", 200), ("Time", 60)])
     private let capacity = CapacityBarView()
+    private let applyButton = AquaPushButton(title: "Apply")
     private let syncButton = AquaPushButton(title: "Sync")
     private let doneButton = AquaPushButton(title: "Done", isDefault: true)
+    /// Apply lights up once a tick has moved, as it does in iTunes.
+    private var planDirty = false { didSet { applyButton.isEnabled = planDirty } }
     private let statusLabel = NSTextField(labelWithString: "")
     private var detail: DeviceDetail?
     private var loadedPlaylist: String?
@@ -48,7 +55,7 @@ final class DevicePageView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         for v in [nav as NSView, header, listScroll, summary, musicPane, trackTable.scrollView,
-                  capacity, syncButton, doneButton, statusLabel] {
+                  capacity, applyButton, syncButton, doneButton, statusLabel] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -57,6 +64,13 @@ final class DevicePageView: NSView {
         statusLabel.lineBreakMode = .byTruncatingTail
         syncButton.target = self
         syncButton.action = #selector(sync(_:))
+        applyButton.target = self
+        applyButton.action = #selector(apply(_:))
+        applyButton.isEnabled = false
+        musicPane.onEdit = { [weak self] row, on in
+            self?.planDirty = true
+            self?.onPlanEdit(row, on)
+        }
         doneButton.target = self
         doneButton.action = #selector(done(_:))
         header.onEject = { [weak self] in self?.onEject() }
@@ -108,10 +122,12 @@ final class DevicePageView: NSView {
             doneButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -pad),
             syncButton.trailingAnchor.constraint(equalTo: doneButton.leadingAnchor, constant: -8),
             syncButton.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
+            applyButton.trailingAnchor.constraint(equalTo: syncButton.leadingAnchor, constant: -8),
+            applyButton.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
             // Lined up with the capacity bar above it, not with the window
             // edge: under the sidebar it read as a stray caption.
             statusLabel.leadingAnchor.constraint(equalTo: listScroll.trailingAnchor, constant: pad),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: syncButton.leadingAnchor, constant: -10),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: applyButton.leadingAnchor, constant: -10),
             statusLabel.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
         ])
         for content in [summary as NSView, musicPane, trackTable.scrollView] {
@@ -193,7 +209,19 @@ final class DevicePageView: NSView {
         }
     }
 
+    /// Selects the Music row, as clicking it in the list does.
+    func showMusicPane() {
+        if let i = rows.firstIndex(where: { if case .music = $0 { return true }; return false }) {
+            list.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false)
+            select(i)
+        }
+    }
+
     @objc private func sync(_ sender: Any?) { onSync() }
+    @objc private func apply(_ sender: Any?) { onApplyPlan() }
+
+    /// Called once the plan has been written into its playlist.
+    func planApplied() { planDirty = false }
     @objc private func done(_ sender: Any?) { onDone() }
 
     func setStatus(_ text: String) {
@@ -231,6 +259,7 @@ final class DevicePageView: NSView {
 
     func setBusy(_ busy: Bool) {
         syncButton.isEnabled = !busy && (detail?.syncable ?? false)
+        applyButton.isEnabled = !busy && planDirty
         header.canEject = !busy && (detail?.itunesSource ?? false)
     }
 
@@ -281,12 +310,12 @@ final class DevicePageView: NSView {
         updateStatusLine()
     }
 
-    /// The library's own playlists, artists, genres and albums, marked
-    /// against what reached the device.
+    /// The library's own playlists, artists, genres and albums, ticked from
+    /// the app's sync plan and dotted against what reached the device.
     func showMusicLibrary(playlists: [Playlist], artists: [String], genres: [String],
-                          albums: [String], device: DeviceFacets) {
+                          albums: [AlbumEntry], plan: SyncPlan?, device: DeviceFacets) {
         musicPane.showLibrary(playlists: playlists, artists: artists, genres: genres,
-                              albums: albums, device: device)
+                              albums: albums, plan: plan, device: device)
     }
 
     private static func icon(for category: String) -> SidebarIcon {
@@ -926,16 +955,51 @@ final class DeviceNavBar: NSView {
 /// lists rather than offering switches that could not take.
 @MainActor
 final class DeviceMusicView: NSView {
-    /// Adds or removes the tracks of one list row from the sync.
+    /// Ticks or unticks one row of the sync plan.
     var onEdit: (DeviceMusicView.Row, Bool) -> Void = { _, _ in }
 
+    /// One line of one list. Each list stands on its own, the way iTunes' own
+    /// Music pane works: a tick means that row, and the device gets the union
+    /// of every ticked row. Ticking an artist is not shorthand for its albums,
+    /// so unticking an album takes out that album and leaves the rest alone.
     struct Row {
-        enum Kind { case playlist, artist, genre, album }
+        enum Kind: String { case playlist, artist, genre, album }
         let kind: Kind
+        /// What the list shows. Albums show as "Artist - Album".
         let name: String
         /// Set for playlists, so a change can be made without a name lookup.
         let playlistId: String?
+        /// Albums are keyed on the pair, so two albums sharing a title stay
+        /// apart. Empty for every other kind.
+        let albumArtist: String
+        let albumTitle: String
+        /// The plan's tick.
+        var checked: Bool
+        /// Whether this row's music is on the device now. Not part of the
+        /// plan — the plan says what should be there after the next sync.
         let onDevice: Bool
+
+        init(kind: Kind, name: String, playlistId: String? = nil,
+             albumArtist: String = "", albumTitle: String = "",
+             checked: Bool, onDevice: Bool) {
+            self.kind = kind
+            self.name = name
+            self.playlistId = playlistId
+            self.albumArtist = albumArtist
+            self.albumTitle = albumTitle
+            self.checked = checked
+            self.onDevice = onDevice
+        }
+
+        /// What the daemon is told this row is.
+        var planValue: Any {
+            kind == .album ? [albumArtist, albumTitle] : name
+        }
+
+        /// How the plan stores this row, for matching against a fetched plan.
+        var planKey: String {
+            kind == .album ? "\(albumArtist)\u{1f}\(albumTitle)" : name
+        }
     }
 
     private let scroll = NSScrollView()
@@ -946,10 +1010,12 @@ final class DeviceMusicView: NSView {
     private let optionsBox = SyncOptionsBox()
     private let caveat = NSTextField(labelWithString: "")
     private let lists: [CheckListView] = [
-        CheckListView(title: "Playlists"), CheckListView(title: "Artists on iPod"),
-        CheckListView(title: "Genres on iPod"), CheckListView(title: "Albums on iPod"),
+        CheckListView(title: "Playlists"), CheckListView(title: "Artists"),
+        CheckListView(title: "Genres"), CheckListView(title: "Albums"),
     ]
     private var sync: DeviceSync?
+    /// The plan's ticks, per kind, so a row can be drawn without refetching.
+    private var ticks: [String: Set<String>] = [:]
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -982,11 +1048,13 @@ final class DeviceMusicView: NSView {
         caveat.maximumNumberOfLines = 0
         caveat.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         caveat.preferredMaxLayoutWidth = 600
-        caveat.stringValue = "Playlists shows what syncs to the iPod. The Artists, Genres and Albums "
-            + "lists show what is on the iPod — a Beatles album can be there through a synced "
-            + "playlist even when the Beatles artist itself was never ticked. iTunes keeps its own "
-            + "artist/album/genre selection in its library database, which nothing outside iTunes can "
-            + "read. Use Add to iPod on a track to change what syncs."
+        caveat.stringValue = "These ticks are this app's own selection, not iTunes'. Each list "
+            + "stands on its own and the iPod gets everything ticked across all four, the way "
+            + "iTunes' Music pane works — ticking an artist means that artist, and unticking one "
+            + "album takes out only that album. iTunes keeps its own selection in its library "
+            + "database, where nothing outside iTunes can read it, so the app writes this "
+            + "selection into a playlist of its own that the iPod syncs. A dot on the right marks "
+            + "what is on the iPod now. Nothing reaches the iPod until you press Apply."
         search.placeholderString = "Search"
         search.controlSize = .small
         search.font = Aqua.font(11)
@@ -999,9 +1067,7 @@ final class DeviceMusicView: NSView {
         for (i, l) in lists.enumerated() {
             l.translatesAutoresizingMaskIntoConstraints = false
             l.onToggle = { [weak self] row in self?.toggle(row) }
-            // Playlists is the one true selection list; the other three report
-            // what is actually on the device.
-            l.onlyOnDevice = i != 0
+            _ = i
             doc.addSubview(l)
         }
         doc.translatesAutoresizingMaskIntoConstraints = false
@@ -1053,7 +1119,26 @@ final class DeviceMusicView: NSView {
     }
 
     private func toggle(_ row: Row) {
-        onEdit(row, !row.onDevice)
+        let on = !row.checked
+        // Move the tick straight away; the daemon only records the change, so
+        // waiting on the round trip would make the pane feel dead.
+        setTick(row, on)
+        onEdit(row, on)
+    }
+
+    /// Records one tick locally and redraws the list it belongs to.
+    private func setTick(_ row: Row, _ on: Bool) {
+        var set = ticks[row.kind.rawValue] ?? []
+        if on { set.insert(row.planKey) } else { set.remove(row.planKey) }
+        ticks[row.kind.rawValue] = set
+        for l in lists {
+            l.rows = l.rows.map {
+                guard $0.kind == row.kind, $0.planKey == row.planKey else { return $0 }
+                var copy = $0
+                copy.checked = on
+                return copy
+            }
+        }
     }
 
     func show(_ sync: DeviceSync) {
@@ -1067,26 +1152,55 @@ final class DeviceMusicView: NSView {
         // that are not yet on the iPod.
     }
 
-    /// The library's own lists, marked against what is on the device.
-    func showLibrary(playlists: [Playlist], artists: [String], genres: [String], albums: [String],
-                     device: DeviceFacets) {
+    /// The library's four lists, ticked from the plan and dotted against what
+    /// is on the device. The lists are the whole library, as iTunes shows them
+    /// — a row has to be listed before it can be ticked.
+    func showLibrary(playlists: [Playlist], artists: [String], genres: [String],
+                     albums: [AlbumEntry], plan: SyncPlan?, device: DeviceFacets) {
         func key(_ s: String) -> String { s.trimmingCharacters(in: .whitespaces).lowercased() }
         let onDeviceArtists = Set(device.artists.map(key))
         let onDeviceGenres = Set(device.genres.map(key))
         let onDeviceAlbums = Set(device.albums.map(key))
         let syncedNames = Set((sync?.playlists ?? []).map { key($0.name) })
-        lists[0].rows = playlists.map {
+
+        let sel = plan?.selections
+        ticks = [
+            "playlist": Set(sel?.playlist ?? []),
+            "artist": Set(sel?.artist ?? []),
+            "genre": Set(sel?.genre ?? []),
+            "album": Set((sel?.album ?? []).map {
+                "\($0.first ?? "")\u{1f}\($0.count > 1 ? $0[1] : "")"
+            }),
+        ]
+        func ticked(_ kind: Row.Kind, _ planKey: String) -> Bool {
+            ticks[kind.rawValue]?.contains(planKey) ?? false
+        }
+
+        // The plan's own playlist is left out: it is the plan's output, and
+        // ticking it would make it a source of itself.
+        let managed = plan?.playlistName
+        lists[0].rows = playlists.filter { $0.name != managed }.map {
             Row(kind: .playlist, name: $0.name, playlistId: $0.persistentId,
+                checked: ticked(.playlist, $0.name),
                 onDevice: syncedNames.contains(key($0.name)))
         }
         lists[1].rows = artists.map {
-            Row(kind: .artist, name: $0, playlistId: nil, onDevice: onDeviceArtists.contains(key($0)))
+            Row(kind: .artist, name: $0, checked: ticked(.artist, $0),
+                onDevice: onDeviceArtists.contains(key($0)))
         }
         lists[2].rows = genres.map {
-            Row(kind: .genre, name: $0, playlistId: nil, onDevice: onDeviceGenres.contains(key($0)))
+            Row(kind: .genre, name: $0, checked: ticked(.genre, $0),
+                onDevice: onDeviceGenres.contains(key($0)))
         }
-        lists[3].rows = albums.map {
-            Row(kind: .album, name: $0, playlistId: nil, onDevice: onDeviceAlbums.contains(key($0)))
+        lists[3].rows = albums.map { a in
+            // iTunes labels its album rows "Artist - Album", and calls a
+            // track with no album Unknown Album.
+            let title = a.album.isEmpty ? "Unknown Album" : a.album
+            let shown = a.artist.isEmpty ? title : "\(a.artist) - \(title)"
+            let planKey = "\(a.artist)\u{1f}\(a.album)"
+            return Row(kind: .album, name: shown, albumArtist: a.artist, albumTitle: a.album,
+                       checked: ticked(.album, planKey),
+                       onDevice: onDeviceAlbums.contains(key(a.album)))
         }
     }
 }
@@ -1164,9 +1278,6 @@ final class CheckListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var rows: [DeviceMusicView.Row] = [] { didSet { applyFilter() } }
     var filter = "" { didSet { applyFilter() } }
     var onToggle: (DeviceMusicView.Row) -> Void = { _ in }
-    /// When set, only rows that are on the device are listed — for the lists
-    /// that report contents rather than a selection iTunes won't reveal.
-    var onlyOnDevice = false { didSet { applyFilter() } }
     var title: String = "" { didSet { titleLabel.stringValue = title } }
 
     private let titleLabel = NSTextField(labelWithString: "")
@@ -1210,7 +1321,7 @@ final class CheckListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     private func applyFilter() {
-        var base = onlyOnDevice ? rows.filter { $0.onDevice } : rows
+        var base = rows
         let f = filter.trimmingCharacters(in: .whitespaces).lowercased()
         if !f.isEmpty { base = base.filter { $0.name.lowercased().contains(f) } }
         shown = base
@@ -1228,29 +1339,44 @@ final class CheckListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             return v
         }()
         cell.configure(shown[row])
+        cell.onClick = { [weak self] r in self?.onToggle(r) }
         return cell
     }
 }
 
-/// A row: the mark, then the name. The mark is drawn rather than being a
-/// control, because nothing outside iTunes can change what it reports.
+/// A row: the tick, then the name, then a dot for music already on the iPod.
+/// The whole row is the hit target, as it is in iTunes' own lists.
 final class CheckRowView: NSView {
-    private var name = ""
-    private var onDevice = false
+    var onClick: (DeviceMusicView.Row) -> Void = { _ in }
+    private var row: DeviceMusicView.Row?
 
     func configure(_ row: DeviceMusicView.Row) {
-        name = row.name
-        onDevice = row.onDevice
+        self.row = row
+        toolTip = row.onDevice ? "\(row.name) — on the iPod now" : row.name
         needsDisplay = true
     }
 
+    override func mouseDown(with event: NSEvent) {
+        guard let row = row else { return }
+        onClick(row)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        DeviceSummaryView.drawMark(at: NSPoint(x: 12, y: bounds.midY), value: onDevice ? true : false)
-        (name as NSString).draw(in: NSRect(x: 26, y: bounds.midY - 8, width: bounds.width - 32, height: 16),
-                                withAttributes: [
-                                    .font: Aqua.font(12),
-                                    .foregroundColor: onDevice ? NSColor(white: 0.12, alpha: 1)
-                                                               : NSColor(white: 0.42, alpha: 1),
-                                ])
+        guard let row = row else { return }
+        DeviceSummaryView.drawMark(at: NSPoint(x: 12, y: bounds.midY), value: row.checked)
+        let dotRoom: CGFloat = 14
+        (row.name as NSString).draw(
+            in: NSRect(x: 26, y: bounds.midY - 8, width: max(0, bounds.width - 26 - dotRoom), height: 16),
+            withAttributes: [
+                .font: Aqua.font(12),
+                .foregroundColor: NSColor(white: 0.12, alpha: 1),
+            ])
+        // Already on the iPod. Kept separate from the tick: the tick says what
+        // should be there after the next sync, this says what is there now.
+        if row.onDevice {
+            NSColor(white: 0.62, alpha: 1).setFill()
+            NSBezierPath(ovalIn: NSRect(x: bounds.maxX - 11, y: bounds.midY - 2.5,
+                                        width: 5, height: 5)).fill()
+        }
     }
 }

@@ -28,6 +28,30 @@ This file is the state of play and the traps that are not in the spec.
 
 Git: everything is committed on the default branch; `git log --oneline`.
 
+## Sync plan: iTunes' own rules
+
+The app holds its own sync selection (`daemon/itunes_remote/syncplan.py`,
+keyed by device serial) and writes it into a playlist the iPod syncs. It is
+built the way iTunes' Music pane is built and nothing cleverer:
+
+- The four lists — Playlists, Artists, Genres, Albums — each stand on their
+  own. The device gets the **union** of every ticked row.
+- Ticking an artist means that artist. It is **not** shorthand for that
+  artist's albums, so unticking one album takes out that album alone and
+  leaves the artist tick where it was.
+- An earlier build expanded an artist tick into its albums so that unticking
+  one album could carve a hole in it. That was removed on 2026-09-03 at
+  Steven's request ("just do it how itunes does it"). `_albums_of` and
+  `_artist_states` went with it; `POST /api/sync/toggle` now records exactly
+  the row it was given.
+- The plan's own playlist never appears in the Playlists list — it is the
+  plan's output, not one of its sources.
+- Apply (`POST /api/sync/rebuild`) is the only call that touches iTunes. It
+  rewrites that one playlist, in 150-selection chunks, and nothing else.
+
+`--snapshot-device NAME` on the client opens that device's Music pane before
+capturing, which is how this pane gets checked.
+
 ## The machines
 
 - MacBook Pro (daemon host): `ssh -i ~/.ssh/id_ed25519_mbp2012 stevenbleifer@Stevens-MacBook-Pro.local`. Python 3.13.15 at `/usr/local/bin/python3`. iTunes 12.9.5.

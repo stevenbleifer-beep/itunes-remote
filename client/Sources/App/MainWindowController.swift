@@ -11,6 +11,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     let artworkCache = ArtworkCache()
     private let mediaKeys = MediaKeys()
     var snapshotPath: String?
+    /// With --snapshot, open this device's Music pane before capturing.
+    var snapshotDevice: String?
 
     private enum Tag: Int { case source = 0, browser, tracks }
 
@@ -341,6 +343,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         devicePage.autoresizingMask = [.width, .height]
         devicePage.isHidden = true
         devicePage.onSync = { [weak self] in self?.syncOpenDevice() }
+        devicePage.onPlanEdit = { [weak self] row, on in self?.editDevicePlan(row, on) }
+        devicePage.onApplyPlan = { [weak self] in self?.applyDevicePlan() }
         devicePage.onEject = { [weak self] in self?.ejectOpenDevice() }
         devicePage.onDone = { [weak self] in
             self?.closeDevicePage()
@@ -1029,6 +1033,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             async let artistsTask = api.facet("artist", filter: TrackFilter())
             async let genresTask = api.facet("genre", filter: TrackFilter())
             async let albumsTask = api.albumList(filter: TrackFilter())
+            // The plan is the app's own, so a device with none yet is normal
+            // and must not stop the lists from being shown.
+            async let planTask = try? api.syncPlan()
             guard let facets = try? await facetsTask,
                   let artists = try? await artistsTask,
                   let genres = try? await genresTask,
@@ -1036,14 +1043,70 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 self.musicListsLoadedFor = nil          // let it try again
                 return
             }
+            let reply = await planTask
             guard self.openDevice == name else { return }
+            self.devicePlan = reply?.plan
             self.devicePage.showMusicLibrary(
                 playlists: self.controller.playlists,
                 artists: artists.map { $0.name },
                 genres: genres.map { $0.name },
-                // iTunes labels its album rows "Artist - Album".
-                albums: albums.map { $0.artist.isEmpty ? $0.album : "\($0.artist) - \($0.album)" },
+                albums: albums,
+                plan: reply?.plan,
                 device: facets)
+        }
+    }
+
+    /// The plan the Music pane is ticking, so a toggle knows which device it
+    /// belongs to even if the iPod is unplugged mid-edit.
+    private var devicePlan: SyncPlan?
+
+    /// Records one tick. Nothing reaches iTunes until Apply.
+    private func editDevicePlan(_ row: DeviceMusicView.Row, _ on: Bool) {
+        guard let api = controller.api else { return }
+        let device = devicePlan?.device
+        Task { @MainActor in
+            do {
+                let reply = try await api.syncToggle(device: device, kind: row.kind.rawValue,
+                                                     value: row.planValue, on: on)
+                self.devicePlan = reply.plan ?? self.devicePlan
+                let n = reply.plan.map { p in
+                    p.selections.playlist.count + p.selections.artist.count
+                        + p.selections.albumartist.count + p.selections.genre.count
+                        + p.selections.album.count
+                } ?? 0
+                self.devicePage.setStatus("\(on ? "Added" : "Removed") \(row.name). "
+                    + "\(n) selections — press Apply to write them to iTunes.")
+            } catch {
+                // Put the tick back: the plan did not change.
+                self.musicListsLoadedFor = nil
+                self.loadDeviceMusicLists()
+                self.devicePage.setStatus("Could not change \(row.name): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// iTunes' Apply: writes the plan into the playlist the iPod syncs. This
+    /// rewrites that one playlist and touches nothing else in the library.
+    private func applyDevicePlan() {
+        guard let api = controller.api else { return }
+        let device = devicePlan?.device
+        devicePage.setBusy(true)
+        devicePage.setStatus("Writing the sync playlist in iTunes… this takes a few minutes for a large selection.")
+        Task { @MainActor in
+            do {
+                let reply = try await api.syncRebuild(device: device)
+                self.devicePlan = reply.plan ?? self.devicePlan
+                self.devicePage.planApplied()
+                let name = reply.plan?.playlistName ?? "the sync playlist"
+                let n = reply.status?.playlistTrackCount ?? 0
+                self.devicePage.setStatus("\(name) now holds "
+                    + "\(NumberFormatter.localizedString(from: NSNumber(value: n), number: .decimal))"
+                    + " tracks. Sync the iPod to send them.")
+                self.flashStatus("Sync playlist updated.")
+            } catch {
+                self.devicePage.setStatus("Apply failed: \(error.localizedDescription)")
+            }
+            self.devicePage.setBusy(false)
         }
     }
 
@@ -1691,8 +1754,25 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         guard let path = snapshotPath, let content = window?.contentView else { return }
         window?.makeKeyAndOrderFront(nil)
+        if let want = snapshotDevice {
+            // The Music pane's four lists arrive from four separate requests,
+            // so give them time rather than capturing an empty pane.
+            Task { @MainActor in
+                if let d = self.devices.first(where: { $0.name == want }) {
+                    self.openDevicePage(for: d)
+                    self.devicePage.showMusicPane()
+                }
+                try? await Task.sleep(nanoseconds: 40_000_000_000)
+                self.capture(to: path, content: content)
+            }
+            return
+        }
         trackTable.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
         window?.makeFirstResponder(trackTable)
+        capture(to: path, content: content)
+    }
+
+    private func capture(to path: String, content: NSView) {
         content.layoutSubtreeIfNeeded()
         content.displayIfNeeded()
         let b = content.bounds

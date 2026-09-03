@@ -198,6 +198,36 @@ final class APIClient {
         return try JSONDecoder().decode(DeviceCopyResult.self, from: data)
     }
 
+    // MARK: The app's own sync plan
+
+    /// The selection the app holds for a device. `device` is a serial number;
+    /// omitting it asks about whatever iPod is plugged in.
+    func syncPlan(device: String? = nil) async throws -> SyncPlanReply {
+        var q: [URLQueryItem] = []
+        if let d = device { q.append(URLQueryItem(name: "device", value: d)) }
+        return try await get("/api/sync", query: q)
+    }
+
+    /// Ticks or unticks one row. Each list stands on its own, so this changes
+    /// that row and nothing else. Recorded only — the playlist in iTunes is
+    /// not touched until `syncRebuild`.
+    @discardableResult
+    func syncToggle(device: String?, kind: String, value: Any, on: Bool) async throws -> SyncPlanReply {
+        var body: [String: Any] = ["kind": kind, "value": value, "on": on]
+        if let d = device { body["device"] = d }
+        let data = try await request("POST", "/api/sync/toggle", body: body)
+        return try JSONDecoder().decode(SyncPlanReply.self, from: data)
+    }
+
+    /// Writes the plan to its playlist in iTunes. The only call here that
+    /// changes anything, and never automatic.
+    func syncRebuild(device: String? = nil) async throws -> SyncPlanReply {
+        var body: [String: Any] = [:]
+        if let d = device { body["device"] = d }
+        let data = try await request("POST", "/api/sync/rebuild", body: body, timeout: 1800)
+        return try JSONDecoder().decode(SyncPlanReply.self, from: data)
+    }
+
     func deviceFacets(_ name: String) async throws -> DeviceFacets {
         try await get("/api/devices/\(name)/facets")
     }
