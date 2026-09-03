@@ -49,14 +49,27 @@ final class ArtworkCache {
             // the daemon once left Cover Flow showing grey placeholders until
             // the app was relaunched.
             var definitelyNone = false
-            do {
-                if let data = try await api.artwork(for: persistentId), !data.isEmpty {
-                    image = NSImage(data: data)
-                } else {
-                    definitelyNone = true
+            // A cover iTunes still has to export comes back "pending"; keep
+            // asking, at a widening interval, for about a minute.
+            var delay: UInt64 = 1_500_000_000
+            var tries = 0
+            while tries < 12 {
+                tries += 1
+                do {
+                    switch try await api.artwork(for: persistentId) {
+                    case .image(let data):
+                        image = NSImage(data: data)
+                    case .none:
+                        definitelyNone = true
+                    case .pending:
+                        try? await Task.sleep(nanoseconds: delay)
+                        delay = min(delay + 1_000_000_000, 6_000_000_000)
+                        continue
+                    }
+                } catch {
+                    definitelyNone = false
                 }
-            } catch {
-                definitelyNone = false
+                break
             }
             if let image = image {
                 cache.setObject(image, forKey: persistentId as NSString)

@@ -21,7 +21,16 @@ final class APIClient {
         cfg.timeoutIntervalForResource = 120
         cfg.httpAdditionalHeaders = ["Accept": "application/json"]
         session = URLSession(configuration: cfg)
+        // Covers get their own session with more connections, so a screen
+        // full of them neither queues behind one another nor holds up the
+        // player poll on the main session.
+        let art = URLSessionConfiguration.ephemeral
+        art.timeoutIntervalForRequest = 20
+        art.httpMaximumConnectionsPerHost = 12
+        artSession = URLSession(configuration: art)
     }
+
+    private let artSession: URLSession
 
     // MARK: Read cache
 
@@ -191,12 +200,30 @@ final class APIClient {
         return comps.url!
     }
 
-    /// Image bytes, or nil when the track has no artwork (404).
-    func artwork(for persistentId: String) async throws -> Data? {
-        do {
-            return try await request("GET", "/api/tracks/\(persistentId)/artwork")
-        } catch let e as APIError where e.status == 404 {
-            return nil
+    enum ArtworkFetch {
+        case image(Data)
+        /// The track has no artwork.
+        case none
+        /// iTunes has to export it; the daemon has queued that. Ask again shortly.
+        case pending
+    }
+
+    /// The cover, if the daemon has it to hand. `quick` never waits on
+    /// iTunes: a cover that needs exporting comes back as `.pending`.
+    func artwork(for persistentId: String) async throws -> ArtworkFetch {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("/api/tracks/\(persistentId)/artwork"),
+                                  resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "quick", value: "1")]
+        var req = URLRequest(url: comps.url!)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, resp) = try await artSession.data(for: req)
+        switch (resp as? HTTPURLResponse)?.statusCode ?? 0 {
+        case 200: return data.isEmpty ? .none : .image(data)
+        case 404: return .none
+        case 202: return .pending
+        case let status:
+            let msg = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+            throw APIError(status: status, message: msg ?? "request failed")
         }
     }
 

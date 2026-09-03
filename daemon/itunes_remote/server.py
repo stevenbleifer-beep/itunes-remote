@@ -1,6 +1,7 @@
 """HTTP API. Threaded so reads keep answering while a write is in flight."""
 
 import hashlib
+import collections
 import gzip
 import json
 import logging
@@ -102,6 +103,8 @@ class Api(object):
         self.write_log = write_log
         self.artwork_cache = OrderedDict()   # persistent id -> (mime, bytes) or None
         self.artwork_lock = threading.Lock()
+        # Covers a client is waiting for, exported by the warmer ahead of its sweep.
+        self.artwork_priority = collections.deque()
         # What the LCD's sync view shows. One writer at a time (a rebuild or
         # an iPod sync), read by the client once a second.
         self.progress_lock = threading.Lock()
@@ -336,7 +339,17 @@ class Api(object):
 
     ARTWORK_CACHE_SIZE = 300
 
-    def _artwork(self, pid, allow_itunes=True):
+    def _artwork(self, pid, allow_itunes=True, quick=False):
+        """A track's cover.
+
+        `quick` answers only from memory, the disk cache and the file itself.
+        A cover that would need iTunes is queued for the warmer instead and
+        the call raises 202, so a screen full of covers never waits on the
+        Apple Events lock: what is to hand appears at once, the rest arrive
+        as iTunes exports them. The Grid used to sit blank for ten seconds or
+        more while a few exports, each behind the player poll and whatever
+        iTunes was busy with, held every other cover in the queue behind them.
+        """
         with self.artwork_lock:
             if pid in self.artwork_cache:
                 self.artwork_cache.move_to_end(pid)
@@ -354,6 +367,13 @@ class Api(object):
         if t.location:
             result = artwork_mod.read_embedded(t.location)
         embedded = result is not None
+        if result is None and quick:
+            # iTunes does not know about tracks with no artwork at all until
+            # asked; but if it already says there is none, say so now.
+            if not t.artwork_count:
+                return None
+            self._want_cover(pid)
+            raise ApiError(202, "artwork pending")
         asked_itunes = False
         if result is None and allow_itunes and self.itunes is not None and self.itunes.itunes_running():
             asked_itunes = True
@@ -361,7 +381,7 @@ class Api(object):
             fd, tmp = tempfile.mkstemp(prefix="itr-art-", suffix=".bin")
             os.close(fd)
             try:
-                out = self._script("artwork_export", pid, tmp, timeout=30)
+                out = self._script("artwork_export", pid, tmp, timeout=15)
                 if out.startswith("ok"):
                     with open(tmp, "rb") as f:
                         data = f.read()
@@ -385,6 +405,16 @@ class Api(object):
         self._remember(pid, result)
         return result
 
+    def _want_cover(self, pid):
+        """Asks the warmer for this cover next, ahead of its own sweep."""
+        with self.artwork_lock:
+            if pid not in self.artwork_priority:
+                self.artwork_priority.append(pid)
+
+    def _next_wanted_cover(self):
+        with self.artwork_lock:
+            return self.artwork_priority.popleft() if self.artwork_priority else None
+
     # -- background warmer ----------------------------------------------
 
     def start_artwork_warmer(self):
@@ -405,38 +435,56 @@ class Api(object):
         # Let the library settle and the first client finish loading.
         time.sleep(idle)
         done = 0
+        queue = []
+        swept_at = 0.0
         while True:
-            try:
-                queue = self._warm_queue()
-            except Exception as e:
-                log.warning("artwork warmer could not build its queue: %s", e)
-                return
-            if not queue:
-                log.info("artwork warmer: nothing left to fetch (%d covers on disk)",
-                         self.artwork_disk.count())
-                return
-            log.info("artwork warmer: %d covers to fetch", len(queue))
-            for pid in queue:
-                # Anyone using the app wins; wait for quiet before each cover.
-                while time.time() - self.last_request < idle:
-                    time.sleep(2.0)
+            # Covers someone is looking at right now come first, and do not
+            # wait for quiet: they are the reason the daemon is busy.
+            wanted = self._next_wanted_cover()
+            if wanted is not None:
                 if self.itunes is None or not self.itunes.itunes_running():
-                    time.sleep(idle)
+                    time.sleep(2.0)
                     continue
                 try:
-                    self._artwork(pid)
+                    self._artwork(wanted)
                 except ApiError:
                     pass
                 except Exception as e:
-                    log.info("artwork warmer stopped on %s: %s", pid, e)
-                    return
-                done += 1
-                if done % 200 == 0:
-                    log.info("artwork warmer: %d fetched", done)
-                # Never hold the lock back to back.
-                time.sleep(0.4)
-            # A pass can leave stragglers if the library reloaded underneath
-            # it; go round again, and the empty queue above ends the thread.
+                    log.info("artwork warmer: %s failed: %s", wanted, e)
+                time.sleep(0.2)
+                continue
+            if not queue and time.time() - swept_at > 600:
+                swept_at = time.time()
+                try:
+                    queue = self._warm_queue()
+                except Exception as e:
+                    log.warning("artwork warmer could not build its queue: %s", e)
+                    queue = []
+                if queue:
+                    log.info("artwork warmer: %d covers to fetch", len(queue))
+                else:
+                    log.info("artwork warmer: nothing left to fetch (%d covers on disk)",
+                             self.artwork_disk.count())
+            if not queue:
+                time.sleep(2.0)
+                continue
+            # The sweep yields to anyone using the app.
+            if time.time() - self.last_request < idle or self.itunes is None \
+                    or not self.itunes.itunes_running():
+                time.sleep(2.0)
+                continue
+            pid = queue.pop(0)
+            try:
+                self._artwork(pid)
+            except ApiError:
+                pass
+            except Exception as e:
+                log.info("artwork warmer: %s failed: %s", pid, e)
+            done += 1
+            if done % 200 == 0:
+                log.info("artwork warmer: %d fetched", done)
+            # Never hold the lock back to back.
+            time.sleep(0.4)
 
     def _warm_queue(self):
         """One cover track per album, skipping anything already on disk or
@@ -466,7 +514,8 @@ class Api(object):
 
     def get_artwork(self, params, query, body):
         pid = params["pid"].upper()
-        result = self._artwork(pid)
+        quick = self._one(query, "quick") not in (None, "", "0")
+        result = self._artwork(pid, quick=quick)
         if result is None:
             raise ApiError(404, "no artwork")
         mime, data = result

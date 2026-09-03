@@ -127,7 +127,10 @@ final class AlbumGridView: NSView, NSDraggingSource {
     }
 
     private func request(_ index: Int) {
-        guard !requested.contains(index), let pid = albums[index].coverTrackId else { return }
+        // iTunes already says whether an album has art; asking the daemon for
+        // one that has none costs a round trip that ends in a placeholder.
+        guard !requested.contains(index), albums[index].hasArtwork,
+              let pid = albums[index].coverTrackId else { return }
         requested.insert(index)
         let gen = generation
         imageProvider(pid) { [weak self] image in

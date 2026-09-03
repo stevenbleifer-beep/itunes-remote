@@ -893,10 +893,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         player.onRemoteTrackFinished = { [weak self] in self?.step(by: 1) }
         player.onSyncProgress = { [weak self] p in self?.showSyncProgress(p) }
         display.onCycleMode = { [weak self] mode in
+            guard let self = self else { return }
             // Cycling by hand pins the choice; the automatic switch only
-            // happens on a job starting or finishing.
-            self?.syncViewPinned = true
-            _ = mode
+            // happens on a job starting or finishing. Once the job is over
+            // and the song is back on screen, the arrows have done their job.
+            self.syncViewPinned = true
+            if mode == .player, self.player.syncProgress?.active != true {
+                self.display.modes = [.player]
+            }
         }
         // The Mac's media keys go to whichever app here is the "now playing"
         // app, so the app claims that role and forwards them on.
@@ -1754,7 +1758,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             syncViewTimer?.invalidate()
             syncViewTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
                 Task { @MainActor in
-                    guard let self = self, !self.syncViewPinned else { return }
+                    guard let self = self else { return }
+                    // Someone who cycled to the finished sync view keeps it
+                    // until they cycle away; everyone else gets the song back.
+                    if self.syncViewPinned && self.display.mode == .sync { return }
                     self.display.mode = .player
                     self.display.modes = [.player]
                 }

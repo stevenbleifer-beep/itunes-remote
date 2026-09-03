@@ -160,6 +160,31 @@ for an iPod sync (iTunes gives no total).
   so the background app_* tools can press them now ("New Playlist",
   "Shuffle", "Sync iPod" show up as AXButtons).
 
+## Artwork: why the Grid was slow, and what changed
+
+A cover the daemon has on disk or embedded in the file costs ~30 ms. A cover
+only iTunes knows about costs an AppleScript export — about 0.3 s, holding the
+one Apple Events lock the whole daemon shares — and the client asked for those
+on the *same* URLSession as the player poll, with a 30 s timeout. A screenful
+of albums whose covers were not yet cached therefore filled the connection
+pool with slow exports, and every other cover (and the poll) queued behind
+them. Hence a grid of grey placeholders that filled in over many seconds.
+
+Now:
+- `GET /api/tracks/{id}/artwork?quick=1` answers only from memory, the disk
+  cache, or the file itself. A cover needing iTunes returns **202** and is
+  pushed onto `artwork_priority`, which the warmer drains *before* its own
+  sweep and without waiting for the idle window.
+- The client fetches covers on a separate URLSession (12 connections, 20 s),
+  so covers never contend with the player poll. A 202 is retried at a widening
+  interval for about a minute.
+- Grid and Cover Flow skip albums iTunes says have no art at all
+  (`hasArtwork`), instead of paying a round trip to be told so.
+- The warmer's sweep is rebuilt every 10 minutes rather than once, so covers
+  for newly added music get picked up without a daemon restart.
+
+Measured after: the 14 albums at the top of the library return in 0.77 s total.
+
 ## The machines
 
 - MacBook Pro (daemon host): `ssh -i ~/.ssh/id_ed25519_mbp2012 stevenbleifer@Stevens-MacBook-Pro.local`. Python 3.13.15 at `/usr/local/bin/python3`. iTunes 12.9.5.

@@ -312,7 +312,7 @@ final class CoverFlowView: NSView, NSDraggingSource {
     }
 
     private func load(_ index: Int) {
-        guard index < albums.count, let pid = albums[index].coverTrackId else { return }
+        guard index < albums.count, albums[index].hasArtwork, let pid = albums[index].coverTrackId else { return }
         let gen = generation
         imageProvider(pid) { [weak self] image in
             guard let self = self, gen == self.generation, index < self.albums.count else { return }
