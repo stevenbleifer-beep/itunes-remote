@@ -132,6 +132,16 @@ final class APIClient {
         return w.sources
     }
 
+    func devices() async throws -> [DeviceSource] {
+        struct Wrap: Decodable { let devices: [DeviceSource] }
+        return (try await get("/api/devices") as Wrap).devices
+    }
+
+    func deviceDetail(_ name: String) async throws -> DeviceDetail {
+        let escaped = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        return try await get("/api/devices/\(escaped)")
+    }
+
     private func sourcePath(_ name: String, _ op: String) -> String {
         let safe = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
         return "/api/sources/\(safe)/\(op)"

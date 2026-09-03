@@ -6,8 +6,10 @@ import logging
 import os
 import plistlib
 import re
+import subprocess
 import tempfile
 import threading
+import time
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -119,6 +121,10 @@ class Api(object):
             ("POST", r"/api/player/repeat", self.post_repeat),
             ("POST", r"/api/player/position", self.post_position),
             ("GET", r"/api/sources", self.get_sources),
+            ("GET", r"/api/devices", self.get_devices),
+            ("GET", r"/api/devices/(?P<name>[^/]+)", self.get_device),
+            ("POST", r"/api/devices/(?P<name>[^/]+)/sync", self.post_source_sync),
+            ("POST", r"/api/devices/(?P<name>[^/]+)/eject", self.post_source_eject),
             ("POST", r"/api/sources/(?P<name>[^/]+)/sync", self.post_source_sync),
             ("POST", r"/api/sources/(?P<name>[^/]+)/eject", self.post_source_eject),
             ("GET", r"/api/outputs", self.get_outputs),
@@ -499,6 +505,185 @@ class Api(object):
                 "capacity": None if cap < 0 else int(cap),
             })
         return {"sources": out}
+
+    # -- devices --------------------------------------------------------
+
+    # What iTunes calls a source that is a physical thing you can sync.
+    DEVICE_KINDS = ("iPod", "device", "audio CD", "MP3 CD")
+
+    # USB product names that are Apple devices iTunes might manage. Used only
+    # to notice a device iTunes has not surfaced as a source, so the page can
+    # say so instead of showing nothing.
+    APPLE_DEVICE_NAMES = ("ipod", "iphone", "ipad")
+
+    # The device page asks on every open; the USB tree rarely changes and
+    # system_profiler costs ~0.3 s.
+    USB_CACHE_SECONDS = 10.0
+
+    def _usb_devices(self):
+        """Apple devices on the USB bus, by serial number, from system_profiler.
+        Gives the serial, the link speed and the mounted volume, none of which
+        iTunes' AppleScript dictionary exposes."""
+        now = time.time()
+        cached = getattr(self, "_usb_cache", None)
+        if cached and now - cached[0] < self.USB_CACHE_SECONDS:
+            return cached[1]
+        found = []
+        try:
+            r = subprocess.run(["system_profiler", "-xml", "SPUSBDataType"],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20)
+            tree = plistlib.loads(r.stdout)
+        except Exception as e:                       # a probe, never fatal
+            log.warning("system_profiler failed: %s", e)
+            tree = []
+
+        def walk(items):
+            for item in items or []:
+                name = (item.get("_name") or "")
+                if any(k in name.lower() for k in self.APPLE_DEVICE_NAMES):
+                    found.append(self._usb_record(name, item))
+                walk(item.get("_items"))
+
+        for section in tree:
+            walk(section.get("_items"))
+        self._usb_cache = (now, found)
+        return found
+
+    @staticmethod
+    def _usb_record(name, item):
+        speeds = {"low_speed": "USB 1.5 Mb/s", "full_speed": "USB 12 Mb/s",
+                  "high_speed": "USB 480 Mb/s", "super_speed": "USB 5 Gb/s"}
+        rec = {
+            "productName": name,
+            "serialNumber": item.get("serial_num"),
+            "connection": speeds.get(item.get("device_speed"), item.get("device_speed")),
+            "manufacturer": item.get("manufacturer"),
+            "mountPoint": None,
+            "fileSystem": None,
+            "volumeName": None,
+            "capacity": None,
+            "freeSpace": None,
+        }
+        for media in item.get("Media") or []:
+            for vol in media.get("volumes") or []:
+                if not vol.get("mount_point"):
+                    continue
+                rec["mountPoint"] = vol.get("mount_point")
+                rec["fileSystem"] = vol.get("file_system")
+                rec["volumeName"] = vol.get("_name")
+                rec["capacity"] = vol.get("size_in_bytes")
+                rec["freeSpace"] = vol.get("free_space_in_bytes")
+        return rec
+
+    def get_devices(self, params, query, body):
+        """Every device iTunes can see, plus any Apple device on the USB bus
+        that iTunes has not picked up, so the page can explain the difference
+        rather than showing an empty list."""
+        try:
+            sources = self.get_sources(params, None, None)["sources"]
+        except ApiError as e:
+            if e.status != 503:
+                raise
+            sources = []                             # iTunes down; USB still tells us something
+        usb = self._usb_devices()
+        claimed = set()
+        out = []
+        for s in sources:
+            if s["kind"] not in self.DEVICE_KINDS:
+                continue
+            dev = dict(s, itunesSource=True, syncable=s["kind"] == "iPod")
+            match = self._match_usb(s["name"], usb, claimed)
+            if match:
+                dev.update({k: v for k, v in match.items()
+                            if v is not None and k not in ("capacity", "freeSpace")})
+            out.append(dev)
+        for i, u in enumerate(usb):
+            if i in claimed:
+                continue
+            out.append(dict(u,
+                            name=u.get("volumeName") or u["productName"],
+                            kind=u["productName"],
+                            itunesSource=False,
+                            syncable=False))
+        return {"devices": out}
+
+    @staticmethod
+    def _match_usb(source_name, usb, claimed):
+        """Pair an iTunes source with a USB device. The names rarely agree —
+        iTunes shows the user's device name, USB shows the model — so match on
+        the mounted volume name first and fall back to the only unclaimed
+        Apple device."""
+        folded = source_name.strip().casefold()
+        for i, u in enumerate(usb):
+            if i in claimed:
+                continue
+            if (u.get("volumeName") or "").strip().casefold() == folded:
+                claimed.add(i)
+                return u
+        free = [i for i in range(len(usb)) if i not in claimed]
+        if len(free) == 1:
+            claimed.add(free[0])
+            return usb[free[0]]
+        return None
+
+    # iTunes' own names for the media a device holds, in the order its
+    # capacity bar drew them.
+    CATEGORY_ORDER = ("Music", "Movies", "TV Shows", "Podcasts", "Books",
+                      "Audiobooks", "Purchased Music", "Tones")
+
+    def get_device(self, params, query, body):
+        """One device in full: identity, what is on it by category, and its
+        playlists. Everything here is read from iTunes or the USB tree; nothing
+        is estimated."""
+        name = unquote(params["name"])
+        devices = self.get_devices({}, None, None)["devices"]
+        base = next((d for d in devices if d["name"] == name), None)
+        if base is None:
+            raise ApiError(404, "no device named %r is connected" % name)
+        out = dict(base)
+        out["categories"] = []
+        out["playlists"] = []
+        out["trackCount"] = None
+        if not base.get("itunesSource"):
+            # A device on the bus that iTunes has not opened as a source. Say
+            # so plainly; the page shows the reason instead of empty panels.
+            out["unavailableReason"] = (
+                "iTunes has not opened %s as a source, so it cannot report what is "
+                "on it or sync it." % name
+            )
+            return out
+        recs = self.itunes.records(self._script("device_info", name, timeout=90))
+        for r in recs:
+            if r[0] == "dev":
+                out["capacity"] = self._opt(r[3])
+                out["freeSpace"] = self._opt(r[4])
+            elif r[0] == "pl":
+                pl_name, special = r[1], r[2]
+                count = int(self._num(r[3], 0))
+                sizes = r[4] if len(r) > 4 else ""
+                total = sum(int(self._num(x, 0)) for x in sizes.split(",") if x)
+                if special == "Library":
+                    out["trackCount"] = count
+                elif special != "none":
+                    out["categories"].append({"name": special, "trackCount": count,
+                                              "bytes": total})
+                else:
+                    out["playlists"].append({"name": pl_name, "count": count})
+        order = {n: i for i, n in enumerate(self.CATEGORY_ORDER)}
+        out["categories"].sort(key=lambda c: (order.get(c["name"], 99), c["name"]))
+        cap, free = out.get("capacity"), out.get("freeSpace")
+        known = sum(c["bytes"] for c in out["categories"])
+        if cap is not None and free is not None:
+            # Everything iTunes does not account for: artwork, the device's own
+            # database, calendars, notes. Never negative.
+            out["otherBytes"] = max(0, cap - free - known)
+            out["usedBytes"] = cap - free
+        return out
+
+    @staticmethod
+    def _opt(raw):
+        v = Api._num(raw, -1)
+        return None if v < 0 else int(v)
 
     def _ipod_name(self, params):
         name = unquote(params["name"])

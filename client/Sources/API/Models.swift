@@ -162,6 +162,40 @@ struct DeviceSource: Decodable, Equatable {
     var isIPod: Bool { kind == "iPod" }
 }
 
+/// Everything the daemon can say about one connected device, for the sync
+/// page. `categories` is what iTunes reports is on the device; `otherBytes`
+/// is what it does not account for — artwork, the device database, calendars.
+struct DeviceDetail: Decodable {
+    struct Category: Decodable, Equatable {
+        let name: String
+        let trackCount: Int
+        let bytes: Int
+    }
+    struct DevicePlaylist: Decodable, Equatable {
+        let name: String
+        let count: Int
+    }
+    let name: String
+    let kind: String
+    let capacity: Int?
+    let freeSpace: Int?
+    let usedBytes: Int?
+    let otherBytes: Int?
+    let trackCount: Int?
+    let serialNumber: String?
+    let connection: String?
+    let productName: String?
+    let manufacturer: String?
+    let mountPoint: String?
+    let fileSystem: String?
+    let volumeName: String?
+    let itunesSource: Bool
+    let syncable: Bool
+    let unavailableReason: String?
+    let categories: [Category]
+    let playlists: [DevicePlaylist]
+}
+
 struct Output: Decodable {
     let name: String
     let kind: String
