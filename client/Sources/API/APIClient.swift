@@ -102,6 +102,13 @@ final class APIClient {
         }
     }
 
+    // MARK: Writes
+
+    func patchTracks(ids: [String], fields: [String: Any]) async throws -> PatchResult {
+        let data = try await request("PATCH", "/api/tracks", body: ["ids": ids, "fields": fields])
+        return try JSONDecoder().decode(PatchResult.self, from: data)
+    }
+
     // MARK: Reads
 
     func libraryInfo() async throws -> LibraryInfo {

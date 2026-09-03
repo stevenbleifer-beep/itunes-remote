@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import artwork as artwork_mod
 from .applescript import AppleScriptError, AppleScriptTimeout, ITunesNotRunning
+from .library import Track
 
 log = logging.getLogger("itunes_remote.server")
 
@@ -38,10 +39,31 @@ class Api(object):
     object or a RawResponse. Everything that talks to iTunes goes through
     `itunes`, an AppleScript instance."""
 
-    def __init__(self, store, config, itunes=None):
+    # The names the HTTP API accepts, mapped to Track's internal names. The
+    # API is camelCase like the rest of the JSON; Track is snake_case.
+    API_FIELDS = {
+        "name": "name",
+        "artist": "artist",
+        "album": "album",
+        "albumArtist": "album_artist",
+        "genre": "genre",
+        "composer": "composer",
+        "year": "year",
+        "trackNumber": "track_number",
+        "discNumber": "disc_number",
+        "compilation": "compilation",
+    }
+    NUMERIC_FIELDS = frozenset(("year", "track_number", "disc_number"))
+
+    # Small enough that the Apple Events lock is released often, so the
+    # client's once-a-second player poll still gets through a long edit.
+    WRITE_CHUNK = 50
+
+    def __init__(self, store, config, itunes=None, write_log=None):
         self.store = store
         self.config = config
         self.itunes = itunes
+        self.write_log = write_log
         self.artwork_cache = OrderedDict()   # persistent id -> (mime, bytes) or None
         self.artwork_lock = threading.Lock()
         pid = r"(?P<pid>[0-9A-Fa-f]{16})"
@@ -64,6 +86,7 @@ class Api(object):
             ("POST", r"/api/player/position", self.post_position),
             ("GET", r"/api/outputs", self.get_outputs),
             ("POST", r"/api/outputs", self.post_outputs),
+            ("PATCH", r"/api/tracks", self.patch_tracks),
         ]
         self.compiled = [(m, re.compile("^" + p + "$"), h) for m, p, h in self.routes]
 
@@ -342,6 +365,128 @@ class Api(object):
             raise ApiError(400, "body needs a non-empty list of device names")
         self._script("outputs_set", *names, timeout=30)
         return self.get_outputs(params, query, body)
+
+    # -- metadata writes -------------------------------------------------
+
+    def _script_value(self, internal_name, value):
+        """The text form handed to AppleScript as an argv item."""
+        if internal_name == "compilation":
+            return "true" if value else "false"
+        if internal_name in self.NUMERIC_FIELDS:
+            if value in (None, ""):
+                return "0"
+            try:
+                return str(int(value))
+            except (TypeError, ValueError):
+                raise ApiError(400, "%s must be a number" % internal_name)
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ApiError(400, "%s must be text" % internal_name)
+        return value
+
+    def _memory_value(self, internal_name, value):
+        """The typed form stored in the in-memory library."""
+        if internal_name == "compilation":
+            if isinstance(value, str):
+                return value.strip().lower() == "true"
+            return bool(value)
+        if internal_name in self.NUMERIC_FIELDS:
+            if value in (None, ""):
+                return None
+            n = int(value)
+            return None if n == 0 else n
+        return value or ""
+
+    def patch_tracks(self, params, query, body):
+        body = body or {}
+        ids = body.get("ids")
+        fields = body.get("fields")
+        if not isinstance(ids, list) or not ids:
+            raise ApiError(400, "body needs a non-empty ids list")
+        if not isinstance(fields, dict) or not fields:
+            raise ApiError(400, "body needs a non-empty fields object")
+        if len(ids) > 5000:
+            raise ApiError(400, "at most 5000 tracks per request")
+
+        seen = set()
+        pids = []
+        for raw in ids:
+            if not isinstance(raw, str) or not re.match(r"^[0-9A-Fa-f]{16}$", raw):
+                raise ApiError(400, "ids must be 16-character persistent IDs")
+            pid = raw.upper()
+            if pid in seen:
+                continue
+            if pid not in self.store.lib.tracks:
+                raise ApiError(404, "no such track: %s" % pid)
+            seen.add(pid)
+            pids.append(pid)
+
+        ordered = []
+        for api_name, value in fields.items():
+            internal = self.API_FIELDS.get(api_name)
+            if internal is None:
+                raise ApiError(400, "field not editable: %s" % api_name)
+            ordered.append((api_name, internal, value))
+
+        head = [str(len(ordered))]
+        for _, internal, value in ordered:
+            head.append(Track.EDITABLE[internal])
+            head.append(self._script_value(internal, value))
+
+        new_values = {api: value for api, _, value in ordered}
+        results = []
+        applied = {}
+        failures = 0
+
+        for start in range(0, len(pids), self.WRITE_CHUNK):
+            chunk = pids[start:start + self.WRITE_CHUNK]
+            timeout = 30 + 1.0 * len(chunk)
+            try:
+                out = self._script("set_fields", *(head + chunk), timeout=timeout)
+            except ApiError as e:
+                # A timeout means the Apple Event may still be running inside
+                # iTunes, so the outcome is unknown rather than failed.
+                state = "unknown" if e.status == 504 else "error"
+                for pid in chunk:
+                    failures += 1
+                    results.append({"persistentId": pid, "result": state, "detail": e.message})
+                    if self.write_log:
+                        self.write_log.record("set", pid, None, new_values, state, e.message)
+                continue
+
+            for record in self.itunes.records(out):
+                pid = record[0]
+                status = record[1] if len(record) > 1 else "error"
+                if status == "ok" and len(record) >= 2 + len(ordered):
+                    old = {}
+                    for i, (api_name, internal, _) in enumerate(ordered):
+                        old[api_name] = self._memory_value(internal, record[2 + i]) \
+                            if internal in self.NUMERIC_FIELDS or internal == "compilation" else record[2 + i]
+                    applied[pid] = {internal: self._memory_value(internal, value)
+                                    for _, internal, value in ordered}
+                    results.append({"persistentId": pid, "result": "ok", "old": old})
+                    if self.write_log:
+                        self.write_log.record("set", pid, old, new_values, "ok")
+                else:
+                    failures += 1
+                    detail = record[2] if len(record) > 2 else "unknown error"
+                    results.append({"persistentId": pid, "result": "error", "detail": detail})
+                    if self.write_log:
+                        self.write_log.record("set", pid, None, new_values, "error", detail)
+
+        if applied:
+            # One re-sort for the whole batch, and none at all for a genre edit.
+            self.store.patch_many(applied)
+        if self.write_log:
+            self.write_log.record_batch("set-batch", len(pids), new_values,
+                                        "%d ok, %d failed" % (len(applied), failures))
+        return {
+            "requested": len(pids),
+            "updated": len(applied),
+            "failed": failures,
+            "results": results,
+        }
 
 
 class Handler(BaseHTTPRequestHandler):

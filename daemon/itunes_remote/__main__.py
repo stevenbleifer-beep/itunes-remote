@@ -10,6 +10,7 @@ from . import config as config_mod
 from .applescript import AppleScript
 from .library import LibraryStore
 from .server import Api, make_server
+from .writelog import WriteLog
 
 
 def setup_logging(log_dir):
@@ -79,7 +80,7 @@ def main(argv=None):
     itunes = AppleScript(scripts_dir, timeout=cfg.applescript_timeout)
     if not itunes.itunes_running():
         log.warning("iTunes is not running; player and write requests will return 503 until it is")
-    api = Api(store, cfg, itunes)
+    api = Api(store, cfg, itunes, WriteLog(cfg.log_dir))
     server = make_server(api)
     log.info("listening on http://%s:%d/", cfg.host, cfg.port)
     try:

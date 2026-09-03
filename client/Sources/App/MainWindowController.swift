@@ -45,6 +45,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var updatingUI = false
     private var keyMonitor: Any?
     private var artworkToken = 0
+    private var infoPanel: InfoPanel?          // held while its sheet is up
+    private var statusOverride: String?
+    private var statusOverrideTimer: Timer?
 
     // MARK: Init
 
@@ -255,6 +258,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         trackTable.delegate = self
         trackTable.target = self
         trackTable.doubleAction = #selector(trackDoubleClicked(_:))
+
+        let menu = NSMenu()
+        let info = NSMenuItem(title: "Get Info", action: #selector(showGetInfo(_:)), keyEquivalent: "")
+        info.target = self
+        info.attributedTitle = NSAttributedString(string: "Get Info", attributes: [.font: Aqua.font(13)])
+        menu.addItem(info)
+        let play = NSMenuItem(title: "Play", action: #selector(playSelection(_:)), keyEquivalent: "")
+        play.target = self
+        play.attributedTitle = NSAttributedString(string: "Play", attributes: [.font: Aqua.font(13)])
+        menu.addItem(play)
+        trackTable.menu = menu
     }
 
     // MARK: Controller wiring
@@ -318,8 +332,56 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     private func updateStatus() {
-        statusLabel.stringValue = controller.statusText
+        statusLabel.stringValue = statusOverride ?? controller.statusText
         updatePlayerUI()
+    }
+
+    /// Shows a result line in the status bar for a few seconds.
+    private func flashStatus(_ text: String) {
+        statusOverride = text
+        statusOverrideTimer?.invalidate()
+        statusOverrideTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.statusOverride = nil
+                self?.updateStatus()
+            }
+        }
+        updateStatus()
+    }
+
+    // MARK: Editing
+
+    private var selectedTracks: [Track] {
+        trackTable.selectedRowIndexes.compactMap {
+            $0 < controller.tracks.count ? controller.tracks[$0] : nil
+        }
+    }
+
+    @objc func showGetInfo(_ sender: Any?) {
+        let selected = selectedTracks
+        guard !selected.isEmpty, let window = window, let api = controller.api else { return }
+        let panel = InfoPanel(tracks: selected)
+        panel.knownGenres = controller.genres.map { $0.name }.filter { !$0.isEmpty }
+        let ids = selected.map { $0.persistentId }
+        panel.onApply = { [weak self] fields, done in
+            Task { @MainActor in
+                do {
+                    let result = try await api.patchTracks(ids: ids, fields: fields)
+                    self?.flashStatus(result.summary)
+                    self?.controller.reload()
+                    done(result.failed == 0 ? nil : result.summary)
+                } catch {
+                    done(error.localizedDescription)
+                }
+            }
+        }
+        panel.present(in: window)
+        infoPanel = panel
+    }
+
+    @objc func playSelection(_ sender: Any?) {
+        guard let first = selectedTracks.first else { return }
+        player.play(track: first.persistentId, playlist: controller.source.playlistId)
     }
 
     // MARK: Player UI
@@ -499,6 +561,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             if event.charactersIgnoringModifiers == " ",
                !(self.window?.firstResponder is NSText) {
                 self.player.playPause()
+                return nil
+            }
+            if event.charactersIgnoringModifiers == "i", event.modifierFlags.contains(.command) {
+                self.showGetInfo(nil)
                 return nil
             }
             if event.keyCode == 36, self.window?.firstResponder === self.trackTable {   // Return

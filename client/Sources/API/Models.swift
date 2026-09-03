@@ -149,3 +149,18 @@ struct ITunesStatus: Decodable {
     let running: Bool
     let ipodMounted: Bool
 }
+
+// MARK: Writes
+
+struct PatchResult: Decodable {
+    let requested: Int
+    let updated: Int
+    let failed: Int
+
+    var summary: String {
+        if failed == 0 {
+            return "Updated \(updated) track\(updated == 1 ? "" : "s")."
+        }
+        return "Updated \(updated), failed \(failed)."
+    }
+}
