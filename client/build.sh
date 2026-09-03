@@ -46,21 +46,23 @@ case "${1:-}" in
     # bundle: the Dock pins an app by that directory, and a custom icon
     # pasted in Finder lives on the directory itself, so removing it loses
     # both. rsync replaces the contents and leaves the bundle where it is.
+    # Update the installed copy in place. Never delete and recreate the
+    # bundle: the Dock pins an app by that directory. rsync replaces the
+    # contents and leaves the bundle where it is. The icon is now the bundle's
+    # real AppIcon.icns, which the Dock always honours, so any old
+    # Finder-pasted custom icon is removed to stop the two fighting.
     --install)
         pkill -f "iTunes Remote.app/Contents/MacOS/iTunesRemote" 2>/dev/null || true
         sleep 1
         dest="/Applications/iTunes Remote.app"
         mkdir -p "$dest"
-        rsync -a --delete --exclude 'Icon*' "$APP/" "$dest/"
-        # Re-assert the custom-icon bit. The icon data lives in the resource
-        # fork of the Icon file; the bit that tells Finder to use it lives on
-        # the bundle, and it does not always survive a rewrite.
-        if [ -e "$dest/Icon"$'\r' ] && command -v SetFile >/dev/null 2>&1; then
-            SetFile -a C "$dest"
-            SetFile -a V "$dest/Icon"$'\r'
-            touch "$dest"
-            echo "kept your custom icon"
-        fi
+        rsync -a --delete "$APP/" "$dest/"
+        rm -f "$dest/Icon"$'\r' 2>/dev/null || true
+        xattr -c "$dest" 2>/dev/null || true
+        touch "$dest"
+        # Nudge Launch Services and the Dock so the tile drops its cached icon.
+        /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$dest" 2>/dev/null || true
+        killall Dock 2>/dev/null || true
         echo "installed $dest"
         ;;
 esac

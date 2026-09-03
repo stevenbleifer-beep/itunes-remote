@@ -122,6 +122,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var infoPanel: InfoPanel?          // held while its sheet is up
     private var namePrompt: NamePrompt?        // held while its sheet is up
     private var statusOverride: String?
+    private var lastRememberedTrack: String?
+    private var restoredLastTrack = false
     private var statusOverrideTimer: Timer?
 
     // MARK: Init
@@ -578,6 +580,23 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         s.drawsBackground = true
         s.backgroundColor = .white
         return s
+    }
+
+    /// Brings the window back to the track that was playing when it last
+    /// closed: selects it and scrolls it into view, without starting playback.
+    private func restoreLastTrack() {
+        guard !restoredLastTrack else { return }
+        restoredLastTrack = true
+        guard controller.source.isLibrary,
+              let id = UserDefaults.standard.string(forKey: "lastTrackId"),
+              let index = rows.firstIndex(where: { $0.persistentId == id }),
+              let row = tableRow(forTrackIndex: index) else { return }
+        trackTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        // Land it a little below the top rather than flush against the header.
+        trackTable.scrollRowToVisible(min(rows.count - 1, row + 8))
+        trackTable.scrollRowToVisible(row)
+        let name = UserDefaults.standard.string(forKey: "lastTrackName") ?? rows[index].name
+        flashStatus("Back where you left off: \(name)")
     }
 
     // MARK: Drag and drop
@@ -1510,6 +1529,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         display.airPlayActive = player.nonComputerOutputSelected
 
         if let t = state?.track, state?.state != "stopped" {
+            // Remember it, so the next launch can bring us back to it.
+            if t.persistentId != lastRememberedTrack {
+                lastRememberedTrack = t.persistentId
+                UserDefaults.standard.set(t.persistentId, forKey: "lastTrackId")
+                UserDefaults.standard.set(t.name, forKey: "lastTrackName")
+            }
             display.duration = t.duration
             display.position = player.displayPosition
             display.primary = t.name
@@ -1562,11 +1587,15 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             item.isEnabled = false
             menu.addItem(item)
         }
+        // In local mode the audio is coming from this Mac, so none of iTunes'
+        // own outputs is the live one — show them all unchecked and let the
+        // check sit on "Play on This Mac".
+        let local = player.mode == .local
         for output in player.outputs {
             let item = NSMenuItem(title: output.name, action: #selector(outputPicked(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = output.name
-            item.state = output.selected ? .on : .off
+            item.state = (!local && output.selected) ? .on : .off
             item.isEnabled = output.available
             item.attributedTitle = NSAttributedString(string: output.name, attributes: [
                 .font: Aqua.font(13),
@@ -1640,6 +1669,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     private func firstLoadDone() {
+        if snapshotPath == nil {
+            restoreLastTrack()
+            return
+        }
         guard let path = snapshotPath, let content = window?.contentView else { return }
         window?.makeKeyAndOrderFront(nil)
         trackTable.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)

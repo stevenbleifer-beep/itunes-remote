@@ -423,3 +423,10 @@ final class ArtworkView: NSView {
         }
     }
 }
+
+/// A top-left origin view. NSScrollView shows the bottom of an unflipped
+/// document first, which left a gap above the content; a flipped document
+/// view scrolls from the top the way every other list does.
+final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}

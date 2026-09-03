@@ -13,7 +13,8 @@ final class AquaScroller: NSScroller {
         let vertical = bounds.height > bounds.width
         NSGradient(starting: NSColor(white: 0.90, alpha: 1), ending: NSColor(white: 0.96, alpha: 1))!
             .draw(in: slotRect, angle: vertical ? 0 : 90)
-        NSColor(white: 0.78, alpha: 1).setFill()
+        // A faint inset on the inner edge, not a hard line.
+        NSColor(white: 0.82, alpha: 0.7).setFill()
         if vertical {
             NSRect(x: slotRect.minX, y: slotRect.minY, width: 1, height: slotRect.height).fill()
         } else {

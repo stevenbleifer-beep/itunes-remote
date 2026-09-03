@@ -21,6 +21,8 @@ enum Source: Equatable {
     /// How many of the newest items Recently Added shows.
     var recentLimit: Int { self == .recentlyAdded ? 600 : 0 }
 
+    var isLibrary: Bool { if case .library = self { return true }; return false }
+
     var displayName: String {
         switch self {
         case .library: return "Music"

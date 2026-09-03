@@ -95,7 +95,7 @@ final class DevicePageView: NSView {
             listScroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             listScroll.topAnchor.constraint(equalTo: header.bottomAnchor),
             listScroll.widthAnchor.constraint(equalToConstant: sidebar),
-            listScroll.bottomAnchor.constraint(equalTo: capacity.topAnchor, constant: -10),
+            listScroll.bottomAnchor.constraint(equalTo: bottomAnchor),
 
             // The bar belongs to the content area, not the whole window:
             // iTunes starts it at the sidebar's right edge.
@@ -939,7 +939,7 @@ final class DeviceMusicView: NSView {
     }
 
     private let scroll = NSScrollView()
-    private let doc = NSView()
+    private let doc = FlippedView()
     private let heading = NSTextField(labelWithString: "")
     private let count = NSTextField(labelWithString: "")
     private let search = NSSearchField()
@@ -957,7 +957,9 @@ final class DeviceMusicView: NSView {
         scroll.scrollerStyle = .legacy
         scroll.verticalScroller = AquaScroller()
         scroll.drawsBackground = false
+        doc.wantsLayer = false
         scroll.documentView = doc
+        scroll.contentView.postsBoundsChangedNotifications = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
         addSubview(scroll)
         NSLayoutConstraint.activate([
@@ -1048,9 +1050,10 @@ final class DeviceMusicView: NSView {
         let n = NumberFormatter.localizedString(from: NSNumber(value: sync.songsOnDevice), number: .decimal)
         count.stringValue = "\(n) songs"
         optionsBox.wholeLibrary = sync.syncsWholeLibrary
-        lists[0].rows = sync.playlists.map {
-            Row(kind: .playlist, name: $0.name, playlistId: $0.playlistId, onDevice: true)
-        }
+        // The four lists are populated by showLibrary, which has the full
+        // library plus the device marks. show() only refreshes the header and
+        // options, so a 15-second device refresh never drops the playlists
+        // that are not yet on the iPod.
     }
 
     /// The library's own lists, marked against what is on the device.
@@ -1085,24 +1088,49 @@ final class SyncOptionsBox: NSView {
     override func draw(_ dirtyRect: NSRect) {
         DeviceSummaryView.drawBox(bounds)
         let text: [NSAttributedString.Key: Any] = [
-            .font: Aqua.font(12), .foregroundColor: NSColor(white: 0.20, alpha: 1),
+            .font: Aqua.font(12), .foregroundColor: NSColor(white: 0.16, alpha: 1),
         ]
         let dim: [NSAttributedString.Key: Any] = [
-            .font: Aqua.font(12), .foregroundColor: NSColor(white: 0.48, alpha: 1),
+            .font: Aqua.font(12), .foregroundColor: NSColor(white: 0.50, alpha: 1),
         ]
-        var y = bounds.maxY - 26
-        SyncOptionsBox.radio(at: NSPoint(x: bounds.minX + 20, y: y + 5), on: wholeLibrary)
-        ("Entire music library" as NSString).draw(at: NSPoint(x: bounds.minX + 36, y: y), withAttributes: text)
-        y -= 22
-        SyncOptionsBox.radio(at: NSPoint(x: bounds.minX + 20, y: y + 5), on: !wholeLibrary)
-        ("Selected playlists, artists, albums, and genres" as NSString)
-            .draw(at: NSPoint(x: bounds.minX + 36, y: y), withAttributes: text)
-        y -= 24
-        for label in ["Include videos", "Automatically fill free space with songs"] {
-            DeviceSummaryView.drawMark(at: NSPoint(x: bounds.minX + 21, y: y + 6), value: nil)
-            (label as NSString).draw(at: NSPoint(x: bounds.minX + 36, y: y), withAttributes: dim)
-            y -= 21
+        // One rhythm for all four rows, each mark centred on its text line.
+        let rowH: CGFloat = 21
+        let markX = bounds.minX + 22
+        let textX = bounds.minX + 38
+        let top = bounds.maxY - 20
+        func line(_ i: Int) -> CGFloat { top - CGFloat(i) * rowH }
+        func drawRow(_ i: Int, _ label: String, attrs: [NSAttributedString.Key: Any],
+                     mark: (NSPoint) -> Void) {
+            let y = line(i)
+            mark(NSPoint(x: markX, y: y + 6))
+            (label as NSString).draw(at: NSPoint(x: textX, y: y), withAttributes: attrs)
         }
+        drawRow(0, "Entire music library", attrs: text) {
+            SyncOptionsBox.radio(at: $0, on: wholeLibrary)
+        }
+        drawRow(1, "Selected playlists, artists, albums, and genres", attrs: text) {
+            SyncOptionsBox.radio(at: $0, on: !wholeLibrary)
+        }
+        // iTunes draws these two as checkboxes. This remote cannot read or set
+        // them, so they are drawn disabled — present, but plainly not live.
+        drawRow(2, "Include videos", attrs: dim) {
+            SyncOptionsBox.disabledCheck(at: $0)
+        }
+        drawRow(3, "Automatically fill free space with songs", attrs: dim) {
+            SyncOptionsBox.disabledCheck(at: $0)
+        }
+    }
+
+    /// A greyed, empty checkbox: the control exists in iTunes but cannot be
+    /// touched from here.
+    static func disabledCheck(at p: NSPoint) {
+        let r = NSRect(x: p.x - 6, y: p.y - 6, width: 12, height: 12)
+        let box = NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2)
+        NSColor(white: 0.93, alpha: 1).setFill()
+        box.fill()
+        NSColor(white: 0.68, alpha: 1).setStroke()
+        box.lineWidth = 1
+        box.stroke()
     }
 
     static func radio(at p: NSPoint, on: Bool) {
