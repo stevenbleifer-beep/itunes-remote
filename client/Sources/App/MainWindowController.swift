@@ -791,6 +791,25 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// Built fresh whenever the header's menu or the View menu opens.
     func buildColumnMenu(_ menu: NSMenu) {
         menu.removeAllItems()
+        // A playlist's own order carries meaning that no column reproduces, so
+        // there has to be a way back to it after sorting by one.
+        let sorted = !trackTable.sortDescriptors.isEmpty
+        let backTo: String
+        switch controller.source {
+        case .playlist: backTo = "Restore Playlist Order"
+        case .recentlyAdded: backTo = "Restore Newest First"
+        case .library: backTo = "Restore Default Order"
+        }
+        let reset = NSMenuItem(title: backTo, action: sorted ? #selector(resetSort(_:)) : nil, keyEquivalent: "")
+        reset.target = self
+        reset.isEnabled = sorted
+        reset.attributedTitle = NSAttributedString(string: backTo, attributes: [
+            .font: Aqua.font(13),
+            .foregroundColor: sorted ? NSColor.controlTextColor : NSColor.disabledControlTextColor,
+        ])
+        menu.addItem(reset)
+        menu.addItem(.separator())
+
         let hidden = hiddenColumns()
         for (id, title) in MainWindowController.optionalColumns {
             let item = NSMenuItem(title: title, action: #selector(toggleColumn(_:)), keyEquivalent: "")
@@ -800,6 +819,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             item.attributedTitle = NSAttributedString(string: title, attributes: [.font: Aqua.font(13)])
             menu.addItem(item)
         }
+    }
+
+    /// Drops the column sort and puts the list back the way the daemon
+    /// delivers it — playlist order for a playlist, which is the order that
+    /// cannot be reconstructed from any column.
+    @objc func resetSort(_ sender: Any?) {
+        trackTable.sortDescriptors = []
+        controller.setSort(key: nil, ascending: true)
+        // setSort only re-sorts what is in memory, and the original order is
+        // gone once a column has reordered it, so ask for the list again.
+        controller.reload()
+        trackTable.headerView?.needsDisplay = true
+        flashStatus("Sort cleared.")
     }
 
     private func configureTrackTable() {

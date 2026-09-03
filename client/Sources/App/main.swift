@@ -118,6 +118,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         viewMenu.addItem(columnsItem)
         columnsSubmenu = columnsSub
         viewMenu.addItem(.separator())
+        // A way back to the order the source is stored in, since a playlist's
+        // own order is not reproducible from any column.
+        let resetSortItem = viewMenu.addItem(withTitle: "Clear Column Sort",
+                                             action: #selector(MainWindowController.resetSort(_:)),
+                                             keyEquivalent: "0")
+        resetSortItem.keyEquivalentModifierMask = [NSEvent.ModifierFlags.command, NSEvent.ModifierFlags.option]
+        viewMenu.addItem(.separator())
         for (i, title) in ["as List", "as Album List", "as Grid", "as Cover Flow"].enumerated() {
             let item = viewMenu.addItem(withTitle: title,
                                         action: #selector(MainWindowController.pickViewMode(_:)),
