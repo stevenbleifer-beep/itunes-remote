@@ -77,22 +77,49 @@ final class AquaDisplayPanel: NSView {
         didSet { if !isScrubbing && abs(position - oldValue) > 0.2 { needsDisplay = true } }
     }
     var onSeek: (Double) -> Void = { _ in }
+    /// The two circled glyphs are real controls, not decoration: the left one
+    /// plays and pauses, the right one opens the output menu.
+    var onPlayPause: () -> Void = {}
+    var onAirPlay: (NSView) -> Void = { _ in }
 
     private(set) var isScrubbing = false
     private var scrubPosition: Double = 0
 
-    private let sideInset: CGFloat = 40   // room for the elapsed / remaining labels
+    // Room either side of the groove for the corner glyph and the elapsed /
+    // remaining label. 40 clipped "-2:40" to "-2:".
+    private let sideInset: CGFloat = 56
+    private let glyphRadius: CGFloat = 6
 
     private var grooveRect: NSRect {
-        NSRect(x: sideInset, y: 7, width: bounds.width - 2 * sideInset, height: 4)
+        NSRect(x: sideInset, y: 6, width: bounds.width - 2 * sideInset, height: 5)
+    }
+
+    private var leftGlyphRect: NSRect {
+        NSRect(x: 12 - glyphRadius, y: bounds.midY - glyphRadius, width: glyphRadius * 2, height: glyphRadius * 2)
+    }
+
+    private var rightGlyphRect: NSRect {
+        NSRect(x: bounds.width - 12 - glyphRadius, y: bounds.midY - glyphRadius,
+               width: glyphRadius * 2, height: glyphRadius * 2)
     }
 
     // MARK: Scrubbing
 
     override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        // The glyphs are small, so give them a slightly larger target than
+        // they are drawn, and test them before the groove.
+        if leftGlyphRect.insetBy(dx: -4, dy: -4).contains(p) {
+            onPlayPause()
+            return
+        }
+        if rightGlyphRect.insetBy(dx: -4, dy: -4).contains(p) {
+            onAirPlay(self)
+            return
+        }
         guard let total = duration, total > 0 else { return }
         let hit = grooveRect.insetBy(dx: -6, dy: -7)
-        guard hit.contains(convert(event.locationInWindow, from: nil)) else { return }
+        guard hit.contains(p) else { return }
         isScrubbing = true
         update(with: event, total: total)
         while true {
@@ -155,22 +182,22 @@ final class AquaDisplayPanel: NSView {
         drawCornerGlyphs()
     }
 
-    /// The small circled glyphs in the display's corners: a play or pause
-    /// mark at the left, and the repeat / AirPlay indicator at the right.
+    /// The small circled glyphs in the display's corners: play or pause at the
+    /// left, the output picker at the right. Both are clickable.
     var isPlaying = false { didSet { needsDisplay = true } }
     var airPlayActive = false { didSet { needsDisplay = true } }
 
     private func drawCornerGlyphs() {
-        let color = NSColor(white: 0.45, alpha: 1)
+        let color = airPlayActive ? Aqua.accent : NSColor(white: 0.45, alpha: 1)
         let cy = bounds.midY
-        func circle(_ cx: CGFloat) {
+        func circle(_ cx: CGFloat, _ fill: NSColor) {
             let p = NSBezierPath(ovalIn: NSRect(x: cx - 6, y: cy - 6, width: 12, height: 12))
-            color.setFill()
+            fill.setFill()
             p.fill()
         }
         // Left: play (triangle) or pause (bars), knocked out of a dark disc.
         let lx: CGFloat = 12
-        circle(lx)
+        circle(lx, NSColor(white: 0.45, alpha: 1))
         NSColor(srgbRed: 0.93, green: 0.95, blue: 0.87, alpha: 1).setFill()
         if isPlaying {
             NSRect(x: lx - 2.6, y: cy - 2.6, width: 1.8, height: 5.2).fill()
@@ -180,27 +207,21 @@ final class AquaDisplayPanel: NSView {
             t.move(to: NSPoint(x: lx - 2, y: cy - 3)); t.line(to: NSPoint(x: lx + 3, y: cy)); t.line(to: NSPoint(x: lx - 2, y: cy + 3))
             t.close(); t.fill()
         }
-        // Right: a small AirPlay screen when streaming, otherwise a repeat loop.
+        // Right: the AirPlay mark, lit when something other than this Mac is
+        // playing. Clicking it opens the same output menu as the toolbar.
         let rx = bounds.width - 12
-        circle(rx)
-        NSColor(srgbRed: 0.93, green: 0.95, blue: 0.87, alpha: 1).setStroke()
-        NSColor(srgbRed: 0.93, green: 0.95, blue: 0.87, alpha: 1).setFill()
-        if airPlayActive {
-            let screen = NSBezierPath(roundedRect: NSRect(x: rx - 3.5, y: cy - 1, width: 7, height: 4.5), xRadius: 0.8, yRadius: 0.8)
-            screen.lineWidth = 1
-            screen.stroke()
-            let tri = NSBezierPath()
-            tri.move(to: NSPoint(x: rx - 2.5, y: cy - 3.5)); tri.line(to: NSPoint(x: rx + 2.5, y: cy - 3.5)); tri.line(to: NSPoint(x: rx, y: cy - 1))
-            tri.close(); tri.fill()
-        } else {
-            let loop = NSBezierPath()
-            loop.lineWidth = 1.2
-            loop.appendArc(withCenter: NSPoint(x: rx, y: cy), radius: 3.2, startAngle: 30, endAngle: 330)
-            loop.stroke()
-            let head = NSBezierPath()
-            head.move(to: NSPoint(x: rx + 1.2, y: cy - 4.2)); head.line(to: NSPoint(x: rx + 4, y: cy - 2.4)); head.line(to: NSPoint(x: rx + 1.4, y: cy - 0.6))
-            head.close(); head.fill()
-        }
+        circle(rx, color)
+        let ink = NSColor(srgbRed: 0.93, green: 0.95, blue: 0.87, alpha: 1)
+        ink.setStroke()
+        ink.setFill()
+        let screen = NSBezierPath(roundedRect: NSRect(x: rx - 3.6, y: cy - 1.2, width: 7.2, height: 4.8),
+                                  xRadius: 0.8, yRadius: 0.8)
+        screen.lineWidth = 1
+        screen.stroke()
+        let tri = NSBezierPath()
+        tri.move(to: NSPoint(x: rx - 2.8, y: cy - 3.8)); tri.line(to: NSPoint(x: rx + 2.8, y: cy - 3.8))
+        tri.line(to: NSPoint(x: rx, y: cy - 1.2))
+        tri.close(); tri.fill()
     }
 
     private func centred(_ text: String, _ rect: NSRect, size: CGFloat, bold: Bool = false, alpha: CGFloat = 1) {
@@ -228,8 +249,13 @@ final class AquaDisplayPanel: NSView {
         let pos = min(total, max(0, shownPosition))
         let w = bounds.width - 52
 
-        centred(primary, NSRect(x: 26, y: bounds.maxY - 20, width: w, height: 15), size: 12, bold: true)
-        centred(secondary, NSRect(x: 26, y: bounds.maxY - 34, width: w, height: 14), size: 11)
+        // Lay the two lines out from the top and the groove from the bottom,
+        // so the subtitle no longer sits on the scrubber the way it did at
+        // this panel's real height.
+        let titleH: CGFloat = 14, subtitleH: CGFloat = 13
+        let titleY = bounds.maxY - 3 - titleH
+        centred(primary, NSRect(x: 26, y: titleY, width: w, height: titleH), size: 12, bold: true)
+        centred(secondary, NSRect(x: 26, y: titleY - subtitleH, width: w, height: subtitleH), size: 11)
 
         // Times either side of the groove.
         let g = grooveRect
@@ -238,10 +264,11 @@ final class AquaDisplayPanel: NSView {
         let timeAttrs: [NSAttributedString.Key: Any] = [
             .font: Aqua.font(9), .foregroundColor: NSColor(white: 0.35, alpha: 1), .paragraphStyle: timeStyle,
         ]
+        let timeY = g.midY - 6
         (Aqua.clock(pos) as NSString).draw(
-            in: NSRect(x: 2, y: g.minY - 4, width: sideInset - 6, height: 12), withAttributes: timeAttrs)
+            in: NSRect(x: 21, y: timeY, width: sideInset - 25, height: 12), withAttributes: timeAttrs)
         (("-" + Aqua.clock(max(0, total - pos))) as NSString).draw(
-            in: NSRect(x: g.maxX + 4, y: g.minY - 4, width: sideInset - 6, height: 12), withAttributes: timeAttrs)
+            in: NSRect(x: g.maxX + 4, y: timeY, width: sideInset - 25, height: 12), withAttributes: timeAttrs)
 
         // Groove, recessed.
         let groove = NSBezierPath(roundedRect: g, xRadius: 2, yRadius: 2)

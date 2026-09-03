@@ -16,6 +16,12 @@ DEFAULTS = {
     "log_dir": "~/Library/Logs/iTunesRemote",
     "poll_interval": 5,
     "applescript_timeout": 120,
+    "artwork_cache_dir": "~/Library/Caches/iTunesRemote/artwork",
+    # Fill the artwork cache in the background while nothing else is asking.
+    # Off means Cover Flow still works; it just exports covers on demand.
+    "artwork_warm": True,
+    # Seconds of quiet before the warmer will take the Apple Events lock.
+    "artwork_warm_idle": 20,
 }
 
 
@@ -30,6 +36,9 @@ class Config(object):
         self.log_dir = os.path.expanduser(merged["log_dir"])
         self.poll_interval = float(merged["poll_interval"])
         self.applescript_timeout = float(merged["applescript_timeout"])
+        self.artwork_cache_dir = os.path.expanduser(merged["artwork_cache_dir"])
+        self.artwork_warm = bool(merged["artwork_warm"])
+        self.artwork_warm_idle = float(merged["artwork_warm_idle"])
         if not self.token:
             raise ValueError("config has no token; run with --init-config first")
 

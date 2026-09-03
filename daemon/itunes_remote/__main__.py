@@ -81,6 +81,7 @@ def main(argv=None):
     if not itunes.itunes_running():
         log.warning("iTunes is not running; player and write requests will return 503 until it is")
     api = Api(store, cfg, itunes, WriteLog(cfg.log_dir))
+    api.start_artwork_warmer()
     server = make_server(api)
     log.info("listening on http://%s:%d/", cfg.host, cfg.port)
     try:

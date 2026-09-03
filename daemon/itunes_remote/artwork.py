@@ -6,7 +6,10 @@ else, or a file with no embedded picture, returns None so the caller can fall
 back to asking iTunes for its artwork.
 """
 
+import errno
+import os
 import struct
+import tempfile
 
 
 def sniff(data):
@@ -205,3 +208,97 @@ def _parse_apic(data, v22):
     if not mime:
         return None
     return ptype, mime, blob
+
+
+# -- on-disk cache ------------------------------------------------------
+
+EXTENSIONS = {
+    "image/jpeg": ".jpg", "image/png": ".png",
+    "image/gif": ".gif", "image/webp": ".webp",
+}
+MIMES = {v: k for k, v in EXTENSIONS.items()}
+# A track iTunes has no art for gets an empty marker, so the next request does
+# not pay for another AppleScript export to learn the same thing.
+MISS = ".none"
+
+
+class DiskCache(object):
+    """Covers exported from iTunes, kept on disk.
+
+    Reading embedded art out of a file is cheap. Asking iTunes for the rest
+    costs about 0.3 s each and holds the one Apple Events lock the whole
+    daemon shares, so a fast scrub through Cover Flow used to queue behind it.
+    Writing those exports to disk makes it a once-ever cost per cover.
+
+    Freshness is the track's Date Modified: a cover written before the track
+    was last changed is re-exported, so re-tagging a file in iTunes shows up.
+    """
+
+    def __init__(self, root):
+        self.root = os.path.expanduser(root)
+
+    def _dir(self, pid):
+        # Two hex characters of fan-out: 256 directories, ~60 files each for
+        # this library, which keeps directory listings small.
+        return os.path.join(self.root, pid[:2])
+
+    def get(self, pid, not_before=0.0):
+        """Returns (mime, bytes), MISS, or None if there is nothing usable."""
+        d = self._dir(pid)
+        for ext, mime in list(MIMES.items()) + [(MISS, None)]:
+            path = os.path.join(d, pid + ext)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            if st.st_mtime < not_before:
+                return None                      # stale; the caller re-exports
+            if mime is None:
+                return MISS
+            try:
+                with open(path, "rb") as f:
+                    return (mime, f.read())
+            except OSError:
+                return None
+        return None
+
+    def put(self, pid, result):
+        """Stores a cover, or a miss marker when `result` is None."""
+        ext = MISS if result is None else EXTENSIONS.get(result[0])
+        if ext is None:
+            return
+        d = self._dir(pid)
+        try:
+            os.makedirs(d, exist_ok=True)
+            # Replace whatever else was there for this track: the format can
+            # change when the art does.
+            for other in list(EXTENSIONS.values()) + [MISS]:
+                if other != ext:
+                    try:
+                        os.unlink(os.path.join(d, pid + other))
+                    except OSError as e:
+                        if e.errno != errno.ENOENT:
+                            raise
+            # Write through a temporary file so a reader never sees a partial
+            # image, then rename, which is atomic within one filesystem.
+            fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    if result is not None:
+                        f.write(result[1])
+                os.replace(tmp, os.path.join(d, pid + ext))
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        except OSError as e:
+            # A cache is an optimisation; never fail a request over it.
+            return
+
+    def count(self):
+        n = 0
+        for _, _, files in os.walk(self.root):
+            n += sum(1 for f in files if not f.startswith(".tmp-"))
+        return n

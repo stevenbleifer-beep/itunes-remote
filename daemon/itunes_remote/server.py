@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -19,6 +20,16 @@ from .applescript import AppleScriptError, AppleScriptTimeout, ITunesNotRunning
 from .library import Track
 
 log = logging.getLogger("itunes_remote.server")
+
+
+def _epoch(iso):
+    """The ISO timestamp Track keeps, as a POSIX time. 0 when absent."""
+    if not iso:
+        return 0.0
+    try:
+        return datetime.fromisoformat(iso).timestamp()
+    except ValueError:
+        return 0.0
 
 
 class ApiError(Exception):
@@ -89,6 +100,12 @@ class Api(object):
         self.write_log = write_log
         self.artwork_cache = OrderedDict()   # persistent id -> (mime, bytes) or None
         self.artwork_lock = threading.Lock()
+        self.artwork_disk = artwork_mod.DiskCache(getattr(config, "artwork_cache_dir", ""))
+        # When the last request was served, so the warmer can stay out of the
+        # way while someone is actually using the app.
+        self.last_request = 0.0
+        self.warmer = None
+        self.device_images = {}
         # None = not tried, True = Accessibility works, False = give up.
         # Without the permission the System Events call hangs rather than
         # failing, so one bad result disables it: a 20 s block on every poll
@@ -123,6 +140,8 @@ class Api(object):
             ("GET", r"/api/sources", self.get_sources),
             ("GET", r"/api/devices", self.get_devices),
             ("GET", r"/api/devices/(?P<name>[^/]+)", self.get_device),
+            ("GET", r"/api/devices/(?P<name>[^/]+)/image", self.get_device_image),
+            ("GET", r"/api/devices/(?P<name>[^/]+)/tracks", self.get_device_tracks),
             ("POST", r"/api/devices/(?P<name>[^/]+)/sync", self.post_source_sync),
             ("POST", r"/api/devices/(?P<name>[^/]+)/eject", self.post_source_eject),
             ("POST", r"/api/sources/(?P<name>[^/]+)/sync", self.post_source_sync),
@@ -139,6 +158,9 @@ class Api(object):
         self.compiled = [(m, re.compile("^" + p + "$"), h) for m, p, h in self.routes]
 
     def dispatch(self, method, path, query, body):
+        # The warmer stays quiet for a while after any request, so it never
+        # competes with someone actually using the app.
+        self.last_request = time.time()
         matched_path = False
         for m, rx, handler in self.compiled:
             match = rx.match(path)
@@ -297,7 +319,7 @@ class Api(object):
 
     ARTWORK_CACHE_SIZE = 300
 
-    def _artwork(self, pid):
+    def _artwork(self, pid, allow_itunes=True):
         with self.artwork_lock:
             if pid in self.artwork_cache:
                 self.artwork_cache.move_to_end(pid)
@@ -305,10 +327,19 @@ class Api(object):
         t = self.store.lib.tracks.get(pid)
         if t is None:
             raise ApiError(404, "no such track")
+        # A cover cached before the track was last modified is stale.
+        cached = self.artwork_disk.get(pid, not_before=_epoch(t.date_modified))
+        if cached is not None:
+            result = None if cached is artwork_mod.MISS else cached
+            self._remember(pid, result)
+            return result
         result = None
         if t.location:
             result = artwork_mod.read_embedded(t.location)
-        if result is None and self.itunes is not None and self.itunes.itunes_running():
+        embedded = result is not None
+        asked_itunes = False
+        if result is None and allow_itunes and self.itunes is not None and self.itunes.itunes_running():
+            asked_itunes = True
             # Ask iTunes: covers WAV/AIFF and anything with art only in the library.
             fd, tmp = tempfile.mkstemp(prefix="itr-art-", suffix=".bin")
             os.close(fd)
@@ -327,11 +358,94 @@ class Api(object):
                     os.unlink(tmp)
                 except OSError:
                     pass
+        # Only exported covers are worth keeping on disk; embedded art is a
+        # cheap read from the file itself. A miss is worth recording too, so
+        # the next request does not pay for the export again — but only once
+        # iTunes has actually answered. Recording a miss while iTunes was down
+        # would stick until the track changed.
+        if not embedded and asked_itunes:
+            self.artwork_disk.put(pid, result)
+        self._remember(pid, result)
+        return result
+
+    # -- background warmer ----------------------------------------------
+
+    def start_artwork_warmer(self):
+        """Exports the covers Cover Flow and Grid will ask for, one at a time,
+        only while nothing else is using the daemon.
+
+        Cover Flow's problem was never one cover; it was thousands queued
+        behind the single Apple Events lock. With the covers already on disk
+        the lock is never taken during a scrub. This fills that disk cache
+        during the idle time a dedicated iTunes machine has plenty of."""
+        if not getattr(self.config, "artwork_warm", False):
+            return
+        self.warmer = threading.Thread(target=self._warm_loop, name="artwork-warmer", daemon=True)
+        self.warmer.start()
+
+    def _warm_loop(self):
+        idle = max(5.0, float(getattr(self.config, "artwork_warm_idle", 20)))
+        # Let the library settle and the first client finish loading.
+        time.sleep(idle)
+        done = 0
+        while True:
+            try:
+                queue = self._warm_queue()
+            except Exception as e:
+                log.warning("artwork warmer could not build its queue: %s", e)
+                return
+            if not queue:
+                log.info("artwork warmer: nothing left to fetch (%d covers on disk)",
+                         self.artwork_disk.count())
+                return
+            log.info("artwork warmer: %d covers to fetch", len(queue))
+            for pid in queue:
+                # Anyone using the app wins; wait for quiet before each cover.
+                while time.time() - self.last_request < idle:
+                    time.sleep(2.0)
+                if self.itunes is None or not self.itunes.itunes_running():
+                    time.sleep(idle)
+                    continue
+                try:
+                    self._artwork(pid)
+                except ApiError:
+                    pass
+                except Exception as e:
+                    log.info("artwork warmer stopped on %s: %s", pid, e)
+                    return
+                done += 1
+                if done % 200 == 0:
+                    log.info("artwork warmer: %d fetched", done)
+                # Never hold the lock back to back.
+                time.sleep(0.4)
+            # A pass can leave stragglers if the library reloaded underneath
+            # it; go round again, and the empty queue above ends the thread.
+
+    def _warm_queue(self):
+        """One cover track per album, skipping anything already on disk or
+        readable straight out of the file."""
+        lib = self.store.lib
+        out = []
+        for album in lib.albums():
+            pid = album.get("coverTrackId")
+            if not pid or album.get("hasArtwork"):
+                # hasArtwork means iTunes says the file carries the picture,
+                # which read_embedded gets without touching iTunes.
+                continue
+            t = lib.tracks.get(pid)
+            if t is None:
+                continue
+            if self.artwork_disk.get(pid, not_before=_epoch(t.date_modified)) is not None:
+                continue
+            out.append(pid)
+        return out
+
+    def _remember(self, pid, result):
         with self.artwork_lock:
             self.artwork_cache[pid] = result
+            self.artwork_cache.move_to_end(pid)
             while len(self.artwork_cache) > self.ARTWORK_CACHE_SIZE:
                 self.artwork_cache.popitem(last=False)
-        return result
 
     def get_artwork(self, params, query, body):
         pid = params["pid"].upper()
@@ -631,6 +745,127 @@ class Api(object):
     CATEGORY_ORDER = ("Music", "Movies", "TV Shows", "Podcasts", "Books",
                       "Audiobooks", "Purchased Music", "Tones")
 
+    # iTunes records every iPod it has seen here, keyed by the same id the USB
+    # bus reports. It is the only place the device's printed serial number and
+    # its firmware version can be read; AppleScript exposes neither.
+    IPOD_PREFS = "~/Library/Preferences/com.apple.iPod.plist"
+
+    def _ipod_prefs(self, usb_id):
+        if not usb_id:
+            return {}
+        try:
+            with open(os.path.expanduser(self.IPOD_PREFS), "rb") as f:
+                prefs = plistlib.load(f)
+        except (OSError, ValueError) as e:
+            log.info("could not read %s: %s", self.IPOD_PREFS, e)
+            return {}
+        rec = (prefs.get("Devices") or {}).get(usb_id)
+        if not isinstance(rec, dict):
+            return {}
+        connected = rec.get("Connected")
+        return {
+            "deviceSerialNumber": rec.get("Serial Number"),
+            "softwareVersion": rec.get("Firmware Version String"),
+            "familyId": rec.get("Family ID"),
+            "deviceClass": rec.get("Device Class"),
+            "productType": rec.get("Product Type"),
+            "useCount": rec.get("Use Count"),
+            "lastConnected": connected.isoformat() if hasattr(connected, "isoformat") else None,
+        }
+
+    # iTunes says "Macintosh" or "Windows", not the filesystem's own name.
+    FORMAT_NAMES = (
+        ("hfs", "Macintosh"), ("apfs", "Macintosh"),
+        ("fat", "Windows"), ("ntfs", "Windows"), ("exfat", "Windows"),
+    )
+
+    @staticmethod
+    def _format_name(filesystem):
+        low = (filesystem or "").lower()
+        for needle, name in Api.FORMAT_NAMES:
+            if needle in low:
+                return name
+        return filesystem or None
+
+    # iTunes.app carries one image per device family, named by the Family ID
+    # that its own preferences record. Serving it from here beats bundling
+    # 15 MB of artwork in the client, and it stays right for any device.
+    ITUNES_RESOURCES = "/Applications/iTunes.app/Contents/Resources"
+    IMAGE_COLOURS = ("Black", "Silver", "SpaceGray", "DarkGray", "Blue", "Green", "Pink", "Red")
+
+    def _device_image_path(self, family_id):
+        if not family_id:
+            return None
+        for colour in self.IMAGE_COLOURS:
+            path = os.path.join(self.ITUNES_RESOURCES, "iPod%s-%s.icns" % (family_id, colour))
+            if os.path.exists(path):
+                return path
+        path = os.path.join(self.ITUNES_RESOURCES, "iPod%s.icns" % family_id)
+        return path if os.path.exists(path) else None
+
+    def get_device_image(self, params, query, body):
+        """The device's own picture, as iTunes draws it, converted to PNG."""
+        name = unquote(params["name"])
+        detail = self.get_device({"name": params["name"]}, None, None)
+        path = self._device_image_path(detail.get("familyId"))
+        if path is None:
+            raise ApiError(404, "no image for %r" % name)
+        size = self._int(query, "size", 256, 32, 512)
+        key = (path, size)
+        with self.artwork_lock:
+            cached = self.device_images.get(key)
+        if cached is None:
+            fd, tmp = tempfile.mkstemp(prefix="itr-dev-", suffix=".png")
+            os.close(fd)
+            try:
+                r = subprocess.run(["sips", "-s", "format", "png", "-Z", str(size), path, "--out", tmp],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+                if r.returncode != 0:
+                    raise ApiError(502, "could not convert %s" % os.path.basename(path))
+                with open(tmp, "rb") as f:
+                    cached = f.read()
+            except subprocess.SubprocessError as e:
+                raise ApiError(502, "could not convert the device image: %s" % e)
+            finally:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+            with self.artwork_lock:
+                self.device_images[key] = cached
+        etag = '"%s"' % hashlib.sha1(cached).hexdigest()[:16]
+        return RawResponse("image/png", cached, {"ETag": etag, "Cache-Control": "max-age=86400"})
+
+    # The device page lists what is on the iPod. A whole 23,000-track device
+    # list is neither useful nor quick to draw, so it is paged from the top.
+    DEVICE_TRACK_LIMIT = 2000
+
+    def get_device_tracks(self, params, query, body):
+        """The tracks on a device, from one of its playlists."""
+        name = unquote(params["name"])
+        playlist = self._one(query, "playlist") or "Music"
+        limit = self._int(query, "limit", 500, 1, self.DEVICE_TRACK_LIMIT)
+        out = self._script("device_tracks", name, playlist, limit, timeout=90)
+        if not out:
+            return {"device": name, "playlist": playlist, "tracks": []}
+        columns = out.split("\x1e")
+        if len(columns) < 4:
+            raise ApiError(502, "unexpected reply listing %r" % playlist)
+        names, artists, albums, times = [c.split("\x1f") for c in columns[:4]]
+        rows = []
+        for i, n in enumerate(names):
+            def at(seq):
+                return seq[i] if i < len(seq) else ""
+            rows.append({
+                "name": n,
+                "artist": at(artists),
+                "album": at(albums),
+                # AppleScript's `duration` is seconds; the client works in ms.
+                "totalTime": int(self._num(at(times), 0) * 1000),
+            })
+        return {"device": name, "playlist": playlist, "tracks": rows,
+                "truncated": len(rows) >= limit}
+
     def get_device(self, params, query, body):
         """One device in full: identity, what is on it by category, and its
         playlists. Everything here is read from iTunes or the USB tree; nothing
@@ -641,6 +876,12 @@ class Api(object):
         if base is None:
             raise ApiError(404, "no device named %r is connected" % name)
         out = dict(base)
+        out.update(self._ipod_prefs(base.get("serialNumber")))
+        out["formatName"] = self._format_name(base.get("fileSystem"))
+        # "Enable disk use" is not in any preference file, but it is exactly
+        # what a mounted volume means, so report that rather than guess.
+        out["diskUse"] = bool(base.get("mountPoint"))
+        out["hasImage"] = self._device_image_path(out.get("familyId")) is not None
         out["categories"] = []
         out["playlists"] = []
         out["trackCount"] = None

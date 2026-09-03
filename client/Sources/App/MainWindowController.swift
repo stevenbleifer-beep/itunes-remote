@@ -180,6 +180,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         display.autoresizingMask = [.minXMargin, .maxXMargin]
         display.primary = "iTunes Remote"
         display.onSeek = { [weak self] seconds in self?.player.seek(to: seconds) }
+        display.onPlayPause = { [weak self] in self?.player.playPause() }
+        display.onAirPlay = { [weak self] sender in self?.showOutputMenu(sender) }
         toolbar.addSubview(display)
 
         // Right side of the toolbar, laid out from the window edge inwards.
