@@ -11,6 +11,15 @@ struct LibraryInfo: Decodable {
     let itunesVersion: String?
     let reloading: Bool
     let lastError: String?
+    /// Edits made through the daemon that the XML has not caught up with.
+    var journalLength: Int? = nil
+    var playlistJournalLength: Int? = nil
+
+    /// Changes when iTunes has rewritten its library, so a cached read is stale.
+    var version: String { "\(xmlWrittenAt)|\(loadedAt)|\(journalLength ?? 0)|\(playlistJournalLength ?? 0)" }
+    /// Changes only when the library itself did — not for the app's own edits,
+    /// which are already mirrored on screen.
+    var contentVersion: String { "\(xmlWrittenAt)|\(loadedAt)" }
 }
 
 struct Track {
@@ -30,6 +39,11 @@ struct Track {
     var rating: Int = 0      // 0-100, five stars of 20
     var playCount: Int = 0
     var dateAdded: String = ""   // ISO 8601, so it sorts as text
+    /// iTunes' sort forms: the Sort field if set, else the text with a leading
+    /// article dropped, folded. So "The Beatles" sorts as "beatles".
+    var sortArtist: String = ""
+    var sortAlbum: String = ""
+    var sortName: String = ""
 
     /// The artist shown in the browser and used for grouping.
     var displayArtist: String { albumArtist.isEmpty ? artist : albumArtist }
@@ -55,7 +69,11 @@ struct FacetEntry: Decodable {
 
 struct Playlist: Decodable {
     let persistentId: String
-    let playlistId: Int
+    /// iTunes' integer id, absent until the XML has caught up with a playlist
+    /// the app just created. It was `Int`, so creating a playlist decoded as
+    /// an error ("the data couldn't be read") even though iTunes had made it,
+    /// and every playlist list after that failed until iTunes rewrote the XML.
+    let playlistId: Int?
     let name: String
     let smart: Bool
     let count: Int
@@ -347,6 +365,8 @@ struct SyncPlan: Decodable {
 struct SyncPlanStatus: Decodable {
     let playlistExists: Bool
     let playlistTrackCount: Int
+    /// Distinct library tracks the plan covers — iTunes' "N songs" heading.
+    var trackCount: Int? = nil
     /// nil means it could not be checked, not that the answer is no.
     let playlistOnDevice: Bool?
     let isConnected: Bool

@@ -111,4 +111,11 @@ final class MiniPlayerWindowController: NSWindowController, NSWindowDelegate {
     @objc func toggleMiniPlayer(_ sender: Any?) {
         close()
     }
+
+    /// The Window menu item shows a tick while the mini player is up, so it
+    /// reads as the switch it is: choose it again to get the window back.
+    @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleMiniPlayer(_:)) { item.state = .on }
+        return true
+    }
 }

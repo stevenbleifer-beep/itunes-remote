@@ -23,6 +23,55 @@ final class APIClient {
         session = URLSession(configuration: cfg)
     }
 
+    // MARK: Read cache
+
+    /// Library reads are kept until the library changes. Going back to a
+    /// source used to refetch and re-decode the whole 94,000-track library —
+    /// 21 MB — every time; now it is instant. Set from the daemon's library
+    /// version; any change empties the cache. The app's own writes empty it
+    /// too, since the daemon answers them from its patched copy at once.
+    var libraryVersion = "" {
+        didSet { if libraryVersion != oldValue { dropCache() } }
+    }
+    private var cache: [String: Any] = [:]
+    private var cacheOrder: [String] = []
+    private let cacheLock = NSLock()
+    private static let cacheLimit = 24
+
+    func dropCache() {
+        cacheLock.lock()
+        cache.removeAll()
+        cacheOrder.removeAll()
+        cacheLock.unlock()
+    }
+
+    private func cached<T>(_ key: String, _ load: () async throws -> T) async throws -> T {
+        if let hit = cacheGet(key) as? T { return hit }
+        let value = try await load()
+        cachePut(key, value)
+        return value
+    }
+
+    private func cacheGet(_ key: String) -> Any? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return cache[key]
+    }
+
+    private func cachePut(_ key: String, _ value: Any) {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if cache[key] == nil { cacheOrder.append(key) }
+        cache[key] = value
+        while cacheOrder.count > APIClient.cacheLimit {
+            cache[cacheOrder.removeFirst()] = nil
+        }
+    }
+
+    private static func cacheKey(_ path: String, _ query: [URLQueryItem]) -> String {
+        path + "?" + query.map { "\($0.name)=\($0.value ?? "")" }.joined(separator: "&")
+    }
+
     // MARK: Transport
 
     /// URL errors worth trying again. Reaching the MacBook Pro by its .local
@@ -72,6 +121,10 @@ final class APIClient {
         if status != 200 {
             let msg = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
             throw APIError(status: status, message: msg ?? "request failed")
+        }
+        // A write changed what the library reads would say.
+        if method != "GET", path.hasPrefix("/api/tracks") || path.hasPrefix("/api/playlists") {
+            dropCache()
         }
         return data
     }
@@ -150,8 +203,11 @@ final class APIClient {
     /// One row per album for the current filters, for Cover Flow and Grid.
     func albumList(filter: TrackFilter) async throws -> [AlbumEntry] {
         struct Wrap: Decodable { let albums: [AlbumEntry] }
-        let w: Wrap = try await get("/api/albumlist", query: filter.queryItems)
-        return w.albums
+        let q = filter.queryItems
+        return try await cached(APIClient.cacheKey("/api/albumlist", q)) {
+            let w: Wrap = try await get("/api/albumlist", query: q)
+            return w.albums
+        }
     }
 
     func setShuffle(_ enabled: Bool) async throws {
@@ -331,10 +387,13 @@ final class APIClient {
     /// `field` is the singular name: genre, artist, album, composer, grouping.
     func facet(_ field: String, filter: TrackFilter) async throws -> [FacetEntry] {
         let plural = field + "s"
-        let data = try await request("GET", "/api/\(plural)", query: filter.queryItems)
-        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let arr = obj?[plural] as? [[String: Any]] else { return [] }
-        return arr.map { FacetEntry(name: $0["name"] as? String ?? "", count: $0["count"] as? Int ?? 0) }
+        let q = filter.queryItems
+        return try await cached(APIClient.cacheKey("/api/\(plural)", q)) {
+            let data = try await request("GET", "/api/\(plural)", query: q)
+            let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard let arr = obj?[plural] as? [[String: Any]] else { return [] }
+            return arr.map { FacetEntry(name: $0["name"] as? String ?? "", count: $0["count"] as? Int ?? 0) }
+        }
     }
 
     /// Fetches every matching track in the compact row format.
@@ -342,8 +401,10 @@ final class APIClient {
         var q = filter.queryItems
         q.append(URLQueryItem(name: "compact", value: "1"))
         q.append(URLQueryItem(name: "limit", value: String(limit)))
-        let data = try await request("GET", "/api/tracks", query: q)
-        return try Self.decodeCompact(data)
+        return try await cached(APIClient.cacheKey("/api/tracks", q)) {
+            let data = try await request("GET", "/api/tracks", query: q)
+            return try Self.decodeCompact(data)
+        }
     }
 
     static func decodeCompact(_ data: Data) throws -> TrackPage {
@@ -375,7 +436,10 @@ final class APIClient {
                 enabled: idx["enabled"].flatMap { row[$0] as? Bool } ?? true,
                 rating: idx["rating"].flatMap { row[$0] as? Int } ?? 0,
                 playCount: idx["playCount"].flatMap { row[$0] as? Int } ?? 0,
-                dateAdded: idx["dateAdded"].flatMap { row[$0] as? String } ?? ""
+                dateAdded: idx["dateAdded"].flatMap { row[$0] as? String } ?? "",
+                sortArtist: idx["sortArtist"].flatMap { row[$0] as? String } ?? "",
+                sortAlbum: idx["sortAlbum"].flatMap { row[$0] as? String } ?? "",
+                sortName: idx["sortName"].flatMap { row[$0] as? String } ?? ""
             ))
         }
         return TrackPage(

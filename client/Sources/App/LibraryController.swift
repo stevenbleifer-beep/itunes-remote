@@ -112,11 +112,13 @@ final class LibraryController {
         onStatusChanged()
         do {
             info = try await api.libraryInfo()
+            api.libraryVersion = info?.version ?? ""
             playlists = try await api.playlists()
             lastError = nil
             loadRetry?.invalidate()
             loadRetry = nil
             onPlaylistsChanged()
+            startVersionPolling()
         } catch {
             lastError = error.localizedDescription + " — retrying"
             loading = false
@@ -125,6 +127,31 @@ final class LibraryController {
             return
         }
         reload()
+    }
+
+    /// Watches for the library changing under the app: a vinyl rip landing
+    /// through the pipeline, or an edit made in iTunes itself. A change
+    /// empties the read cache; one that adds or removes tracks or playlists
+    /// also refreshes what is on screen.
+    private var versionTimer: Timer?
+
+    private func startVersionPolling() {
+        versionTimer?.invalidate()
+        versionTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.checkVersion() }
+        }
+    }
+
+    private func checkVersion() async {
+        guard let api = api, let known = info, !loading, let fresh = try? await api.libraryInfo() else { return }
+        guard fresh.version != known.version else { return }
+        info = fresh
+        api.libraryVersion = fresh.version
+        if fresh.trackCount != known.trackCount || fresh.playlistCount != known.playlistCount
+            || fresh.contentVersion != known.contentVersion {
+            if let list = try? await api.playlists() { replacePlaylists(list); onPlaylistsChanged() }
+            reload()
+        }
     }
 
     private func scheduleLoadRetry() {
@@ -275,39 +302,56 @@ final class LibraryController {
             }
             return
         }
+        // iTunes' orders, on iTunes' sort forms. Artist is artist, then the
+        // artist's albums by year, then disc and track — the same order the
+        // daemon delivers by default, so clicking Artist on the library does
+        // not reshuffle it. Every column sort ends in disc/track order, so
+        // albums always read top to bottom. Descending reverses the lot, as
+        // iTunes does.
         let asc = sortAscending
-        func cmpStr(_ a: String, _ b: String) -> Bool {
-            let r = a.localizedCaseInsensitiveCompare(b)
-            return asc ? r == .orderedAscending : r == .orderedDescending
+        func less<T: Comparable>(_ a: T, _ b: T, tie: () -> Bool) -> Bool {
+            a == b ? tie() : (asc ? a < b : a > b)
         }
-        func cmpInt(_ a: Int?, _ b: Int?) -> Bool {
-            let x = a ?? 0, y = b ?? 0
-            return asc ? x < y : x > y
+        func byArtist(_ a: Track, _ b: Track) -> Bool {
+            less(LibraryController.artistKey(a), LibraryController.artistKey(b), tie: { false })
         }
         switch key {
-        case "name": tracks.sort { cmpStr($0.name, $1.name) }
-        case "artist": tracks.sort { $0.artist == $1.artist ? albumOrder($0, $1) : cmpStr($0.artist, $1.artist) }
-        case "album": tracks.sort { $0.album == $1.album ? discTrack($0, $1) : cmpStr($0.album, $1.album) }
-        case "genre": tracks.sort { $0.genre == $1.genre ? albumOrder($0, $1) : cmpStr($0.genre, $1.genre) }
-        case "year": tracks.sort { $0.year == $1.year ? albumOrder($0, $1) : cmpInt($0.year, $1.year) }
-        case "totalTime": tracks.sort { cmpInt($0.totalTime, $1.totalTime) }
-        case "trackNumber": tracks.sort { cmpInt($0.trackNumber, $1.trackNumber) }
-        case "rating": tracks.sort { $0.rating == $1.rating ? albumOrder($0, $1) : cmpInt($0.rating, $1.rating) }
-        case "playCount": tracks.sort { $0.playCount == $1.playCount ? albumOrder($0, $1) : cmpInt($0.playCount, $1.playCount) }
-        case "dateAdded": tracks.sort { asc ? $0.dateAdded < $1.dateAdded : $0.dateAdded > $1.dateAdded }
+        case "artist": tracks.sort(by: byArtist)
+        case "album": tracks.sort { less(LibraryController.albumKey($0), LibraryController.albumKey($1), tie: { false }) }
+        case "name": tracks.sort { a, b in less(a.sortName, b.sortName, tie: { byArtist(a, b) }) }
+        case "genre": tracks.sort { a, b in less(a.genre.lowercased(), b.genre.lowercased(), tie: { byArtist(a, b) }) }
+        case "year": tracks.sort { a, b in less(a.year ?? 0, b.year ?? 0, tie: { byArtist(a, b) }) }
+        case "totalTime": tracks.sort { a, b in less(a.totalTime ?? 0, b.totalTime ?? 0, tie: { byArtist(a, b) }) }
+        case "trackNumber": tracks.sort { a, b in less(a.trackNumber ?? 0, b.trackNumber ?? 0, tie: { byArtist(a, b) }) }
+        case "rating": tracks.sort { a, b in less(a.rating, b.rating, tie: { byArtist(a, b) }) }
+        case "playCount": tracks.sort { a, b in less(a.playCount, b.playCount, tie: { byArtist(a, b) }) }
+        case "dateAdded": tracks.sort { a, b in less(a.dateAdded, b.dateAdded, tie: { byArtist(a, b) }) }
         default: break
         }
     }
 
-    private func albumOrder(_ a: Track, _ b: Track) -> Bool {
-        if a.album != b.album { return a.album.localizedCaseInsensitiveCompare(b.album) == .orderedAscending }
-        return discTrack(a, b)
+    /// The daemon's default order: sort artist, year, sort album, disc, track, sort name.
+    static func artistKey(_ t: Track) -> SortKey {
+        SortKey(a: t.sortArtist.isEmpty ? "\u{ffff}" : t.sortArtist, n: t.year ?? 0,
+                b: t.sortAlbum, d: t.discNumber ?? 0, k: t.trackNumber ?? 0, c: t.sortName)
     }
 
-    private func discTrack(_ a: Track, _ b: Track) -> Bool {
-        let d1 = a.discNumber ?? 0, d2 = b.discNumber ?? 0
-        if d1 != d2 { return d1 < d2 }
-        return (a.trackNumber ?? 0) < (b.trackNumber ?? 0)
+    /// Album, then the album's artist, then disc and track.
+    static func albumKey(_ t: Track) -> SortKey {
+        SortKey(a: t.sortAlbum.isEmpty ? "\u{ffff}" : t.sortAlbum, n: 0,
+                b: t.sortArtist, d: t.discNumber ?? 0, k: t.trackNumber ?? 0, c: t.sortName)
+    }
+
+    struct SortKey: Comparable {
+        let a: String, n: Int, b: String, d: Int, k: Int, c: String
+        static func < (x: SortKey, y: SortKey) -> Bool {
+            if x.a != y.a { return x.a < y.a }
+            if x.n != y.n { return x.n < y.n }
+            if x.b != y.b { return x.b < y.b }
+            if x.d != y.d { return x.d < y.d }
+            if x.k != y.k { return x.k < y.k }
+            return x.c < y.c
+        }
     }
 
     // MARK: Status text

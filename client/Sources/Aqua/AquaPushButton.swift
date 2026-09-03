@@ -90,6 +90,19 @@ final class AquaPushButton: NSView {
                       height: AquaPushButton.bodyHeight + 2 * AquaPushButton.margin)
     }
 
+    // A real button to the rest of the system: click-through works on an
+    // inactive window as it does for NSButton, and VoiceOver and the
+    // accessibility tools can press it.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { title }
+    override func accessibilityPerformPress() -> Bool {
+        guard isEnabled, let a = action else { return false }
+        NSApp.sendAction(a, to: target, from: self)
+        return true
+    }
+
     // MARK: Pulse
 
     private var pulseTimer: Timer?

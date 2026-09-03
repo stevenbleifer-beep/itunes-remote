@@ -4,7 +4,7 @@ import Cocoa
 /// Draws only the visible rows and asks for images lazily, so the 11,000
 /// album library scrolls without building 11,000 views.
 @MainActor
-final class AlbumGridView: NSView {
+final class AlbumGridView: NSView, NSDraggingSource {
     var albums: [AlbumEntry] = [] {
         didSet {
             images.removeAll()
@@ -151,6 +151,47 @@ final class AlbumGridView: NSView {
             selectedIndex = hit
             onSelect(hit)
         }
+        dragStart = hit.map { ($0, p) }
+    }
+
+    private func dragImage(for index: Int) -> NSImage? { images[index] }
+
+    // MARK: Drag out
+
+    /// The track ids a cover carries when dragged onto a playlist or the iPod.
+    var dragIds: (Int) -> [String] = { _ in [] }
+    private var dragStart: (index: Int, point: NSPoint)?
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let start = dragStart else { return }
+        let p = convert(event.locationInWindow, from: nil)
+        guard hypot(p.x - start.point.x, p.y - start.point.y) > 4 else { return }
+        dragStart = nil
+        let ids = dragIds(start.index)
+        guard !ids.isEmpty else { return }
+        let item = NSPasteboardItem()
+        item.setString(ids.joined(separator: "\n"), forType: MainWindowController.trackDragType)
+        if albums.indices.contains(start.index) {
+            item.setString(albums[start.index].title + " — " + albums[start.index].artistName, forType: .string)
+        }
+        let dragItem = NSDraggingItem(pasteboardWriter: item)
+        let size = NSSize(width: 72, height: 72)
+        let image = dragImage(for: start.index) ?? NSImage(size: size, flipped: false) { r in
+            NSColor(white: 0.82, alpha: 1).setFill()
+            r.fill()
+            return true
+        }
+        dragItem.setDraggingFrame(NSRect(x: p.x - size.width / 2, y: p.y - size.height / 2,
+                                         width: size.width, height: size.height), contents: image)
+        beginDraggingSession(with: [dragItem], event: event, source: self)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragStart = nil
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        context == .withinApplication ? .copy : []
     }
 
     override func keyDown(with event: NSEvent) {

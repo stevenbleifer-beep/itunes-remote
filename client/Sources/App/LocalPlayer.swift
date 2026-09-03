@@ -19,7 +19,10 @@ final class LocalPlayer: NSObject {
     override init() {
         super.init()
         player.actionAtItemEnd = .pause
-        player.volume = 0.75
+        // Remembered, so switching to this Mac does not snap the slider back
+        // to three quarters every time.
+        let saved = UserDefaults.standard.object(forKey: "localVolume") as? Double
+        player.volume = Float(saved ?? 0.75)
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
                                                       queue: .main) { [weak self] _ in
             Task { @MainActor in self?.onTick() }
@@ -37,7 +40,10 @@ final class LocalPlayer: NSObject {
     }
     var volume: Double {
         get { Double(player.volume) }
-        set { player.volume = Float(min(1, max(0, newValue))) }
+        set {
+            player.volume = Float(min(1, max(0, newValue)))
+            UserDefaults.standard.set(Double(player.volume), forKey: "localVolume")
+        }
     }
 
     func play(_ track: Track, api: APIClient) {

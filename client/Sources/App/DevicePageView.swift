@@ -313,9 +313,15 @@ final class DevicePageView: NSView {
     /// The library's own playlists, artists, genres and albums, ticked from
     /// the app's sync plan and dotted against what reached the device.
     func showMusicLibrary(playlists: [Playlist], artists: [String], genres: [String],
-                          albums: [AlbumEntry], plan: SyncPlan?, device: DeviceFacets) {
+                          albums: [AlbumEntry], plan: SyncPlan?, planCount: Int?, device: DeviceFacets) {
+        musicPane.planTrackCount = planCount
         musicPane.showLibrary(playlists: playlists, artists: artists, genres: genres,
                               albums: albums, plan: plan, device: device)
+    }
+
+    /// The number of songs the plan covers, for the pane's heading.
+    func setPlanCount(_ n: Int?) {
+        musicPane.planTrackCount = n
     }
 
     private static func icon(for category: String) -> SidebarIcon {
@@ -1014,6 +1020,10 @@ final class DeviceMusicView: NSView {
         CheckListView(title: "Genres"), CheckListView(title: "Albums"),
     ]
     private var sync: DeviceSync?
+    /// Distinct songs the plan covers. iTunes' heading counts what its
+    /// selection would sync, not what is on the device, and so does this
+    /// once a plan exists.
+    var planTrackCount: Int? { didSet { updateCount() } }
     /// The plan's ticks, per kind, so a row can be drawn without refetching.
     private var ticks: [String: Set<String>] = [:]
 
@@ -1143,13 +1153,17 @@ final class DeviceMusicView: NSView {
 
     func show(_ sync: DeviceSync) {
         self.sync = sync
-        let n = NumberFormatter.localizedString(from: NSNumber(value: sync.songsOnDevice), number: .decimal)
-        count.stringValue = "\(n) songs"
+        updateCount()
         optionsBox.wholeLibrary = sync.syncsWholeLibrary
         // The four lists are populated by showLibrary, which has the full
         // library plus the device marks. show() only refreshes the header and
         // options, so a 15-second device refresh never drops the playlists
         // that are not yet on the iPod.
+    }
+
+    private func updateCount() {
+        guard let n = planTrackCount ?? sync?.songsOnDevice else { return }
+        count.stringValue = "\(NumberFormatter.localizedString(from: NSNumber(value: n), number: .decimal)) songs"
     }
 
     /// The library's four lists, ticked from the plan and dotted against what

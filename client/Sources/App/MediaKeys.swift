@@ -25,13 +25,15 @@ final class MediaKeys {
         guard !wired else { return }
         wired = true
         let centre = MPRemoteCommandCenter.shared()
+        // Logged, so "the keys do nothing" can be told apart from "the keys
+        // never reached the app": `log stream --predicate 'process == "iTunesRemote"'`.
         centre.togglePlayPauseCommand.addTarget { [weak self] _ in
-            self?.onTogglePlayPause(); return .success
+            NSLog("media key: play/pause"); self?.onTogglePlayPause(); return .success
         }
-        centre.playCommand.addTarget { [weak self] _ in self?.onPlay(); return .success }
-        centre.pauseCommand.addTarget { [weak self] _ in self?.onPause(); return .success }
-        centre.nextTrackCommand.addTarget { [weak self] _ in self?.onNext(); return .success }
-        centre.previousTrackCommand.addTarget { [weak self] _ in self?.onPrevious(); return .success }
+        centre.playCommand.addTarget { [weak self] _ in NSLog("media key: play"); self?.onPlay(); return .success }
+        centre.pauseCommand.addTarget { [weak self] _ in NSLog("media key: pause"); self?.onPause(); return .success }
+        centre.nextTrackCommand.addTarget { [weak self] _ in NSLog("media key: next"); self?.onNext(); return .success }
+        centre.previousTrackCommand.addTarget { [weak self] _ in NSLog("media key: previous"); self?.onPrevious(); return .success }
         centre.changePlaybackPositionCommand.isEnabled = true
         centre.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let e = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }

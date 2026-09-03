@@ -18,10 +18,12 @@ final class NamePrompt: NSObject {
         let content = ChromeView(frame: NSRect(x: 0, y: 0, width: 420, height: 140))
         content.gradientTop = NSColor(white: 0.93, alpha: 1)
         content.gradientBottom = NSColor(white: 0.88, alpha: 1)
-        panel = NSPanel(contentRect: content.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        let sheet = PromptPanel(contentRect: content.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        panel = sheet
         panel.contentView = content
         panel.title = title
         super.init()
+        sheet.onCancel = { [weak self] in self?.cancel() }
 
         let label = NSTextField(labelWithString: prompt)
         label.font = Aqua.font(13, bold: true)
@@ -31,6 +33,10 @@ final class NamePrompt: NSObject {
         field.font = Aqua.font(13)
         field.bezelStyle = .squareBezel
         field.placeholderString = placeholder
+        // Return in the field creates; the drawn buttons have no key
+        // equivalents of their own.
+        field.target = self
+        field.action = #selector(accept)
         field.frame = NSRect(x: 20, y: 72, width: 380, height: 24)
         content.addSubview(field)
 
@@ -82,4 +88,10 @@ final class NamePrompt: NSObject {
     func present(in parent: NSWindow) {
         parent.beginSheet(panel, completionHandler: nil)
     }
+}
+
+/// Escape closes the sheet, as it does every other sheet.
+final class PromptPanel: NSPanel {
+    var onCancel: () -> Void = {}
+    override func cancelOperation(_ sender: Any?) { onCancel() }
 }

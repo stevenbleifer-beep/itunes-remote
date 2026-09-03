@@ -339,13 +339,26 @@ class Library(object):
             "libraryPersistentId": self.library_persistent_id,
         }
 
-    def _candidates(self, playlist=None):
+    def _candidates(self, playlist=None, recent=0):
+        """The tracks a request starts from, before any browser filter.
+
+        `recent` cuts the set to the N newest tracks *first*, the way a smart
+        playlist does. It used to be applied after the filters, which made
+        Recently Added inconsistent with itself: the browser listed every
+        artist in the library, and an album picked from the newest 600
+        albums showed no tracks because none of them were in the newest 600
+        tracks. Now every view of Recently Added is a view of one set.
+        """
         if playlist is None:
-            return self.order
-        p = self.playlists_by_id.get(playlist)
-        if p is None:
-            raise KeyError(playlist)
-        return [self.tracks[pid] for pid in p["items"]]
+            out = self.order
+        else:
+            p = self.playlists_by_id.get(playlist)
+            if p is None:
+                raise KeyError(playlist)
+            out = [self.tracks[pid] for pid in p["items"]]
+        if recent:
+            out = sorted(out, key=lambda t: t.date_added or "", reverse=True)[:recent]
+        return out
 
     def _filter(self, tracks, q=None, genre=None, artist=None, album=None,
                 composer=None, grouping=None):
@@ -381,13 +394,14 @@ class Library(object):
         "persistentId", "name", "artist", "album", "albumArtist", "genre",
         "year", "trackNumber", "discNumber", "totalTime", "size", "compilation", "enabled",
         "rating", "playCount", "composer", "grouping", "bpm", "kind", "dateAdded",
+        # iTunes' sort forms, so the client's column sorts agree with the
+        # default order instead of filing "The Beatles" under T.
+        "sortArtist", "sortAlbum", "sortName",
     )
 
     def query(self, q=None, genre=None, artist=None, album=None, composer=None,
               grouping=None, playlist=None, offset=0, limit=200, compact=False, recent=0):
-        matched = self._filter(self._candidates(playlist), q, genre, artist, album, composer, grouping)
-        if recent:
-            matched = sorted(matched, key=lambda t: t.date_added or "", reverse=True)[:recent]
+        matched = self._filter(self._candidates(playlist, recent), q, genre, artist, album, composer, grouping)
         page = matched[offset:offset + limit]
         total_time = 0
         total_size = 0
@@ -408,7 +422,8 @@ class Library(object):
             out["rows"] = [
                 [t.persistent_id, t.name, t.artist, t.album, t.album_artist, t.genre,
                  t.year, t.track_number, t.disc_number, t.total_time, t.size, t.compilation, t.enabled,
-                 t.rating, t.play_count, t.composer, t.grouping, t.bpm, t.kind, t.date_added]
+                 t.rating, t.play_count, t.composer, t.grouping, t.bpm, t.kind, t.date_added,
+                 t.sort_key[1], t.sort_key[3], t.sort_key[6]]
                 for t in page
             ]
         else:
@@ -418,7 +433,7 @@ class Library(object):
     FACET_FIELDS = ("genre", "artist", "album", "composer", "grouping")
 
     def facet(self, field, q=None, genre=None, artist=None, album=None,
-              composer=None, grouping=None, playlist=None):
+              composer=None, grouping=None, playlist=None, recent=0):
         """Distinct values of `field` with counts, over the filtered set."""
         if field not in self.FACET_FIELDS:
             raise ValueError("not a browsable field: %s" % field)
@@ -427,7 +442,7 @@ class Library(object):
         counts = {}
         spellings = {}
         order = {}
-        for t in self._filter(self._candidates(playlist), q, genre, artist, album, composer, grouping):
+        for t in self._filter(self._candidates(playlist, recent), q, genre, artist, album, composer, grouping):
             key = t.group_keys[field]
             # iTunes shows no blank row and does not count one; a track with an
             # empty tag simply appears under "All".
@@ -459,7 +474,7 @@ class Library(object):
         exactly one image per album.
         """
         groups = {}
-        for t in self._filter(self._candidates(playlist), q, genre, artist, album, composer, grouping):
+        for t in self._filter(self._candidates(playlist, recent), q, genre, artist, album, composer, grouping):
             display_artist = t.album_artist or t.artist
             # Same folding as the browser, so an accented spelling does not
             # split one album into two covers.
@@ -493,7 +508,9 @@ class Library(object):
                 g["coverTrackId"] = t.persistent_id
                 g["hasArtwork"] = bool(t.artwork_count)
         if recent:
-            order = sorted(groups, key=lambda k: groups[k]["dateAdded"] or "", reverse=True)[:recent]
+            # Every album the newest tracks touch, newest first. The cut to N
+            # already happened on the tracks.
+            order = sorted(groups, key=lambda k: groups[k]["dateAdded"] or "", reverse=True)
         else:
             order = sorted(groups, key=lambda k: (k[0] == "", groups[k]["_sortKey"]))
         out = []

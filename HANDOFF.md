@@ -52,6 +52,70 @@ built the way iTunes' Music pane is built and nothing cleverer:
 `--snapshot-device NAME` on the client opens that device's Music pane before
 capturing, which is how this pane gets checked.
 
+## Debug pass, 2026-09-03 evening
+
+What was found and fixed, in the order Steven listed them:
+
+- **Shuffle/repeat off while playing on the Air.** `LocalPlayer.state` hard-coded
+  shuffle false / repeat off, and the window read them from there. Shuffle and
+  repeat are now `PlayerController`'s own, persisted in defaults, laid over the
+  live state in both modes; iTunes is only told about them as a courtesy.
+- **Local volume snapped to 75%.** Persisted under `localVolume`.
+- **Recently Added.** `recent` was applied *after* the browser filters and was
+  ignored by the facet endpoints entirely, so the Artists pane listed all
+  2,904 artists and an album picked from the newest 600 *albums* could have
+  none of its tracks in the newest 600 *tracks* (Miles Davis — Milestones was
+  the one that showed it). `_candidates(playlist, recent)` now cuts to the
+  newest N first, and tracks, facets and albums all start from that set.
+- **Sorting.** Compact rows carry `sortArtist`/`sortAlbum`/`sortName`
+  (iTunes' sort forms: Sort field, else article dropped, folded). The client
+  sorts on those, so Artist matches the default order (artist → year → album →
+  disc → track), Album is album → artist → disc → track, and every other
+  column falls back to artist order. Descending reverses the lot.
+- **Speed.** Whole-library reads are gzipped (27 MB → 5.9 MB) and cached in
+  `APIClient` until the daemon's library version changes or the app writes;
+  going back to a source is instant. `LibraryController` polls
+  `/api/library` every 15 s and reloads only when the track or playlist count
+  changes.
+- **Sync count.** iTunes says 24,045, the device 24,014, the 37 ticked
+  playlists reference 24,173 distinct tracks. 159 of the gap are *duplicate
+  copies* of the same song (21 share a file, 102 are distinct files of
+  identical size — re-downloaded purchases) that iTunes syncs once; 2 are on
+  the device but in no playlist; only 2 files are genuinely absent (Mötley
+  Crüe "Shout At The Devil" from Guitar Hero II, and Gorillaz "Désolé";
+  both files exist and read fine with afinfo, so iTunes refused them for
+  its own reasons). Every device playlist count equals its library count.
+  The plan now ticks the same 36 playlists iTunes does, plus the 348 artists;
+  the pane heading shows the plan's distinct-track count (`status.trackCount`).
+- **Mini player** menu item shows a tick while it is up (`validateMenuItem`).
+- **Rating** works end to end (writes.log shows Steven's own 20→40→60 edits).
+- **Bold row** stuck to old songs because nothing redrew the rows when the
+  playing track changed; `updatePlayerUI` now reloads exactly the two rows.
+- **Rewind** restarts the song after 3 s, and goes back a track before that.
+- **HomePod.** The AirPlay menu *added* the pick to the set, so iTunes reported
+  Computer + HomePod and kept playing through Computer. Plain click now
+  routes to that one speaker (`selectOnly`), ⌘-click adds. Verified via the
+  API: a HomePod alone selects cleanly, no dialog.
+- **New Playlist.** The "+" works — the sheet appears. What failed was the
+  reply: a fresh playlist has `"playlistId": null` until the XML catches up,
+  and the client's `Playlist.playlistId` was `Int`, so the sheet showed
+  "the data couldn't be read", *and every playlist list after that failed to
+  decode* until iTunes rewrote the XML — which is also the likeliest reason
+  drops onto playlists looked dead. Now `Int?`. Return in the field creates;
+  Escape cancels.
+- **Drag.** Album headers in Album List, and covers in Grid and Cover Flow,
+  are drag sources now (ids newline-joined in one pasteboard item).
+- **Buttons are buttons.** The drawn bevel and push buttons accept first mouse
+  and expose an AX button role with a press action.
+- **Media keys.** Not reproducible from here. The handlers now `NSLog`
+  "media key: …" on arrival, so `log stream --predicate 'process == "iTunesRemote"'`
+  tells whether the key reached the app at all.
+
+Testing note: background (app_*) clicks never reach custom views on an
+inactive window — the first click only activates. Real on-screen clicks were
+used for the sheet test; Steven works in Safari on the other display, so
+screen takeovers were kept to a minimum.
+
 ## The machines
 
 - MacBook Pro (daemon host): `ssh -i ~/.ssh/id_ed25519_mbp2012 stevenbleifer@Stevens-MacBook-Pro.local`. Python 3.13.15 at `/usr/local/bin/python3`. iTunes 12.9.5.

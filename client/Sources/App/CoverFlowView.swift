@@ -23,7 +23,7 @@ struct AlbumEntry: Decodable, Equatable {
 /// rate. Only covers near the selection have layers; the rest are virtual,
 /// which is what lets an 11,000-album library scroll without stalling.
 @MainActor
-final class CoverFlowView: NSView {
+final class CoverFlowView: NSView, NSDraggingSource {
 
     var albums: [AlbumEntry] = [] {
         didSet {
@@ -405,6 +405,7 @@ final class CoverFlowView: NSView {
         let candidates = coverLayers.sorted { $0.value.zPosition > $1.value.zPosition }
         for (i, layer) in candidates {
             if let hit = stage.hitTest(stagePoint), hit === layer || hit.superlayer === layer {
+                dragStart = event.clickCount == 1 ? (i, p) : nil
                 if i == selectedIndex {
                     if event.clickCount == 2 { onOpen(i) }
                 } else {
@@ -415,6 +416,55 @@ final class CoverFlowView: NSView {
         }
         // Fell through: click left or right of centre steps one.
         select(p.x < bounds.midX ? selectedIndex - 1 : selectedIndex + 1, animated: true)
+    }
+
+    private func dragImage(for index: Int) -> NSImage? {
+        guard let contents = coverLayers[index]?.contents else { return nil }
+        if let image = contents as? NSImage { return image }
+        let ref = contents as CFTypeRef
+        if CFGetTypeID(ref) == CGImage.typeID {
+            let cg = ref as! CGImage
+            return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        }
+        return nil
+    }
+
+    // MARK: Drag out
+
+    /// The track ids a cover carries when dragged onto a playlist or the iPod.
+    var dragIds: (Int) -> [String] = { _ in [] }
+    private var dragStart: (index: Int, point: NSPoint)?
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let start = dragStart else { return }
+        let p = convert(event.locationInWindow, from: nil)
+        guard hypot(p.x - start.point.x, p.y - start.point.y) > 4 else { return }
+        dragStart = nil
+        let ids = dragIds(start.index)
+        guard !ids.isEmpty else { return }
+        let item = NSPasteboardItem()
+        item.setString(ids.joined(separator: "\n"), forType: MainWindowController.trackDragType)
+        if albums.indices.contains(start.index) {
+            item.setString(albums[start.index].title + " — " + albums[start.index].artistName, forType: .string)
+        }
+        let dragItem = NSDraggingItem(pasteboardWriter: item)
+        let size = NSSize(width: 72, height: 72)
+        let image = dragImage(for: start.index) ?? NSImage(size: size, flipped: false) { r in
+            NSColor(white: 0.82, alpha: 1).setFill()
+            r.fill()
+            return true
+        }
+        dragItem.setDraggingFrame(NSRect(x: p.x - size.width / 2, y: p.y - size.height / 2,
+                                         width: size.width, height: size.height), contents: image)
+        beginDraggingSession(with: [dragItem], event: event, source: self)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragStart = nil
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        context == .withinApplication ? .copy : []
     }
 
     override func scrollWheel(with event: NSEvent) {

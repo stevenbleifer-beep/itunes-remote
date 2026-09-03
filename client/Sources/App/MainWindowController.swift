@@ -381,6 +381,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         coverFlow.isHidden = true
         coverFlow.onSelectionChanged = { [weak self] _ in self?.coverSelectionChanged() }
         coverFlow.onOpen = { [weak self] i in self?.playAlbum(at: i) }
+        coverFlow.dragIds = { [weak self] i in self?.albumTrackIds(at: i) ?? [] }
         coverFlow.onToggleFullStage = { [weak self] in self?.toggleFullStage() }
         coverFlow.imageProvider = { [weak self] pid, done in
             guard let self = self else { done(nil); return }
@@ -397,6 +398,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         gridScroll.isHidden = true
         grid.onSelect = { [weak self] _ in self?.coverSelectionChanged() }
         grid.onOpen = { [weak self] i in self?.playAlbum(at: i) }
+        grid.dragIds = { [weak self] i in self?.albumTrackIds(at: i) ?? [] }
         grid.imageProvider = { [weak self] pid, done in
             guard let self = self else { done(nil); return }
             self.artworkCache.image(for: pid, then: done)
@@ -611,13 +613,35 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     static let trackDragType = NSPasteboard.PasteboardType("local.stevenbleifer.itunesremote.track")
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-        guard Tag(rawValue: tableView.tag) == .tracks, let index = trackIndex(forRow: row) else { return nil }
+        guard Tag(rawValue: tableView.tag) == .tracks, row >= 0, row < displayRows.count else { return nil }
         let item = NSPasteboardItem()
-        item.setString(rows[index].persistentId, forType: MainWindowController.trackDragType)
-        // A plain-text flavour too, so dropping into a text field or another
-        // app gives something readable rather than nothing.
-        item.setString(rows[index].name + " — " + rows[index].artist, forType: .string)
+        switch displayRows[row] {
+        case .track(let index):
+            item.setString(rows[index].persistentId, forType: MainWindowController.trackDragType)
+            // A plain-text flavour too, so dropping into a text field or another
+            // app gives something readable rather than nothing.
+            item.setString(rows[index].name + " — " + rows[index].artist, forType: .string)
+        case .group(let entry):
+            // An album header in Album List drags the whole album.
+            let ids = albumTrackIds(entry)
+            guard !ids.isEmpty else { return nil }
+            item.setString(ids.joined(separator: "\n"), forType: MainWindowController.trackDragType)
+            item.setString(entry.title + " — " + entry.artistName, forType: .string)
+        }
         return item
+    }
+
+    /// The tracks of one album, matched the way the album views match them.
+    private func albumTrackIds(_ a: AlbumEntry) -> [String] {
+        let artist = a.artist.lowercased(), album = a.album.lowercased()
+        return controller.tracks.filter {
+            $0.displayArtist.lowercased() == artist && $0.album.lowercased() == album
+        }.map { $0.persistentId }
+    }
+
+    /// What a cover dragged out of Grid or Cover Flow carries.
+    private func albumTrackIds(at index: Int) -> [String] {
+        albums.indices.contains(index) ? albumTrackIds(albums[index]) : []
     }
 
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo,
@@ -642,8 +666,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo,
                    row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
         guard Tag(rawValue: tableView.tag) == .source, row >= 0, row < sourceRows.count else { return false }
-        let ids = (info.draggingPasteboard.pasteboardItems ?? []).compactMap {
-            $0.string(forType: MainWindowController.trackDragType)
+        // One item per dragged row; an album header packs its tracks into one.
+        let ids = (info.draggingPasteboard.pasteboardItems ?? []).flatMap {
+            ($0.string(forType: MainWindowController.trackDragType) ?? "")
+                .split(separator: "\n").map(String.init)
         }
         guard !ids.isEmpty else { return false }
         switch sourceRows[row] {
@@ -869,7 +895,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         mediaKeys.onPlay = { [weak self] in self?.player.playPause() }
         mediaKeys.onPause = { [weak self] in self?.player.playPause() }
         mediaKeys.onNext = { [weak self] in self?.step(by: 1) }
-        mediaKeys.onPrevious = { [weak self] in self?.step(by: -1) }
+        mediaKeys.onPrevious = { [weak self] in self?.previousPressed() }
         mediaKeys.onSeek = { [weak self] seconds in self?.player.seek(to: seconds) }
         mediaKeys.start()
         updateStatus()
@@ -1052,6 +1078,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 genres: genres.map { $0.name },
                 albums: albums,
                 plan: reply?.plan,
+                planCount: reply?.status?.trackCount,
                 device: facets)
         }
     }
@@ -1069,6 +1096,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 let reply = try await api.syncToggle(device: device, kind: row.kind.rawValue,
                                                      value: row.planValue, on: on)
                 self.devicePlan = reply.plan ?? self.devicePlan
+                self.devicePage.setPlanCount(reply.status?.trackCount)
                 let n = reply.plan.map { p in
                     p.selections.playlist.count + p.selections.artist.count
                         + p.selections.albumartist.count + p.selections.genre.count
@@ -1096,6 +1124,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             do {
                 let reply = try await api.syncRebuild(device: device)
                 self.devicePlan = reply.plan ?? self.devicePlan
+                self.devicePage.setPlanCount(reply.status?.trackCount)
                 self.devicePage.planApplied()
                 let name = reply.plan?.playlistName ?? "the sync playlist"
                 let n = reply.status?.playlistTrackCount ?? 0
@@ -1254,7 +1283,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     @objc private func toggleShuffle(_ sender: Any?) {
-        player.setShuffle(!(player.state?.shuffle ?? false))
+        player.setShuffle(!player.shuffle)
     }
 
     @objc private func cycleRepeat(_ sender: Any?) {
@@ -1583,7 +1612,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         mini.onRestore = { [weak self] in
             self?.window?.makeKeyAndOrderFront(nil)
         }
-        mini.onStep = { [weak self] delta in self?.step(by: delta) }
+        mini.onStep = { [weak self] delta in
+            if delta < 0 { self?.previousPressed() } else { self?.step(by: delta) }
+        }
         mini.onAirPlay = { [weak self] sender in self?.showOutputMenu(sender) }
         miniPlayer = mini
         mini.update()
@@ -1641,6 +1672,15 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             volumeSlider.value = Double(v) / 100.0
         }
         let stopped = state?.track == nil || state?.state == "stopped"
+        // The bold row used to be drawn only when a row happened to be
+        // redrawn, so it stuck to the previous song, or a song that had
+        // finished, until something else scrolled it. Move it deliberately.
+        let boldId = stopped ? nil : state?.track?.persistentId
+        if boldId != lastBoldId {
+            let moved = [lastBoldId, boldId].compactMap { $0 }
+            lastBoldId = boldId
+            reloadRows(forTrackIds: moved)
+        }
         mediaKeys.publish(title: state?.track?.name, artist: state?.track?.artist,
                           album: state?.track?.album, duration: state?.track?.duration,
                           elapsed: player.displayPosition, playing: playing, stopped: stopped)
@@ -1652,6 +1692,28 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         for b in [previousButton, playButton, nextButton] { b.isEnabled = up }
         airPlayButton.isEnabled = up
         updateArtwork()
+    }
+
+    private var lastBoldId: String?
+
+    /// Redraws just the rows for these tracks.
+    private func reloadRows(forTrackIds ids: [String]) {
+        guard !ids.isEmpty, trackTable.numberOfColumns > 0 else { return }
+        var set = IndexSet()
+        for (i, t) in rows.enumerated() where ids.contains(t.persistentId) {
+            if let r = tableRow(forTrackIndex: i) { set.insert(r) }
+        }
+        guard !set.isEmpty else { return }
+        trackTable.reloadData(forRowIndexes: set, columnIndexes: IndexSet(integersIn: 0..<trackTable.numberOfColumns))
+    }
+
+    /// The Window menu's mini player item shows a tick while the mini player
+    /// is up, so it reads as the switch it is.
+    @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleMiniPlayer(_:)) {
+            item.state = (miniPlayer?.window?.isVisible == true) ? .on : .off
+        }
+        return true
     }
 
     private func updateAirPlayButton() {
@@ -1676,6 +1738,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             item.representedObject = output.name
             item.state = (!local && output.selected) ? .on : .off
             item.isEnabled = output.available
+            item.toolTip = "Play through \(output.name) only. ⌘-click to add it to the speakers already playing."
             item.attributedTitle = NSAttributedString(string: output.name, attributes: [
                 .font: Aqua.font(13),
                 .foregroundColor: output.available ? NSColor.controlTextColor : NSColor.disabledControlTextColor,
@@ -1701,7 +1764,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     @objc private func outputPicked(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
         player.setMode(.remote)
-        player.toggleOutput(name)
+        // Picking a speaker used to add it to the set, so the HomePod came up
+        // ticked beside Computer while iTunes kept playing through Computer.
+        // iTunes' own popup routes to the one you pick; ⌘-click builds a set.
+        if NSApp.currentEvent?.modifierFlags.contains(.command) == true {
+            player.toggleOutput(name)
+        } else {
+            player.selectOnly(name)
+        }
     }
 
     @objc private func playHere(_ sender: Any?) {
@@ -1792,7 +1862,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     @objc func togglePlay(_ sender: Any?) { player.playPause() }
     @objc func nextTrack(_ sender: Any?) { step(by: 1) }
-    @objc func previousTrack(_ sender: Any?) { step(by: -1) }
+    @objc func previousTrack(_ sender: Any?) { previousPressed() }
+
+    /// iTunes' rewind: a few seconds into a song it starts the song again, and
+    /// pressed again within those first seconds it goes back a track.
+    func previousPressed() {
+        if player.state?.track != nil, player.state?.state != "stopped", player.displayPosition > 3 {
+            player.seek(to: 0)
+            return
+        }
+        step(by: -1)
+    }
 
     /// iTunes 12 treats `play <track>` as a one-item queue, so its own
     /// `next track` stops playback instead of advancing. Step through the list

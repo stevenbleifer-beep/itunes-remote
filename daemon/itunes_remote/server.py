@@ -1,6 +1,7 @@
 """HTTP API. Threaded so reads keep answering while a write is in flight."""
 
 import hashlib
+import gzip
 import json
 import logging
 import os
@@ -17,7 +18,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import artwork as artwork_mod
 from .applescript import AppleScriptError, AppleScriptTimeout, ITunesNotRunning
-from .library import Track
+from .library import Track, fold
 from .syncplan import SyncPlans
 
 log = logging.getLogger("itunes_remote.server")
@@ -287,6 +288,7 @@ class Api(object):
         # A pane does not narrow itself: browsing Genres shows every genre for
         # the other filters, exactly as the iTunes column browser behaved.
         f.pop(field, None)
+        f["recent"] = self._int(query, "recent", 0, 0, 20000)
         try:
             return {field + "s": self.store.lib.facet(field, **f)}
         except KeyError:
@@ -634,10 +636,23 @@ class Api(object):
 
     # -- the app's own sync plan ----------------------------------------
 
+    # Reading the iPod costs iTunes a couple of seconds under the Apple Events
+    # lock. Ticking a row on the Music pane asked for it every time, so a run
+    # of clicks queued up behind device reads; keep the answer briefly.
+    POD_CACHE_SECONDS = 15
+
     def _connected_pod(self):
         """The iPod iTunes currently has open, with its serial. Serial is the
         plan key: Steven has five iPods and two are the same model, so names
         would collide."""
+        cached = getattr(self, "_pod_cache", None)
+        if cached and time.time() - cached[0] < self.POD_CACHE_SECONDS:
+            return cached[1]
+        pod = self._read_connected_pod()
+        self._pod_cache = (time.time(), pod)
+        return pod
+
+    def _read_connected_pod(self):
         try:
             devices = self.get_devices({}, None, None)["devices"]
         except ApiError:
@@ -651,6 +666,34 @@ class Api(object):
             "serial": detail.get("deviceSerialNumber") or detail.get("serialNumber"),
             "detail": detail,
         }
+
+    def _plan_track_ids(self, plan):
+        """Every library track the plan covers, matched the way the rebuild
+        script matches: case-insensitive equality on the field itself."""
+        lib = self.store.lib
+        sel = plan.selections
+        ids = set()
+        if sel["playlist"]:
+            wanted = {fold(n) for n in sel["playlist"]}
+            for p in lib.playlists_by_id.values():
+                if fold(p.get("name")) in wanted:
+                    ids.update(p["items"])
+        artists = {fold(a) for a in sel["artist"]}
+        album_artists = {fold(a) for a in sel["albumartist"]}
+        genres = {fold(g) for g in sel["genre"]}
+        albums = {(fold(a), fold(b)) for a, b in sel["album"]}
+        if artists or album_artists or genres or albums:
+            for t in lib.tracks.values():
+                if artists and fold(t.artist) in artists:
+                    ids.add(t.persistent_id)
+                elif album_artists and fold(t.album_artist) in album_artists:
+                    ids.add(t.persistent_id)
+                elif genres and fold(t.genre) in genres:
+                    ids.add(t.persistent_id)
+                elif albums and ((fold(t.artist), fold(t.album)) in albums
+                                 or ("", fold(t.album)) in albums):
+                    ids.add(t.persistent_id)
+        return ids
 
     def _resolve_plan(self, body, query, create=True):
         """Finds the plan a request is about: an explicit device key, else the
@@ -687,6 +730,9 @@ class Api(object):
             "playlistExists": existing is not None,
             "playlistId": existing["persistentId"] if existing else None,
             "playlistTrackCount": existing["count"] if existing else 0,
+            # Distinct library tracks the plan covers — the number iTunes'
+            # own Music pane puts in its heading.
+            "trackCount": len(self._plan_track_ids(plan)),
             # None means it could not be checked, not that the answer is no.
             "playlistOnDevice": on_device,
             "connectedSerial": pod["serial"] if pod else None,
@@ -1631,10 +1677,23 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             f.close()
 
+    # JSON above this size is gzipped for a client that accepts it. The whole
+    # library is 21 MB of very repetitive text; level 1 takes a fraction of a
+    # second on the MacBook Pro and cuts the transfer to a few MB.
+    GZIP_MIN = 16 * 1024
+
     def _send_bytes(self, status, content_type, data, headers=None):
+        encoding = None
+        if (len(data) >= self.GZIP_MIN and content_type.startswith("application/json")
+                and "gzip" in self.headers.get("Accept-Encoding", "")):
+            data = gzip.compress(data, compresslevel=1)
+            encoding = "gzip"
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        if encoding:
+            self.send_header("Content-Encoding", encoding)
+            self.send_header("Vary", "Accept-Encoding")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()

@@ -24,7 +24,22 @@ final class PlayerController {
     private var lastRemote: (id: String, position: Double, duration: Double, playing: Bool)?
 
     private var remoteState: PlayerState?
-    var state: PlayerState? { mode == .local ? local.state : remoteState }
+
+    /// Shuffle and repeat belong to this app, not to iTunes. The window steps
+    /// through its own list in both modes (`play <track>` is a one-item queue
+    /// to iTunes 12), so iTunes' own settings are irrelevant to what plays;
+    /// they used to be read back from iTunes, which meant they were always
+    /// off while playing on this Mac. They are remembered across launches.
+    private(set) var shuffle = UserDefaults.standard.bool(forKey: "shuffle")
+    private(set) var repeatMode = UserDefaults.standard.string(forKey: "repeatMode") ?? "off"
+
+    /// What the window shows: the live player, with this app's own shuffle
+    /// and repeat laid over it whichever machine the sound comes from.
+    var state: PlayerState? {
+        guard let s = mode == .local ? local.state : remoteState else { return nil }
+        return PlayerState(state: s.state, volume: s.volume, position: s.position, track: s.track,
+                           playlist: s.playlist, shuffle: shuffle, repeat: repeatMode)
+    }
     private(set) var outputs: [Output] = []
     private(set) var lastError: String?
     private(set) var itunesRunning = true
@@ -227,20 +242,25 @@ final class PlayerController {
     }
 
     func setShuffle(_ on: Bool) {
-        guard let api = api else { return }
-        command { try await api.setShuffle(on) }
+        shuffle = on
+        UserDefaults.standard.set(on, forKey: "shuffle")
+        onChange()
+        // Mirrored to iTunes so its own window agrees; nothing depends on it.
+        if let api = api { Task { try? await api.setShuffle(on) } }
     }
 
     /// off -> all -> one -> off, the order the iTunes button cycled.
     func cycleRepeat() {
-        guard let api = api else { return }
         let next: String
-        switch state?.repeatMode ?? "off" {
+        switch repeatMode {
         case "off": next = "all"
         case "all": next = "one"
         default: next = "off"
         }
-        command { try await api.setRepeat(next) }
+        repeatMode = next
+        UserDefaults.standard.set(next, forKey: "repeatMode")
+        onChange()
+        if let api = api { Task { try? await api.setRepeat(next) } }
     }
 
     func launchITunes() {

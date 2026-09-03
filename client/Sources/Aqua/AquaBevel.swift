@@ -25,6 +25,19 @@ final class AquaBevelButton: NSView {
 
     override var intrinsicContentSize: NSSize { NSSize(width: 34, height: 20) }
 
+    // A real button to the rest of the system: click-through works on an
+    // inactive window as it does for NSButton, and VoiceOver and the
+    // accessibility tools can press it.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { toolTip }
+    override func accessibilityPerformPress() -> Bool {
+        guard isEnabled, let a = action else { return false }
+        NSApp.sendAction(a, to: target, from: self)
+        return true
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard isEnabled else { return }
         isPressed = true
