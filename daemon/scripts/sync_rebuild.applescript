@@ -1,4 +1,4 @@
--- argv: <managed playlist name> <spec file>
+-- argv: <managed playlist name> <spec file> [replace|append]
 --
 -- Rewrites one app-owned playlist to exactly the user's selection, so that a
 -- device set to sync only this playlist syncs exactly what the app says.
@@ -22,6 +22,11 @@
 on run argv
     set plName to (item 1 of argv) as text
     set specPath to (item 2 of argv) as text
+    -- The caller feeds the spec in chunks: one huge osascript run with a few
+    -- thousand compound `whose` filters gets killed part way through, leaving
+    -- a half-built playlist. "replace" clears first, "append" adds to it.
+    set mode to "replace"
+    if (count of argv) > 2 then set mode to (item 3 of argv) as text
     -- Read outside the iTunes tell block: `POSIX file` gets dispatched to
     -- iTunes inside one and fails.
     set specText to my readUTF8(specPath)
@@ -38,10 +43,12 @@ on run argv
         if target is missing value then
             set target to (make new user playlist with properties {name:plName})
         end if
-        -- Start from empty so the playlist is exactly the selection.
-        try
-            delete every track of target
-        end try
+        if mode is "replace" then
+            -- Start from empty so the playlist ends up exactly the selection.
+            try
+                delete every track of target
+            end try
+        end if
         repeat with ln in specLines
             set cols to my splitText(ln as text, tab)
             if (count of cols) > 1 then
