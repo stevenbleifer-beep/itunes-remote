@@ -133,6 +133,10 @@ final class AquaRoundButton: NSView {
 /// The small volume slider: gray groove, round silver knob, speaker glyphs.
 final class AquaVolumeSlider: NSView {
     var value: Double = 0.75 { didSet { value = min(1, max(0, value)); needsDisplay = true } }
+    /// True while the user drags, so a poll cannot snap the knob back.
+    private(set) var isDragging = false
+    /// Called continuously during the drag with the 0...1 value.
+    var onChange: (Double) -> Void = { _ in }
     weak var target: AnyObject?
     var action: Selector?
 
@@ -151,12 +155,15 @@ final class AquaVolumeSlider: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        isDragging = true
         update(with: event)
         while true {
             guard let e = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) else { break }
             update(with: e)
             if e.type == .leftMouseUp { break }
         }
+        isDragging = false
+        onChange(value)
         if let a = action { NSApp.sendAction(a, to: target, from: self) }
     }
 
@@ -164,6 +171,7 @@ final class AquaVolumeSlider: NSView {
         let p = convert(event.locationInWindow, from: nil)
         let t = trackRect
         value = Double((p.x - t.minX - knob / 2) / (t.width - knob))
+        onChange(value)
     }
 
     override func draw(_ dirtyRect: NSRect) {

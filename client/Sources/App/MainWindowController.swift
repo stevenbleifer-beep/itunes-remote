@@ -1,12 +1,14 @@
 import Cocoa
 
-/// The iTunes-style main window: metal toolbar with the display panel and
-/// search, source list on the left, genre/artist/album browser over the track
-/// table on the right, status bar along the bottom.
+/// The iTunes 10 main window: gray toolbar with transport, display panel and
+/// search; source list and artwork on the left; genre/artist/album browser
+/// over the track table on the right; status bar along the bottom.
 @MainActor
 final class MainWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
 
     let controller = LibraryController()
+    let player = PlayerController()
+    let artworkCache = ArtworkCache()
     var snapshotPath: String?
 
     private enum Tag: Int { case source = 0, genre, artist, album, tracks }
@@ -24,6 +26,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let playButton = AquaRoundButton(glyph: .play, diameter: 34)
     private let nextButton = AquaRoundButton(glyph: .next, diameter: 26)
     private let volumeSlider = AquaVolumeSlider()
+    private let airPlayButton = AquaAirPlayButton()
     private let display = AquaDisplayPanel()
     private let searchField = NSSearchField()
     private let statusBar = ChromeView()
@@ -36,9 +39,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let artistTable = NSTableView()
     private let albumTable = NSTableView()
     private let trackTable = NSTableView()
+    private let artworkView = ArtworkView()
 
     private var searchTimer: Timer?
     private var updatingUI = false
+    private var keyMonitor: Any?
+    private var artworkToken = 0
 
     // MARK: Init
 
@@ -51,15 +57,20 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         window.title = "iTunes Remote"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.minSize = NSSize(width: 820, height: 520)
+        window.minSize = NSSize(width: 900, height: 560)
         window.appearance = NSAppearance(named: .aqua)
         window.backgroundColor = NSColor(white: 0.80, alpha: 1)
         buildViews()
         wireController()
         window.setFrameAutosaveName("MainWindow")
+        installKeyMonitor()
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        if let m = keyMonitor { NSEvent.removeMonitor(m) }
+    }
 
     // MARK: Layout
 
@@ -71,7 +82,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         content.autoresizesSubviews = true
         window.contentView = content
         let W = content.bounds.width, H = content.bounds.height
-        let toolbarH: CGFloat = 64, statusH: CGFloat = 24, gutter: CGFloat = 0
+        let toolbarH: CGFloat = 64, statusH: CGFloat = 24
 
         // Toolbar: transport at the left, display centred, search at the right.
         toolbar.frame = NSRect(x: 0, y: H - toolbarH, width: W, height: toolbarH)
@@ -84,16 +95,32 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         for button in [previousButton, playButton, nextButton] {
             let s = button.intrinsicContentSize
             button.frame = NSRect(x: x, y: round(midY - s.height / 2), width: s.width, height: s.height)
+            button.target = self
             toolbar.addSubview(button)
             x += s.width + 4
         }
-        volumeSlider.frame = NSRect(x: x + 12, y: round(midY - 9), width: 120, height: 18)
+        previousButton.action = #selector(previousTrack(_:))
+        playButton.action = #selector(togglePlay(_:))
+        nextButton.action = #selector(nextTrack(_:))
+
+        volumeSlider.frame = NSRect(x: x + 12, y: round(midY - 9), width: 110, height: 18)
+        volumeSlider.onChange = { [weak self] v in
+            self?.player.setVolume(Int((v * 100).rounded()))
+        }
         toolbar.addSubview(volumeSlider)
 
-        display.frame = NSRect(x: round((W - 440) / 2), y: round(midY - 19), width: 440, height: 38)
+        display.frame = NSRect(x: round((W - 440) / 2), y: round(midY - 22), width: 440, height: 44)
         display.autoresizingMask = [.minXMargin, .maxXMargin]
         display.primary = "iTunes Remote"
+        display.onSeek = { [weak self] seconds in self?.player.seek(to: seconds) }
         toolbar.addSubview(display)
+
+        let apSize = airPlayButton.intrinsicContentSize
+        airPlayButton.frame = NSRect(x: W - 180 - 16 - apSize.width - 8, y: round(midY - apSize.height / 2),
+                                     width: apSize.width, height: apSize.height)
+        airPlayButton.autoresizingMask = [.minXMargin]
+        airPlayButton.onClick = { [weak self] sender in self?.showOutputMenu(sender) }
+        toolbar.addSubview(airPlayButton)
 
         searchField.frame = NSRect(x: W - 180 - 16, y: round(midY - 11), width: 180, height: 22)
         searchField.autoresizingMask = [.minXMargin]
@@ -115,16 +142,34 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         statusLabel.textColor = NSColor(white: 0.2, alpha: 1)
         statusBar.addSubview(statusLabel)
 
-        // Main split: source list | right side
-        mainSplit.frame = NSRect(x: gutter, y: statusH, width: W - 2 * gutter, height: H - toolbarH - statusH)
+        // Main split: [source list over artwork] | right side
+        mainSplit.frame = NSRect(x: 0, y: statusH, width: W, height: H - toolbarH - statusH)
         mainSplit.autoresizingMask = [.width, .height]
         mainSplit.isVertical = true
         mainSplit.dividerStyle = .thin
         content.addSubview(mainSplit)
 
+        // Constraints rather than autoresizing: the clip view kept coming up
+        // scrolled by the artwork pane's height under the springs-and-struts
+        // layout the split view drives.
+        let leftPane = NSView(frame: NSRect(x: 0, y: 0, width: 190, height: mainSplit.bounds.height))
+        artworkView.caption = "SELECTED ITEM"
         let sourceScroll = scroll(for: sourceList)
-        sourceScroll.frame = NSRect(x: 0, y: 0, width: 190, height: mainSplit.bounds.height)
-        mainSplit.addArrangedSubview(sourceScroll)
+        for v in [artworkView as NSView, sourceScroll as NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            leftPane.addSubview(v)
+        }
+        NSLayoutConstraint.activate([
+            artworkView.leadingAnchor.constraint(equalTo: leftPane.leadingAnchor),
+            artworkView.trailingAnchor.constraint(equalTo: leftPane.trailingAnchor),
+            artworkView.bottomAnchor.constraint(equalTo: leftPane.bottomAnchor),
+            artworkView.heightAnchor.constraint(equalToConstant: 200),
+            sourceScroll.leadingAnchor.constraint(equalTo: leftPane.leadingAnchor),
+            sourceScroll.trailingAnchor.constraint(equalTo: leftPane.trailingAnchor),
+            sourceScroll.topAnchor.constraint(equalTo: leftPane.topAnchor),
+            sourceScroll.bottomAnchor.constraint(equalTo: artworkView.topAnchor),
+        ])
+        mainSplit.addArrangedSubview(leftPane)
 
         rightSplit.frame = NSRect(x: 0, y: 0, width: mainSplit.bounds.width - 191, height: mainSplit.bounds.height)
         rightSplit.isVertical = false
@@ -157,6 +202,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func scroll(for table: NSTableView) -> NSScrollView {
         let s = NSScrollView()
+        table.autoresizingMask = [.width]
         s.documentView = table
         s.hasVerticalScroller = true
         s.hasHorizontalScroller = false
@@ -177,6 +223,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         sourceList.dataSource = self
         sourceList.delegate = self
         sourceList.enclosingScrollView?.backgroundColor = Aqua.sidebarBackground
+        sourceList.target = self
+        sourceList.doubleAction = #selector(sourceDoubleClicked(_:))
     }
 
     private func configureBrowser(_ table: NSTableView, title: String) {
@@ -205,6 +253,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         trackTable.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         trackTable.dataSource = self
         trackTable.delegate = self
+        trackTable.target = self
+        trackTable.doubleAction = #selector(trackDoubleClicked(_:))
     }
 
     // MARK: Controller wiring
@@ -212,10 +262,23 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func wireController() {
         controller.onPlaylistsChanged = { [weak self] in self?.reloadSourceList() }
         controller.onBrowserChanged = { [weak self] in self?.reloadBrowser() }
-        controller.onTracksChanged = { [weak self] in self?.trackTable.reloadData() }
+        controller.onTracksChanged = { [weak self] in
+            self?.trackTable.reloadData()
+            self?.updateArtwork()
+        }
         controller.onStatusChanged = { [weak self] in self?.updateStatus() }
         controller.onFirstLoad = { [weak self] in self?.firstLoadDone() }
+        player.onChange = { [weak self] in self?.updatePlayerUI() }
+        player.onOutputsChanged = { [weak self] in self?.updateAirPlayButton() }
         updateStatus()
+    }
+
+    func connect(_ api: APIClient) {
+        controller.connect(api)
+        player.api = api
+        artworkCache.api = api
+        artworkCache.clear()
+        player.start()
     }
 
     private func reloadSourceList() {
@@ -225,6 +288,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         sourceList.reloadData()
         sourceList.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
         updatingUI = false
+        // The clip view comes up offset by the artwork pane's height once the
+        // split view has laid out, so pin it to the top after that pass.
+        pinSourceListToTop()
+        DispatchQueue.main.async { [weak self] in self?.pinSourceListToTop() }
+    }
+
+    private func pinSourceListToTop() {
+        guard let scroll = sourceList.enclosingScrollView else { return }
+        scroll.contentView.setBoundsOrigin(.zero)
+        scroll.reflectScrolledClipView(scroll.contentView)
+        sourceList.scrollRowToVisible(0)
     }
 
     private func reloadBrowser() {
@@ -245,16 +319,119 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func updateStatus() {
         statusLabel.stringValue = controller.statusText
-        switch controller.source {
-        case .library: display.primary = "Library"
-        case .playlist(let p): display.primary = p.name
-        }
-        if let e = controller.lastError {
-            display.secondary = e
-        } else if let info = controller.info {
-            display.secondary = "\(info.trackCount) songs in iTunes \(info.applicationVersion)"
+        updatePlayerUI()
+    }
+
+    // MARK: Player UI
+
+    private func updatePlayerUI() {
+        let state = player.state
+        let playing = state?.isPlaying ?? false
+        playButton.glyph = playing ? .pause : .play
+
+        if let t = state?.track, state?.state != "stopped" {
+            display.duration = t.duration
+            display.position = player.displayPosition
+            display.primary = t.name
+            let parts = [t.artist, t.album].filter { !$0.isEmpty }
+            display.secondary = parts.joined(separator: " — ")
         } else {
-            display.secondary = controller.api == nil ? "Not connected" : "Loading…"
+            display.duration = nil
+            switch controller.source {
+            case .library: display.primary = "Library"
+            case .playlist(let p): display.primary = p.name
+            }
+            if let e = player.lastError, !player.itunesRunning {
+                display.secondary = e
+            } else if let e = controller.lastError {
+                display.secondary = e
+            } else if let info = controller.info {
+                display.secondary = "\(info.trackCount) songs in iTunes \(info.applicationVersion)"
+            } else {
+                display.secondary = controller.api == nil ? "Not connected" : "Loading…"
+            }
+        }
+        if let v = state?.volume, !volumeSlider.isDragging {
+            volumeSlider.value = Double(v) / 100.0
+        }
+        let up = player.itunesRunning
+        for b in [previousButton, playButton, nextButton] { b.isEnabled = up }
+        airPlayButton.isEnabled = up
+        updateArtwork()
+    }
+
+    private func updateAirPlayButton() {
+        airPlayButton.isActive = player.nonComputerOutputSelected
+    }
+
+    private func showOutputMenu(_ sender: NSView) {
+        let menu = NSMenu()
+        menu.font = Aqua.font(13)
+        if player.outputs.isEmpty {
+            let item = NSMenuItem(title: "No devices found", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+        for output in player.outputs {
+            let item = NSMenuItem(title: output.name, action: #selector(outputPicked(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = output.name
+            item.state = output.selected ? .on : .off
+            item.isEnabled = output.available
+            item.attributedTitle = NSAttributedString(string: output.name, attributes: [
+                .font: Aqua.font(13),
+                .foregroundColor: output.available ? NSColor.controlTextColor : NSColor.disabledControlTextColor,
+            ])
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let refresh = NSMenuItem(title: "Refresh Devices", action: #selector(refreshOutputs(_:)), keyEquivalent: "")
+        refresh.target = self
+        refresh.attributedTitle = NSAttributedString(string: "Refresh Devices", attributes: [.font: Aqua.font(13)])
+        menu.addItem(refresh)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: sender)
+    }
+
+    @objc private func outputPicked(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        player.toggleOutput(name)
+    }
+
+    @objc private func refreshOutputs(_ sender: Any?) {
+        Task { await player.loadOutputs() }
+    }
+
+    // MARK: Artwork
+
+    /// Shows the playing track's art, or the selected row's when nothing plays.
+    private func updateArtwork() {
+        var pid: String?
+        var caption = "SELECTED ITEM"
+        if let t = player.state?.track, player.state?.state != "stopped" {
+            pid = t.persistentId
+            caption = "NOW PLAYING"
+        } else if trackTable.selectedRow >= 0, trackTable.selectedRow < controller.tracks.count {
+            pid = controller.tracks[trackTable.selectedRow].persistentId
+        }
+        artworkView.caption = caption
+        guard let id = pid else {
+            artworkView.image = nil
+            return
+        }
+        if let hit = artworkCache.cached(id) {
+            artworkView.image = hit
+            return
+        }
+        if artworkCache.isKnownMiss(id) {
+            artworkView.image = nil
+            return
+        }
+        artworkToken += 1
+        let token = artworkToken
+        artworkView.image = nil
+        artworkCache.image(for: id) { [weak self] image in
+            guard let self = self, token == self.artworkToken else { return }
+            self.artworkView.image = image
         }
     }
 
@@ -276,6 +453,66 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             print("wrote \(path)")
         }
         exit(0)
+    }
+
+    // MARK: Transport
+
+    @objc func togglePlay(_ sender: Any?) { player.playPause() }
+    @objc func nextTrack(_ sender: Any?) { step(by: 1) }
+    @objc func previousTrack(_ sender: Any?) { step(by: -1) }
+
+    /// iTunes 12 treats `play <track>` as a one-item queue, so its own
+    /// `next track` stops playback instead of advancing. Step through the list
+    /// the user is actually looking at instead, which is also what they expect
+    /// after a search, a browser filter, or a column sort.
+    private func step(by delta: Int) {
+        guard let playing = player.state?.track?.persistentId,
+              let i = controller.tracks.firstIndex(where: { $0.persistentId == playing }) else {
+            delta > 0 ? player.next() : player.previous()
+            return
+        }
+        let j = i + delta
+        guard j >= 0, j < controller.tracks.count else { return }
+        player.play(track: controller.tracks[j].persistentId, playlist: controller.source.playlistId)
+        trackTable.selectRowIndexes(IndexSet(integer: j), byExtendingSelection: false)
+        trackTable.scrollRowToVisible(j)
+    }
+
+    @objc private func trackDoubleClicked(_ sender: Any?) {
+        let row = trackTable.clickedRow
+        guard row >= 0, row < controller.tracks.count else { return }
+        player.play(track: controller.tracks[row].persistentId, playlist: controller.source.playlistId)
+    }
+
+    @objc private func sourceDoubleClicked(_ sender: Any?) {
+        let row = sourceList.clickedRow
+        guard row >= 0, row < sourceRows.count else { return }
+        if case .playlist(let p) = sourceRows[row], let first = controller.tracks.first {
+            player.play(track: first.persistentId, playlist: p.persistentId)
+        }
+    }
+
+    private func installKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self, event.window === self.window else { return event }
+            // Space toggles playback unless a text field has focus.
+            if event.charactersIgnoringModifiers == " ",
+               !(self.window?.firstResponder is NSText) {
+                self.player.playPause()
+                return nil
+            }
+            if event.keyCode == 36, self.window?.firstResponder === self.trackTable {   // Return
+                self.trackDoubleClickedFromSelection()
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func trackDoubleClickedFromSelection() {
+        let row = trackTable.selectedRow
+        guard row >= 0, row < controller.tracks.count else { return }
+        player.play(track: controller.tracks[row].persistentId, playlist: controller.source.playlistId)
     }
 
     // MARK: Search
@@ -316,10 +553,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         switch Tag(rawValue: tableView.tag) {
         case .source:
-            let cell = AquaTables.labelCell(tableView, id: "source")
             switch sourceRows[row] {
             case .header(let s):
-                // Embossed: a hard white shadow one pixel below the gray text.
+                let cell = AquaTables.labelCell(tableView, id: "sourceHeader")
                 let emboss = NSShadow()
                 emboss.shadowColor = NSColor.white.withAlphaComponent(0.9)
                 emboss.shadowOffset = NSSize(width: 0, height: -1)
@@ -327,16 +563,16 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 cell.textField?.attributedStringValue = NSAttributedString(string: s, attributes: [
                     .font: Aqua.font(11, bold: true), .foregroundColor: Aqua.sidebarHeaderText, .shadow: emboss,
                 ])
+                return cell
             case .library:
+                let cell = AquaTables.labelCell(tableView, id: "source")
                 cell.textField?.stringValue = "Library"
-                cell.textField?.font = Aqua.font(11)
-                cell.textField?.textColor = .controlTextColor
+                return cell
             case .playlist(let p):
+                let cell = AquaTables.labelCell(tableView, id: "source")
                 cell.textField?.stringValue = p.name
-                cell.textField?.font = Aqua.font(11)
-                cell.textField?.textColor = .controlTextColor
+                return cell
             }
-            return cell
         case .genre:
             let cell = AquaTables.labelCell(tableView, id: "facet")
             cell.textField?.stringValue = facetText(controller.genres, row: row, noun: "Genre")
@@ -366,6 +602,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             default: text = ""
             }
             cell.textField?.stringValue = text
+            // The playing track is bold, as iTunes marked it.
+            let isPlaying = t.persistentId == player.state?.track?.persistentId && player.state?.state != "stopped"
+            cell.textField?.font = Aqua.font(11, bold: isPlaying)
             return cell
         case .none:
             return nil
@@ -384,7 +623,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !updatingUI, let table = notification.object as? NSTableView else { return }
+        guard let table = notification.object as? NSTableView else { return }
+        if Tag(rawValue: table.tag) == .tracks {
+            updateArtwork()
+            return
+        }
+        guard !updatingUI else { return }
         let row = table.selectedRow
         switch Tag(rawValue: table.tag) {
         case .source:

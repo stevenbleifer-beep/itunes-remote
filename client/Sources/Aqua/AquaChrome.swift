@@ -26,6 +26,17 @@ enum Aqua {
     static let chromeLine = NSColor(white: 0.48, alpha: 1)
     static let chromeHighlight = NSColor(white: 1.0, alpha: 0.55)
     static let glyph = NSColor(white: 0.22, alpha: 1)
+    static let accent = NSColor(srgbRed: 0.16, green: 0.42, blue: 0.85, alpha: 1)
+
+    /// mm:ss, as the display panel and track table show durations.
+    static func clock(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        let s = Int(seconds.rounded(.down))
+        if s >= 3600 {
+            return String(format: "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
+        }
+        return String(format: "%d:%02d", s / 60, s % 60)
+    }
 }
 
 /// A flat light-gray gradient surface: the unified toolbar of Snow Leopard
@@ -53,11 +64,58 @@ class ChromeView: NSView {
     }
 }
 
-/// The recessed display in the middle of the toolbar. Milestone 4 fills it
-/// with the now-playing state and a scrubber; for now it shows status text.
+/// The recessed display in the middle of the toolbar. Two modes: an idle mode
+/// showing the library name and count, and a playing mode with the track,
+/// "artist — album", and a scrubber that can be dragged to seek.
 final class AquaDisplayPanel: NSView {
     var primary: String = "" { didSet { needsDisplay = true } }
     var secondary: String = "" { didSet { needsDisplay = true } }
+
+    /// Nil puts the panel in idle mode.
+    var duration: Double? { didSet { needsDisplay = true } }
+    var position: Double = 0 {
+        didSet { if !isScrubbing && abs(position - oldValue) > 0.2 { needsDisplay = true } }
+    }
+    var onSeek: (Double) -> Void = { _ in }
+
+    private(set) var isScrubbing = false
+    private var scrubPosition: Double = 0
+
+    private let sideInset: CGFloat = 40   // room for the elapsed / remaining labels
+
+    private var grooveRect: NSRect {
+        NSRect(x: sideInset, y: 7, width: bounds.width - 2 * sideInset, height: 4)
+    }
+
+    // MARK: Scrubbing
+
+    override func mouseDown(with event: NSEvent) {
+        guard let total = duration, total > 0 else { return }
+        let hit = grooveRect.insetBy(dx: -6, dy: -7)
+        guard hit.contains(convert(event.locationInWindow, from: nil)) else { return }
+        isScrubbing = true
+        update(with: event, total: total)
+        while true {
+            guard let e = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) else { break }
+            update(with: e, total: total)
+            if e.type == .leftMouseUp { break }
+        }
+        isScrubbing = false
+        position = scrubPosition
+        onSeek(scrubPosition)
+    }
+
+    private func update(with event: NSEvent, total: Double) {
+        let p = convert(event.locationInWindow, from: nil)
+        let g = grooveRect
+        let f = min(1, max(0, (p.x - g.minX) / g.width))
+        scrubPosition = Double(f) * total
+        needsDisplay = true
+    }
+
+    private var shownPosition: Double { isScrubbing ? scrubPosition : position }
+
+    // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
         let r = bounds.insetBy(dx: 0.5, dy: 1.5)
@@ -71,7 +129,6 @@ final class AquaDisplayPanel: NSView {
         path.addClip()
         NSGradient(starting: NSColor(white: 0.90, alpha: 1), ending: NSColor(white: 0.97, alpha: 1))!
             .draw(in: r, angle: -90)
-        // Inset shadow that falls into the panel from the top edge.
         let inset = NSShadow()
         inset.shadowColor = NSColor.black.withAlphaComponent(0.35)
         inset.shadowBlurRadius = 3
@@ -88,17 +145,200 @@ final class AquaDisplayPanel: NSView {
         path.lineWidth = 1
         path.stroke()
 
-        let pStyle = NSMutableParagraphStyle()
-        pStyle.alignment = .center
-        pStyle.lineBreakMode = .byTruncatingTail
-        let color = NSColor(white: 0.25, alpha: 1)
-        let a1: [NSAttributedString.Key: Any] = [.font: Aqua.font(12, bold: true), .foregroundColor: color, .paragraphStyle: pStyle]
-        let a2: [NSAttributedString.Key: Any] = [.font: Aqua.font(11), .foregroundColor: color, .paragraphStyle: pStyle]
-        if secondary.isEmpty {
-            (primary as NSString).draw(in: NSRect(x: 8, y: bounds.midY - 8, width: bounds.width - 16, height: 17), withAttributes: a1)
+        if duration == nil {
+            drawIdle()
         } else {
-            (primary as NSString).draw(in: NSRect(x: 8, y: bounds.midY + 1, width: bounds.width - 16, height: 17), withAttributes: a1)
-            (secondary as NSString).draw(in: NSRect(x: 8, y: bounds.midY - 15, width: bounds.width - 16, height: 15), withAttributes: a2)
+            drawPlaying()
+        }
+    }
+
+    private func centred(_ text: String, _ rect: NSRect, size: CGFloat, bold: Bool = false, alpha: CGFloat = 1) {
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        style.lineBreakMode = .byTruncatingTail
+        (text as NSString).draw(in: rect, withAttributes: [
+            .font: Aqua.font(size, bold: bold),
+            .foregroundColor: NSColor(white: 0.25, alpha: alpha),
+            .paragraphStyle: style,
+        ])
+    }
+
+    private func drawIdle() {
+        if secondary.isEmpty {
+            centred(primary, NSRect(x: 8, y: bounds.midY - 8, width: bounds.width - 16, height: 17), size: 12, bold: true)
+        } else {
+            centred(primary, NSRect(x: 8, y: bounds.midY + 1, width: bounds.width - 16, height: 17), size: 12, bold: true)
+            centred(secondary, NSRect(x: 8, y: bounds.midY - 15, width: bounds.width - 16, height: 15), size: 11)
+        }
+    }
+
+    private func drawPlaying() {
+        let total = duration ?? 0
+        let pos = min(total, max(0, shownPosition))
+        let w = bounds.width - 16
+
+        centred(primary, NSRect(x: 8, y: bounds.maxY - 20, width: w, height: 15), size: 12, bold: true)
+        centred(secondary, NSRect(x: 8, y: bounds.maxY - 34, width: w, height: 14), size: 11)
+
+        // Times either side of the groove.
+        let g = grooveRect
+        let timeStyle = NSMutableParagraphStyle()
+        timeStyle.alignment = .center
+        let timeAttrs: [NSAttributedString.Key: Any] = [
+            .font: Aqua.font(9), .foregroundColor: NSColor(white: 0.35, alpha: 1), .paragraphStyle: timeStyle,
+        ]
+        (Aqua.clock(pos) as NSString).draw(
+            in: NSRect(x: 2, y: g.minY - 4, width: sideInset - 6, height: 12), withAttributes: timeAttrs)
+        (("-" + Aqua.clock(max(0, total - pos))) as NSString).draw(
+            in: NSRect(x: g.maxX + 4, y: g.minY - 4, width: sideInset - 6, height: 12), withAttributes: timeAttrs)
+
+        // Groove, recessed.
+        let groove = NSBezierPath(roundedRect: g, xRadius: 2, yRadius: 2)
+        NSGradient(starting: NSColor(white: 0.72, alpha: 1), ending: NSColor(white: 0.86, alpha: 1))!
+            .draw(in: groove, angle: -90)
+        NSColor(white: 0.56, alpha: 1).setStroke()
+        NSBezierPath(roundedRect: g.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2).stroke()
+
+        guard total > 0 else { return }
+        let f = CGFloat(pos / total)
+
+        // Filled portion.
+        if f > 0.01 {
+            let filled = NSRect(x: g.minX, y: g.minY, width: g.width * f, height: g.height)
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(roundedRect: g, xRadius: 2, yRadius: 2).addClip()
+            NSGradient(starting: NSColor(srgbRed: 0.42, green: 0.60, blue: 0.88, alpha: 1),
+                       ending: NSColor(srgbRed: 0.26, green: 0.46, blue: 0.80, alpha: 1))!
+                .draw(in: filled, angle: -90)
+            NSGraphicsContext.restoreGraphicsState()
+        }
+
+        // Knob.
+        let d: CGFloat = isScrubbing ? 12 : 10
+        let c = NSPoint(x: g.minX + g.width * f, y: g.midY)
+        let kr = NSRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)
+        let knob = NSBezierPath(ovalIn: kr.insetBy(dx: 0.5, dy: 0.5))
+        NSGraphicsContext.saveGraphicsState()
+        let sh = NSShadow()
+        sh.shadowColor = NSColor.black.withAlphaComponent(0.4)
+        sh.shadowBlurRadius = 1.5
+        sh.shadowOffset = NSSize(width: 0, height: -1)
+        sh.set()
+        NSColor(white: 0.85, alpha: 1).setFill()
+        knob.fill()
+        NSGraphicsContext.restoreGraphicsState()
+        NSGradient(starting: NSColor(white: 0.99, alpha: 1), ending: NSColor(white: 0.80, alpha: 1))!
+            .draw(in: knob, angle: -90)
+        NSColor(white: 0.40, alpha: 1).setStroke()
+        knob.lineWidth = 1
+        knob.stroke()
+    }
+}
+
+/// The AirPlay output button: the speaker-and-triangle glyph, tinted blue when
+/// something other than the computer is selected. Click opens the device menu.
+final class AquaAirPlayButton: NSView {
+    var isActive = false { didSet { needsDisplay = true } }
+    var isEnabled = true { didSet { needsDisplay = true } }
+    var onClick: (NSView) -> Void = { _ in }
+    private var isPressed = false
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 22, height: 20) }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        isPressed = true
+        needsDisplay = true
+        onClick(self)
+        isPressed = false
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let color: NSColor = !isEnabled ? NSColor(white: 0.62, alpha: 1)
+            : isActive ? Aqua.accent : Aqua.glyph
+        if isPressed || isActive {
+            let bg = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 3, yRadius: 3)
+            (isActive ? Aqua.accent.withAlphaComponent(0.14) : NSColor.black.withAlphaComponent(0.08)).setFill()
+            bg.fill()
+        }
+        let w: CGFloat = 14, h: CGFloat = 11
+        let x = bounds.midX - w / 2, y = bounds.midY - h / 2 + 2
+
+        // Screen outline.
+        let screen = NSBezierPath(roundedRect: NSRect(x: x, y: y, width: w, height: h), xRadius: 1.5, yRadius: 1.5)
+        screen.lineWidth = 1.4
+        color.setStroke()
+        screen.stroke()
+
+        // Triangle below it.
+        let t = NSBezierPath()
+        t.move(to: NSPoint(x: bounds.midX - 5, y: y - 1.5))
+        t.line(to: NSPoint(x: bounds.midX + 5, y: y - 1.5))
+        t.line(to: NSPoint(x: bounds.midX, y: y - 7))
+        t.close()
+        color.setFill()
+        t.fill()
+    }
+}
+
+/// Album art with the iTunes 10 frame, plus a drawn placeholder. Square.
+final class ArtworkView: NSView {
+    var image: NSImage? { didSet { needsDisplay = true } }
+    var caption: String = "" { didSet { needsDisplay = true } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        Aqua.sidebarBackground.setFill()
+        bounds.fill()
+
+        let side = min(bounds.width, bounds.height - 16) - 16
+        guard side > 20 else { return }
+        let box = NSRect(x: round(bounds.midX - side / 2), y: bounds.maxY - side - 6, width: side, height: side)
+
+        if let img = image {
+            NSGraphicsContext.saveGraphicsState()
+            let sh = NSShadow()
+            sh.shadowColor = NSColor.black.withAlphaComponent(0.35)
+            sh.shadowBlurRadius = 3
+            sh.shadowOffset = NSSize(width: 0, height: -1)
+            sh.set()
+            NSColor.white.setFill()
+            NSBezierPath(rect: box).fill()
+            NSGraphicsContext.restoreGraphicsState()
+            img.draw(in: box, from: .zero, operation: .sourceOver, fraction: 1,
+                     respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high.rawValue])
+        } else {
+            NSGradient(starting: NSColor(white: 0.97, alpha: 1), ending: NSColor(white: 0.88, alpha: 1))!
+                .draw(in: box, angle: -90)
+            // A drawn disc, so no artwork ships with the app.
+            let c = NSPoint(x: box.midX, y: box.midY)
+            let r = side * 0.24
+            NSColor(white: 0.78, alpha: 1).setStroke()
+            for k in [1.0, 0.72, 0.44] as [CGFloat] {
+                let p = NSBezierPath(ovalIn: NSRect(x: c.x - r * k, y: c.y - r * k, width: r * k * 2, height: r * k * 2))
+                p.lineWidth = 1
+                p.stroke()
+            }
+            NSColor(white: 0.80, alpha: 1).setFill()
+            NSBezierPath(ovalIn: NSRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4)).fill()
+        }
+        NSColor(white: 0.55, alpha: 1).setStroke()
+        NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5)).stroke()
+
+        if !caption.isEmpty {
+            let style = NSMutableParagraphStyle()
+            style.alignment = .center
+            style.lineBreakMode = .byTruncatingTail
+            let emboss = NSShadow()
+            emboss.shadowColor = NSColor.white.withAlphaComponent(0.9)
+            emboss.shadowOffset = NSSize(width: 0, height: -1)
+            emboss.shadowBlurRadius = 0
+            (caption as NSString).draw(in: NSRect(x: 4, y: 2, width: bounds.width - 8, height: 14), withAttributes: [
+                .font: Aqua.font(9, bold: true),
+                .foregroundColor: Aqua.sidebarHeaderText,
+                .paragraphStyle: style,
+                .shadow: emboss,
+            ])
         }
     }
 }

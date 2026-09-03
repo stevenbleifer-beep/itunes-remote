@@ -39,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func connect(with settings: ServerSettings) {
         guard let url = settings.baseURL else { return }
-        main.controller.connect(APIClient(baseURL: url, token: settings.token))
+        main.connect(APIClient(baseURL: url, token: settings.token))
     }
 
     @objc func showConnectPanel(_ sender: Any?) {

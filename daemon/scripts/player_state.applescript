@@ -2,11 +2,11 @@
 on run argv
     set US to character id 31
     tell application "iTunes"
-        set st to "stopped"
+        set pstate to "stopped"
         if player state is playing then
-            set st to "playing"
+            set pstate to "playing"
         else if player state is paused then
-            set st to "paused"
+            set pstate to "paused"
         end if
         set vol to sound volume
         set pos to 0
@@ -34,6 +34,6 @@ on run argv
                 set plPid to persistent ID of current playlist
             end try
         end try
-        return st & US & vol & US & pos & US & pid & US & dbid & US & nm & US & ar & US & al & US & dur & US & plName & US & plPid
+        return pstate & US & vol & US & pos & US & pid & US & dbid & US & nm & US & ar & US & al & US & dur & US & plName & US & plPid
     end tell
 end run

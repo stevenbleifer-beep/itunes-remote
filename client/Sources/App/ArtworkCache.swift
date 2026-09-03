@@ -1,0 +1,63 @@
+import Cocoa
+
+/// Fetches and caches album art. Misses are remembered too, because a track
+/// with no artwork costs the daemon an AppleScript round trip to discover.
+@MainActor
+final class ArtworkCache {
+    var api: APIClient?
+
+    private let cache = NSCache<NSString, NSImage>()
+    private var misses = Set<String>()
+    private var inFlight: [String: [(NSImage?) -> Void]] = [:]
+
+    init(limit: Int = 400) {
+        cache.countLimit = limit
+    }
+
+    func cached(_ persistentId: String) -> NSImage? {
+        cache.object(forKey: persistentId as NSString)
+    }
+
+    func isKnownMiss(_ persistentId: String) -> Bool {
+        misses.contains(persistentId)
+    }
+
+    /// Calls back on the main actor, immediately when already cached.
+    func image(for persistentId: String, then completion: @escaping (NSImage?) -> Void) {
+        if let hit = cache.object(forKey: persistentId as NSString) {
+            completion(hit)
+            return
+        }
+        if misses.contains(persistentId) {
+            completion(nil)
+            return
+        }
+        if inFlight[persistentId] != nil {
+            inFlight[persistentId]?.append(completion)
+            return
+        }
+        guard let api = api else {
+            completion(nil)
+            return
+        }
+        inFlight[persistentId] = [completion]
+        Task {
+            var image: NSImage?
+            if let data = try? await api.artwork(for: persistentId), !data.isEmpty {
+                image = NSImage(data: data)
+            }
+            if let image = image {
+                cache.setObject(image, forKey: persistentId as NSString)
+            } else {
+                misses.insert(persistentId)
+            }
+            let waiting = inFlight.removeValue(forKey: persistentId) ?? []
+            for block in waiting { block(image) }
+        }
+    }
+
+    func clear() {
+        cache.removeAllObjects()
+        misses.removeAll()
+    }
+}
