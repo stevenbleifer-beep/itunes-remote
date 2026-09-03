@@ -13,6 +13,15 @@ final class PlayerController {
     let local = LocalPlayer()
     /// Called when a locally played track ends, so the window can advance.
     var onLocalTrackFinished: () -> Void = {}
+    /// Fires when iTunes reaches the end of a track on its own. `play <track>`
+    /// gives iTunes a one-item queue, so it stops rather than advancing; this
+    /// is what lets the app carry on to the next track, and makes shuffle and
+    /// repeat mean something in remote mode.
+    var onRemoteTrackFinished: () -> Void = {}
+    /// Set while the app itself is asking iTunes to stop or pause, so that
+    /// deliberate stop is not mistaken for a track ending.
+    private var suppressFinish = false
+    private var lastRemote: (id: String, position: Double, duration: Double, playing: Bool)?
 
     private var remoteState: PlayerState?
     var state: PlayerState? { mode == .local ? local.state : remoteState }
@@ -68,10 +77,12 @@ final class PlayerController {
         defer { inFlight = false }
         do {
             let s = try await api.playerState()
+            let finished = reachedEnd(s)
             remoteState = s
             lastPoll = Date()
             lastError = nil
             itunesRunning = true
+            if finished { onRemoteTrackFinished() }
         } catch let e as APIError where e.status == 503 {
             itunesRunning = false
             lastError = e.message
@@ -80,6 +91,29 @@ final class PlayerController {
             lastError = error.localizedDescription
         }
         onChange()
+    }
+
+    /// True when iTunes has just run off the end of a track by itself.
+    ///
+    /// A deliberate stop leaves the position anywhere; a track that played out
+    /// leaves it at (or within a couple of seconds of) the duration. That is
+    /// the only signal available, since iTunes reports a finished one-item
+    /// queue simply as "stopped".
+    private func reachedEnd(_ new: PlayerState) -> Bool {
+        defer {
+            if let t = new.track {
+                lastRemote = (t.persistentId, new.position, t.duration, new.isPlaying)
+            } else if new.state == "stopped" {
+                lastRemote = nil
+            }
+        }
+        guard mode == .remote, new.state == "stopped", new.track == nil,
+              let previous = lastRemote, previous.playing, previous.duration > 0 else { return false }
+        guard !suppressFinish else {
+            suppressFinish = false
+            return false
+        }
+        return previous.position >= previous.duration - 5
     }
 
     /// Position estimated between polls so the scrubber moves smoothly.
@@ -114,7 +148,15 @@ final class PlayerController {
     func playPause() {
         if mode == .local { local.playPause(); return }
         guard let api = api else { return }
+        suppressFinish = true
         command { try await api.playerCommand("playpause") }
+    }
+
+    func stop() {
+        if mode == .local { local.stop(); return }
+        guard let api = api else { return }
+        suppressFinish = true
+        command { try await api.playerCommand("stop") }
     }
 
     /// Plays a track wherever the current mode says. Local needs the Track

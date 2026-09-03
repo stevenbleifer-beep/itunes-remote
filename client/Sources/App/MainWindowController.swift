@@ -9,6 +9,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     let controller = LibraryController()
     let player = PlayerController()
     let artworkCache = ArtworkCache()
+    private let mediaKeys = MediaKeys()
     var snapshotPath: String?
 
     private enum Tag: Int { case source = 0, browser, tracks }
@@ -857,6 +858,16 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         player.onOutputsChanged = { [weak self] in self?.updateAirPlayButton() }
         player.onError = { [weak self] message in self?.flashStatus(message) }
         player.onLocalTrackFinished = { [weak self] in self?.step(by: 1) }
+        player.onRemoteTrackFinished = { [weak self] in self?.step(by: 1) }
+        // The Mac's media keys go to whichever app here is the "now playing"
+        // app, so the app claims that role and forwards them on.
+        mediaKeys.onTogglePlayPause = { [weak self] in self?.player.playPause() }
+        mediaKeys.onPlay = { [weak self] in self?.player.playPause() }
+        mediaKeys.onPause = { [weak self] in self?.player.playPause() }
+        mediaKeys.onNext = { [weak self] in self?.step(by: 1) }
+        mediaKeys.onPrevious = { [weak self] in self?.step(by: -1) }
+        mediaKeys.onSeek = { [weak self] seconds in self?.player.seek(to: seconds) }
+        mediaKeys.start()
         updateStatus()
     }
 
@@ -1566,6 +1577,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         if let v = state?.volume, !volumeSlider.isDragging {
             volumeSlider.value = Double(v) / 100.0
         }
+        let stopped = state?.track == nil || state?.state == "stopped"
+        mediaKeys.publish(title: state?.track?.name, artist: state?.track?.artist,
+                          album: state?.track?.album, duration: state?.track?.duration,
+                          elapsed: player.displayPosition, playing: playing, stopped: stopped)
         shuffleButton.isOn = state?.shuffle ?? false
         let mode = state?.repeatMode ?? "off"
         repeatButton.glyph = mode == "one" ? .repeatOne : .repeatAll
@@ -1703,16 +1718,67 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// `next track` stops playback instead of advancing. Step through the list
     /// the user is actually looking at instead, which is also what they expect
     /// after a search, a browser filter, or a column sort.
+    /// Rows already played in this shuffle run, newest last, so Previous can
+    /// walk back through them and Next avoids an immediate repeat.
+    private var shuffleHistory: [Int] = []
+
+    /// Steps to the next or previous track, honouring shuffle and repeat.
+    ///
+    /// iTunes cannot do this for us. Its app-level `shuffle enabled` and
+    /// `song repeat` accept a write and then have no effect on playback; the
+    /// properties that actually govern it live on the current playlist and are
+    /// read-only (-10006). Since `play <track>` gives iTunes a one-item queue,
+    /// this app already owns the queue in both remote and local mode — so
+    /// shuffle and repeat are implemented here, where they genuinely work.
     private func step(by delta: Int) {
         guard let playing = player.state?.track?.persistentId,
               let i = rows.firstIndex(where: { $0.persistentId == playing }) else {
             delta > 0 ? player.next() : player.previous()
             return
         }
-        let j = i + delta
-        guard j >= 0, j < rows.count else { return }
-        player.play(rows[j], playlist: controller.source.playlistId)
-        if let r = tableRow(forTrackIndex: j) {
+        let mode = player.state?.repeatMode ?? "off"
+        // Repeat One holds on the same track, whichever way you step.
+        if mode == "one" {
+            playRow(i)
+            return
+        }
+        guard let j = nextIndex(from: i, delta: delta,
+                                shuffle: player.state?.shuffle ?? false,
+                                repeatAll: mode == "all") else { return }
+        playRow(j)
+    }
+
+    private func nextIndex(from i: Int, delta: Int, shuffle: Bool, repeatAll: Bool) -> Int? {
+        guard rows.count > 1 else { return repeatAll ? i : nil }
+        guard shuffle else {
+            let j = i + delta
+            if j >= 0 && j < rows.count { return j }
+            guard repeatAll else { return nil }
+            return j < 0 ? rows.count - 1 : 0
+        }
+        if delta < 0 {
+            // Walk back through what shuffle actually played.
+            while let previous = shuffleHistory.popLast() {
+                if previous != i && previous < rows.count { return previous }
+            }
+            return nil
+        }
+        shuffleHistory.append(i)
+        // Don't repeat anything from the recent past until the pool runs dry.
+        let window = min(rows.count - 1, 50)
+        let recent = Set(shuffleHistory.suffix(window) + [i])
+        let pool = rows.indices.filter { !recent.contains($0) }
+        if let pick = pool.randomElement() { return pick }
+        // Everything's been played: start over if repeating, else stop.
+        guard repeatAll else { return nil }
+        shuffleHistory.removeAll()
+        return rows.indices.filter { $0 != i }.randomElement()
+    }
+
+    private func playRow(_ index: Int) {
+        guard index >= 0, index < rows.count else { return }
+        player.play(rows[index], playlist: controller.source.playlistId)
+        if let r = tableRow(forTrackIndex: index) {
             trackTable.selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
             trackTable.scrollRowToVisible(r)
         }

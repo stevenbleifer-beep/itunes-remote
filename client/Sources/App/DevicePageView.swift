@@ -975,7 +975,13 @@ final class DeviceMusicView: NSView {
         caveat.font = Aqua.font(11)
         caveat.textColor = NSColor(white: 0.42, alpha: 1)
         caveat.lineBreakMode = .byWordWrapping
-        caveat.maximumNumberOfLines = 2
+        // Wrap to whatever width there is, and never demand width of its own.
+        // Capped at two lines, this paragraph asked for 2259 points to fit,
+        // which silently became the window's minimum width — the window could
+        // be made shorter but not narrower.
+        caveat.maximumNumberOfLines = 0
+        caveat.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        caveat.preferredMaxLayoutWidth = 600
         caveat.stringValue = "Playlists shows what syncs to the iPod. The Artists, Genres and Albums "
             + "lists show what is on the iPod — a Beatles album can be there through a synced "
             + "playlist even when the Beatles artist itself was never ticked. iTunes keeps its own "
