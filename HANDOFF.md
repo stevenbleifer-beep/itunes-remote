@@ -60,7 +60,7 @@ What was found and fixed, in the order Steven listed them:
   shuffle false / repeat off, and the window read them from there. Shuffle and
   repeat are now `PlayerController`'s own, persisted in defaults, laid over the
   live state in both modes; iTunes is only told about them as a courtesy.
-- **Local volume snapped to 75%.** Persisted under `localVolume`.
+- **Local volume snapped to 75%.** Now 100% on every switch to this Mac, at Steven's request.
 - **Recently Added.** `recent` was applied *after* the browser filters and was
   ignored by the facet endpoints entirely, so the Artists pane listed all
   2,904 artists and an album picked from the newest 600 *albums* could have

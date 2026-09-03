@@ -191,6 +191,8 @@ final class PlayerController {
         guard new != mode else { return }
         mode = new
         if new == .local {
+            // Every switch to this Mac starts at full volume.
+            local.volume = 1
             if remoteState?.isPlaying == true, let api = api {
                 command { try await api.playerCommand("pause") }
             }
