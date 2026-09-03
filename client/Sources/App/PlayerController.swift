@@ -126,6 +126,23 @@ final class PlayerController {
         }
     }
 
+    func setShuffle(_ on: Bool) {
+        guard let api = api else { return }
+        command { try await api.setShuffle(on) }
+    }
+
+    /// off -> all -> one -> off, the order the iTunes button cycled.
+    func cycleRepeat() {
+        guard let api = api else { return }
+        let next: String
+        switch state?.repeatMode ?? "off" {
+        case "off": next = "all"
+        case "all": next = "one"
+        default: next = "off"
+        }
+        command { try await api.setRepeat(next) }
+    }
+
     func launchITunes() {
         guard let api = api else { return }
         command { try await api.launchITunes() }

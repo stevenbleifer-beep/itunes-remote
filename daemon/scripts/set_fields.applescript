@@ -43,6 +43,9 @@ on setField(t, fn, fv)
         else if fn is "compilation" then
             set old to (compilation of t) as text
             set compilation of t to (fv is "true")
+        else if fn is "enabled" then
+            set old to (enabled of t) as text
+            set enabled of t to (fv is "true")
         else
             error "unsupported field: " & fn
         end if

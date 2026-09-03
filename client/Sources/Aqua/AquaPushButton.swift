@@ -11,13 +11,14 @@ struct AquaGelPalette {
     var strokeBottom: NSColor
     var text: NSColor
 
+    // Snow Leopard's default button: still blue, but flatter than Tiger's gel.
     static let blue = AquaGelPalette(
-        top: NSColor(srgbRed: 0.66, green: 0.80, blue: 0.97, alpha: 1),
-        middle: NSColor(srgbRed: 0.24, green: 0.50, blue: 0.88, alpha: 1),
-        bottom: NSColor(srgbRed: 0.16, green: 0.40, blue: 0.82, alpha: 1),
-        bounce: NSColor(srgbRed: 0.56, green: 0.78, blue: 1.00, alpha: 1),
-        strokeTop: NSColor(srgbRed: 0.28, green: 0.45, blue: 0.72, alpha: 1),
-        strokeBottom: NSColor(srgbRed: 0.12, green: 0.30, blue: 0.62, alpha: 1),
+        top: NSColor(srgbRed: 0.72, green: 0.83, blue: 0.97, alpha: 1),
+        middle: NSColor(srgbRed: 0.40, green: 0.61, blue: 0.92, alpha: 1),
+        bottom: NSColor(srgbRed: 0.27, green: 0.50, blue: 0.87, alpha: 1),
+        bounce: NSColor(srgbRed: 0.62, green: 0.80, blue: 1.00, alpha: 1),
+        strokeTop: NSColor(srgbRed: 0.34, green: 0.50, blue: 0.74, alpha: 1),
+        strokeBottom: NSColor(srgbRed: 0.18, green: 0.36, blue: 0.66, alpha: 1),
         text: .black
     )
 
@@ -163,8 +164,8 @@ final class AquaPushButton: NSView {
         if isDefault && isEnabled {
             NSGraphicsContext.saveGraphicsState()
             let glow = NSShadow()
-            glow.shadowColor = NSColor(srgbRed: 0.35, green: 0.60, blue: 1.0, alpha: 0.25 + 0.35 * pulse)
-            glow.shadowBlurRadius = 3 + 2 * pulse
+            glow.shadowColor = NSColor(srgbRed: 0.35, green: 0.60, blue: 1.0, alpha: 0.10 + 0.30 * pulse)
+            glow.shadowBlurRadius = 2 + 2 * pulse
             glow.shadowOffset = .zero
             glow.set()
             palette.bottom.setFill()
@@ -204,9 +205,9 @@ final class AquaPushButton: NSView {
                                width: body.width - 2, height: body.height / 2 - 1)
         let gloss = NSBezierPath(roundedRect: glossRect, xRadius: radius - 1, yRadius: radius - 1)
         NSGradient(colorsAndLocations:
-            (NSColor.white.withAlphaComponent(0.95), 0.0),
-            (NSColor.white.withAlphaComponent(0.55), 0.55),
-            (NSColor.white.withAlphaComponent(0.18), 1.0))!
+            (NSColor.white.withAlphaComponent(0.78), 0.0),
+            (NSColor.white.withAlphaComponent(0.42), 0.55),
+            (NSColor.white.withAlphaComponent(0.12), 1.0))!
             .draw(in: gloss, angle: -90)
 
         if pressed {

@@ -36,7 +36,7 @@ class Track(object):
         "persistent_id", "track_id", "name", "artist", "album", "album_artist",
         "genre", "composer", "year", "track_number", "track_count",
         "disc_number", "disc_count", "total_time", "kind", "size", "bit_rate",
-        "compilation", "date_added", "date_modified", "location", "artwork_count",
+        "compilation", "enabled", "date_added", "date_modified", "location", "artwork_count",
         "search", "sort_key",
     )
 
@@ -54,6 +54,7 @@ class Track(object):
         "track_number": "track number",
         "disc_number": "disc number",
         "compilation": "compilation",
+        "enabled": "enabled",
     }
 
     # The subset of EDITABLE that appears in sort_key. Editing anything else,
@@ -83,6 +84,7 @@ class Track(object):
         self.size = raw.get("Size")
         self.bit_rate = raw.get("Bit Rate")
         self.compilation = bool(raw.get("Compilation", False))
+        self.enabled = not raw.get("Disabled", False)   # the track checkbox
         self.date_added = _iso(raw.get("Date Added"))
         self.date_modified = _iso(raw.get("Date Modified"))
         self.location = _posix_path(raw.get("Location"))
@@ -124,6 +126,7 @@ class Track(object):
             "size": self.size,
             "bitRate": self.bit_rate,
             "compilation": self.compilation,
+            "enabled": self.enabled,
             "dateAdded": self.date_added,
             "dateModified": self.date_modified,
         }
@@ -268,7 +271,7 @@ class Library(object):
 
     COMPACT_COLUMNS = (
         "persistentId", "name", "artist", "album", "albumArtist", "genre",
-        "year", "trackNumber", "discNumber", "totalTime", "size", "compilation",
+        "year", "trackNumber", "discNumber", "totalTime", "size", "compilation", "enabled",
     )
 
     def query(self, q=None, genre=None, artist=None, album=None,
@@ -293,7 +296,7 @@ class Library(object):
             out["columns"] = list(self.COMPACT_COLUMNS)
             out["rows"] = [
                 [t.persistent_id, t.name, t.artist, t.album, t.album_artist, t.genre,
-                 t.year, t.track_number, t.disc_number, t.total_time, t.size, t.compilation]
+                 t.year, t.track_number, t.disc_number, t.total_time, t.size, t.compilation, t.enabled]
                 for t in page
             ]
         else:

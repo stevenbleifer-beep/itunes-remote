@@ -87,6 +87,13 @@ final class LibraryController {
         reload()
     }
 
+    /// Mirrors a checkbox change locally without refetching the whole list.
+    func setEnabled(_ persistentId: String, _ on: Bool) {
+        if let i = tracks.firstIndex(where: { $0.persistentId == persistentId }) {
+            tracks[i].enabled = on
+        }
+    }
+
     /// Replaces the cached playlist list after a create, add or remove.
     func replacePlaylists(_ list: [Playlist]) {
         playlists = list

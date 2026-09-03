@@ -90,6 +90,10 @@ final class CoverFlowView: NSView {
             let idx = Int((fraction * CGFloat(self.albums.count - 1)).rounded())
             self.select(idx, animated: false)
         }
+        scrubber.onStep = { [weak self] delta in
+            guard let self = self else { return }
+            self.select(self.selectedIndex + delta, animated: true)
+        }
         addSubview(scrubber)
     }
 
@@ -432,11 +436,18 @@ final class CoverFlowView: NSView {
 final class CoverFlowScrubber: NSView {
     var fraction: CGFloat = 0 { didSet { needsDisplay = true } }
     var onChange: (CGFloat) -> Void = { _ in }
+    var onStep: (Int) -> Void = { _ in }
     private let knobW: CGFloat = 34
+    private let arrowW: CGFloat = 20
 
-    private var trackRect: NSRect { NSRect(x: 0, y: bounds.midY - 4, width: bounds.width, height: 8) }
+    private var trackRect: NSRect {
+        NSRect(x: arrowW, y: bounds.midY - 4, width: bounds.width - 2 * arrowW, height: 8)
+    }
 
     override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        if p.x < arrowW { onStep(-1); return }
+        if p.x > bounds.width - arrowW { onStep(1); return }
         update(event)
         while true {
             guard let e = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) else { break }
@@ -447,13 +458,21 @@ final class CoverFlowScrubber: NSView {
 
     private func update(_ e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
-        let usable = bounds.width - knobW
-        let f = min(1, max(0, (p.x - knobW / 2) / max(1, usable)))
+        let t = trackRect
+        let usable = t.width - knobW
+        let f = min(1, max(0, (p.x - t.minX - knobW / 2) / max(1, usable)))
         fraction = f
         onChange(f)
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        // End arrows, as iTunes had.
+        NSColor(white: 0.55, alpha: 1).setFill()
+        let cy = bounds.midY
+        let l = NSBezierPath()
+        l.move(to: NSPoint(x: 13, y: cy + 4)); l.line(to: NSPoint(x: 6, y: cy)); l.line(to: NSPoint(x: 13, y: cy - 4)); l.close(); l.fill()
+        let r = NSBezierPath()
+        r.move(to: NSPoint(x: bounds.width - 13, y: cy + 4)); r.line(to: NSPoint(x: bounds.width - 6, y: cy)); r.line(to: NSPoint(x: bounds.width - 13, y: cy - 4)); r.close(); r.fill()
         let t = trackRect
         let groove = NSBezierPath(roundedRect: t, xRadius: 4, yRadius: 4)
         NSColor(white: 0.10, alpha: 1).setFill()
@@ -461,7 +480,7 @@ final class CoverFlowScrubber: NSView {
         NSColor(white: 0.30, alpha: 1).setStroke()
         NSBezierPath(roundedRect: t.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4).stroke()
 
-        let x = (bounds.width - knobW) * fraction
+        let x = t.minX + (t.width - knobW) * fraction
         let k = NSRect(x: x, y: t.minY - 1, width: knobW, height: t.height + 2)
         let knob = NSBezierPath(roundedRect: k.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5)
         NSGradient(starting: NSColor(white: 0.62, alpha: 1), ending: NSColor(white: 0.38, alpha: 1))!

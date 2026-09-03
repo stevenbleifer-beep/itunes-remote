@@ -1,0 +1,181 @@
+import Cocoa
+
+enum BevelGlyph {
+    case plus, shuffle, repeatAll, repeatOne, artwork, eject, sync
+}
+
+/// The small square buttons along the bottom bar of iTunes 10: a light
+/// gradient bevel with a dark glyph. `isOn` shows the pressed-in state used
+/// for shuffle and repeat toggles.
+final class AquaBevelButton: NSView {
+    var glyph: BevelGlyph { didSet { needsDisplay = true } }
+    var isOn = false { didSet { needsDisplay = true } }
+    var isEnabled = true { didSet { needsDisplay = true } }
+    var toolTip_: String? { didSet { toolTip = toolTip_ } }
+    weak var target: AnyObject?
+    var action: Selector?
+    private var isPressed = false
+
+    init(glyph: BevelGlyph) {
+        self.glyph = glyph
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 34, height: 20) }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        isPressed = true
+        needsDisplay = true
+        var inside = true
+        while true {
+            guard let e = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) else { break }
+            let now = bounds.contains(convert(e.locationInWindow, from: nil))
+            if now != inside { inside = now; isPressed = inside; needsDisplay = true }
+            if e.type == .leftMouseUp { break }
+        }
+        isPressed = false
+        needsDisplay = true
+        if inside, let a = action { NSApp.sendAction(a, to: target, from: self) }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let r = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let path = NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3)
+        let down = isPressed || isOn
+        if down {
+            NSGradient(starting: NSColor(white: 0.62, alpha: 1), ending: NSColor(white: 0.74, alpha: 1))!.draw(in: path, angle: -90)
+        } else {
+            NSGradient(starting: NSColor(white: 0.98, alpha: 1), ending: NSColor(white: 0.84, alpha: 1))!.draw(in: path, angle: -90)
+        }
+        NSColor(white: 0.42, alpha: 1).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+        if !down {
+            NSColor(white: 1, alpha: 0.7).setFill()
+            NSRect(x: r.minX + 2, y: r.maxY - 2, width: r.width - 4, height: 1).fill()
+        }
+        let color = isEnabled ? (isOn ? Aqua.accent : NSColor(white: 0.20, alpha: 1)) : NSColor(white: 0.6, alpha: 1)
+        color.setFill()
+        color.setStroke()
+        drawGlyph(cx: bounds.midX, cy: bounds.midY)
+    }
+
+    private func drawGlyph(cx: CGFloat, cy: CGFloat) {
+        switch glyph {
+        case .plus:
+            NSRect(x: cx - 5, y: cy - 1, width: 10, height: 2).fill()
+            NSRect(x: cx - 1, y: cy - 5, width: 2, height: 10).fill()
+        case .shuffle:
+            let p = NSBezierPath()
+            p.lineWidth = 1.6
+            p.move(to: NSPoint(x: cx - 7, y: cy - 3)); p.line(to: NSPoint(x: cx - 3, y: cy - 3))
+            p.line(to: NSPoint(x: cx + 2, y: cy + 3)); p.line(to: NSPoint(x: cx + 6, y: cy + 3))
+            p.move(to: NSPoint(x: cx - 7, y: cy + 3)); p.line(to: NSPoint(x: cx - 3, y: cy + 3))
+            p.line(to: NSPoint(x: cx + 2, y: cy - 3)); p.line(to: NSPoint(x: cx + 6, y: cy - 3))
+            p.stroke()
+            for y in [cy + 3, cy - 3] {
+                let a = NSBezierPath()
+                a.move(to: NSPoint(x: cx + 5, y: y + 2.5)); a.line(to: NSPoint(x: cx + 8, y: y)); a.line(to: NSPoint(x: cx + 5, y: y - 2.5))
+                a.close(); a.fill()
+            }
+        case .repeatAll, .repeatOne:
+            let p = NSBezierPath()
+            p.lineWidth = 1.6
+            p.appendArc(withCenter: NSPoint(x: cx, y: cy), radius: 5, startAngle: 40, endAngle: 320)
+            p.stroke()
+            let a = NSBezierPath()
+            a.move(to: NSPoint(x: cx + 2, y: cy - 6.5)); a.line(to: NSPoint(x: cx + 6.5, y: cy - 4)); a.line(to: NSPoint(x: cx + 2.5, y: cy - 1))
+            a.close(); a.fill()
+            if glyph == .repeatOne {
+                NSRect(x: cx - 1, y: cy - 2.5, width: 2, height: 5).fill()
+            }
+        case .artwork:
+            let frame = NSBezierPath(rect: NSRect(x: cx - 6.5, y: cy - 5.5, width: 13, height: 11))
+            frame.lineWidth = 1.2
+            frame.stroke()
+            let hill = NSBezierPath()
+            hill.move(to: NSPoint(x: cx - 5, y: cy - 4)); hill.line(to: NSPoint(x: cx - 1, y: cy + 1))
+            hill.line(to: NSPoint(x: cx + 1.5, y: cy - 1.5)); hill.line(to: NSPoint(x: cx + 3, y: cy))
+            hill.line(to: NSPoint(x: cx + 5, y: cy - 4)); hill.close(); hill.fill()
+        case .eject:
+            let t = NSBezierPath()
+            t.move(to: NSPoint(x: cx - 6, y: cy - 1)); t.line(to: NSPoint(x: cx + 6, y: cy - 1)); t.line(to: NSPoint(x: cx, y: cy + 5))
+            t.close(); t.fill()
+            NSRect(x: cx - 6, y: cy - 5, width: 12, height: 2).fill()
+        case .sync:
+            let p = NSBezierPath()
+            p.lineWidth = 1.6
+            p.appendArc(withCenter: NSPoint(x: cx, y: cy), radius: 5, startAngle: 20, endAngle: 160)
+            p.stroke()
+            let q = NSBezierPath()
+            q.lineWidth = 1.6
+            q.appendArc(withCenter: NSPoint(x: cx, y: cy), radius: 5, startAngle: 200, endAngle: 340)
+            q.stroke()
+            for (ang, dir) in [(160.0, 1.0), (340.0, -1.0)] as [(CGFloat, CGFloat)] {
+                let rad = ang * .pi / 180
+                let tip = NSPoint(x: cx + 5 * cos(rad), y: cy + 5 * sin(rad))
+                let a = NSBezierPath()
+                a.move(to: NSPoint(x: tip.x - 3 * dir, y: tip.y + 2 * dir))
+                a.line(to: NSPoint(x: tip.x + 1 * dir, y: tip.y + 2.5 * dir))
+                a.line(to: NSPoint(x: tip.x - 0.5 * dir, y: tip.y - 2 * dir))
+                a.close(); a.fill()
+            }
+        }
+    }
+}
+
+/// A small caption under a toolbar item, "View" or "Search", embossed.
+final class AquaCaption: NSView {
+    var text: String { didSet { needsDisplay = true } }
+    init(_ text: String) { self.text = text; super.init(frame: .zero) }
+    required init?(coder: NSCoder) { fatalError() }
+    override func draw(_ dirtyRect: NSRect) {
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        let emboss = NSShadow()
+        emboss.shadowColor = NSColor.white.withAlphaComponent(0.8)
+        emboss.shadowOffset = NSSize(width: 0, height: -1)
+        emboss.shadowBlurRadius = 0
+        (text as NSString).draw(in: bounds, withAttributes: [
+            .font: Aqua.font(10), .foregroundColor: NSColor(white: 0.25, alpha: 1),
+            .paragraphStyle: style, .shadow: emboss,
+        ])
+    }
+}
+
+/// The small square checkbox from the track list: a white box with a
+/// hairline border and a dark tick. Sends its action when clicked.
+final class AquaCheckbox: NSView {
+    var isOn = false { didSet { needsDisplay = true } }
+    weak var target: AnyObject?
+    var action: Selector?
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 14, height: 14) }
+
+    override func mouseDown(with event: NSEvent) {
+        isOn.toggle()
+        if let a = action { NSApp.sendAction(a, to: target, from: self) }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let box = NSRect(x: round(bounds.midX - 5.5), y: round(bounds.midY - 5.5), width: 11, height: 11).insetBy(dx: 0.5, dy: 0.5)
+        let path = NSBezierPath(roundedRect: box, xRadius: 2, yRadius: 2)
+        NSGradient(starting: NSColor(white: 0.99, alpha: 1), ending: NSColor(white: 0.90, alpha: 1))!.draw(in: path, angle: -90)
+        NSColor(white: 0.45, alpha: 1).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+        guard isOn else { return }
+        let tick = NSBezierPath()
+        tick.lineWidth = 1.8
+        tick.lineCapStyle = .round
+        tick.lineJoinStyle = .round
+        tick.move(to: NSPoint(x: box.minX + 2.2, y: box.midY))
+        tick.line(to: NSPoint(x: box.minX + 4.6, y: box.minY + 2.4))
+        tick.line(to: NSPoint(x: box.maxX - 1.8, y: box.maxY - 1.6))
+        NSColor(white: 0.15, alpha: 1).setStroke()
+        tick.stroke()
+    }
+}

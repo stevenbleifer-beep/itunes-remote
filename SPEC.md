@@ -181,6 +181,8 @@ tell application "iTunes" to update source "IPOD_NAME"
 
 The device is a classic-style iPod with an `iPod_Control` folder, which is the kind `update` was written for, so the probe has a fair chance.
 
+**Probe result, 2026-09-03: it works.** With the iPod classic (160 GB) connected, `update source` on iTunes 12.9.5 returned without error and iTunes began syncing. Sync is therefore built: the sidebar shows a DEVICES section with the iPod and its free space, the bottom bar gains Sync and Eject buttons, and the daemon exposes `GET /api/sources`, `POST /api/sources/{name}/sync` and `POST /api/sources/{name}/eject`. The probe is kept as `daemon/probe_ipod.sh` for re-running after an iTunes update.
+
 **Known hazard:** an iPod left mounted in disk mode at `/Volumes/iPod` made iTunes hang at launch on every attempt, including after a reboot, until the volume was unmounted. `check.py` must report whether `/Volumes/iPod` is mounted, and the sync UI should offer to eject the iPod afterward.
 
 ## 8. HTTP API
@@ -220,8 +222,12 @@ GET  /api/itunes                  { running, ipodMounted }
 POST /api/itunes/launch           refuses while an iPod volume is mounted
 POST /api/player/position         body: { position: seconds }
 
-GET  /api/sources                 connected devices, if the probe succeeded
-POST /api/sources/{name}/sync
+GET  /api/sources                 connected devices with free space and capacity
+POST /api/sources/{name}/sync     fires `update`; returns "started"; no progress is available
+POST /api/sources/{name}/eject
+POST /api/player/shuffle          body: { enabled: bool }
+POST /api/player/repeat           body: { mode: "off"|"one"|"all" }
+GET  /api/albumlist               one row per album under the current filters
 ```
 
 Bind to the LAN interface. This runs on a trusted home network behind a UniFi router, so a shared token in a config file is sufficient. Do not build user accounts. Do not expose it to the internet.
@@ -253,7 +259,9 @@ Do not build this all at once. Each milestone should be independently working an
 7. **Playlists.** Create, add, remove.
 7a. **Cover Flow** (added 2026-09-02). A view switcher in the toolbar like iTunes 10's (list, album list, grid, Cover Flow). Cover Flow is the iTunes 10 look: a black reflective stage above the track table, the selected album's cover facing forward with the neighbors angled away on both sides, mirrored reflections below, the album title and artist centered under the cover, a scrubber to flip through albums, and arrow keys to step. The daemon serves one cover per album (the first track in the album with artwork). Modern niceties that do not break the look: smooth animation at the display's refresh rate, Retina-sharp covers, trackpad swipe and pinch to flip and resize, a search that jumps the flow to the first matching album, and covers loaded lazily with a placeholder so a 9,000-album library does not stall.
 8. **Remaining Aqua polish.** Scroll bars, table headers, search field, window chrome refinement.
-9. **iPod sync**, only if the section 7 probe succeeded.
+9. **iPod sync**, only if the section 7 probe succeeded. (Probe passed and sync built 2026-09-03.)
+
+**Status 2026-09-03:** milestones 1 through 9 are built. The remaining open items are in HANDOFF.md: running `setup.sh` for the LaunchAgent and Automation approval, the Album List and Grid views, and artwork sourcing at Cover Flow scale.
 
 ## 11. Acceptance criteria
 

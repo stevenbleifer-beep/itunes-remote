@@ -2,9 +2,11 @@ import Cocoa
 
 /// Row view with the classic pale-blue stripe and gradient selection.
 final class AquaRowView: NSTableRowView {
+    enum SelectionStyle { case blue, sidebar }
     var striped = false
     var alternate = false
     var plainBackground: NSColor = .white
+    var selectionStyle: SelectionStyle = .blue
 
     override var interiorBackgroundStyle: NSView.BackgroundStyle {
         isSelected ? .emphasized : .normal
@@ -16,9 +18,19 @@ final class AquaRowView: NSTableRowView {
     }
 
     override func drawSelection(in dirtyRect: NSRect) {
-        let top = isEmphasized ? Aqua.selectionTopKey : Aqua.selectionTopInactive
-        let bottom = isEmphasized ? Aqua.selectionBottomKey : Aqua.selectionBottomInactive
-        NSGradient(starting: top, ending: bottom)!.draw(in: bounds, angle: -90)
+        switch selectionStyle {
+        case .blue:
+            let top = isEmphasized ? Aqua.selectionTopKey : Aqua.selectionTopInactive
+            let bottom = isEmphasized ? Aqua.selectionBottomKey : Aqua.selectionBottomInactive
+            NSGradient(starting: top, ending: bottom)!.draw(in: bounds, angle: -90)
+        case .sidebar:
+            // The dark slate bar iTunes drew behind the chosen source.
+            let top = isEmphasized ? NSColor(srgbRed: 0.36, green: 0.44, blue: 0.55, alpha: 1) : NSColor(white: 0.66, alpha: 1)
+            let bottom = isEmphasized ? NSColor(srgbRed: 0.19, green: 0.26, blue: 0.36, alpha: 1) : NSColor(white: 0.52, alpha: 1)
+            NSGradient(starting: top, ending: bottom)!.draw(in: bounds, angle: -90)
+            (isEmphasized ? NSColor(srgbRed: 0.13, green: 0.19, blue: 0.28, alpha: 1) : NSColor(white: 0.45, alpha: 1)).setFill()
+            NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
+        }
     }
 }
 
@@ -144,13 +156,15 @@ enum AquaTables {
         return cell
     }
 
-    static func rowView(_ table: NSTableView, row: Int, striped: Bool, background: NSColor = .white) -> AquaRowView {
+    static func rowView(_ table: NSTableView, row: Int, striped: Bool, background: NSColor = .white,
+                        selection: AquaRowView.SelectionStyle = .blue) -> AquaRowView {
         let ident = NSUserInterfaceItemIdentifier("row")
         let v = (table.makeView(withIdentifier: ident, owner: nil) as? AquaRowView) ?? AquaRowView()
         v.identifier = ident
         v.striped = striped
         v.alternate = row % 2 == 1
         v.plainBackground = background
+        v.selectionStyle = selection
         return v
     }
 }

@@ -109,6 +109,33 @@ final class APIClient {
         return w.albums
     }
 
+    func setShuffle(_ enabled: Bool) async throws {
+        _ = try await request("POST", "/api/player/shuffle", body: ["enabled": enabled])
+    }
+
+    func setRepeat(_ mode: String) async throws {
+        _ = try await request("POST", "/api/player/repeat", body: ["mode": mode])
+    }
+
+    func sources() async throws -> [DeviceSource] {
+        struct Wrap: Decodable { let sources: [DeviceSource] }
+        let w: Wrap = try await get("/api/sources")
+        return w.sources
+    }
+
+    private func sourcePath(_ name: String, _ op: String) -> String {
+        let safe = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        return "/api/sources/\(safe)/\(op)"
+    }
+
+    func syncSource(_ name: String) async throws {
+        _ = try await request("POST", sourcePath(name, "sync"))
+    }
+
+    func ejectSource(_ name: String) async throws {
+        _ = try await request("POST", sourcePath(name, "eject"))
+    }
+
     // MARK: Writes
 
     func patchTracks(ids: [String], fields: [String: Any]) async throws -> PatchResult {
@@ -184,7 +211,8 @@ final class APIClient {
                 discNumber: i(row, "discNumber"),
                 totalTime: i(row, "totalTime"),
                 size: i(row, "size"),
-                compilation: (row[idx["compilation"]!] as? Bool) ?? false
+                compilation: (row[idx["compilation"]!] as? Bool) ?? false,
+                enabled: idx["enabled"].flatMap { row[$0] as? Bool } ?? true
             ))
         }
         return TrackPage(

@@ -4,12 +4,13 @@ import hashlib
 import json
 import logging
 import os
+import plistlib
 import re
 import tempfile
 import threading
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import artwork as artwork_mod
 from .applescript import AppleScriptError, AppleScriptTimeout, ITunesNotRunning
@@ -52,8 +53,10 @@ class Api(object):
         "trackNumber": "track_number",
         "discNumber": "disc_number",
         "compilation": "compilation",
+        "enabled": "enabled",
     }
     NUMERIC_FIELDS = frozenset(("year", "track_number", "disc_number"))
+    BOOL_FIELDS = frozenset(("compilation", "enabled"))
 
     # Small enough that the Apple Events lock is released often, so the
     # client's once-a-second player poll still gets through a long edit.
@@ -84,7 +87,12 @@ class Api(object):
             ("POST", r"/api/player/play", self.post_play),
             ("POST", r"/api/player/(?P<cmd>pause|playpause|next|previous|stop)", self.post_player_cmd),
             ("POST", r"/api/player/volume", self.post_volume),
+            ("POST", r"/api/player/shuffle", self.post_shuffle),
+            ("POST", r"/api/player/repeat", self.post_repeat),
             ("POST", r"/api/player/position", self.post_position),
+            ("GET", r"/api/sources", self.get_sources),
+            ("POST", r"/api/sources/(?P<name>[^/]+)/sync", self.post_source_sync),
+            ("POST", r"/api/sources/(?P<name>[^/]+)/eject", self.post_source_eject),
             ("GET", r"/api/outputs", self.get_outputs),
             ("POST", r"/api/outputs", self.post_outputs),
             ("PATCH", r"/api/tracks", self.patch_tracks),
@@ -153,7 +161,9 @@ class Api(object):
     @staticmethod
     def _num(s, default=0):
         try:
-            return float(s) if "." in s else int(s)
+            if "." in s or "E" in s or "e" in s:
+                return float(s)
+            return int(s)
         except (ValueError, TypeError):
             return default
 
@@ -163,9 +173,24 @@ class Api(object):
 
     # -- library reads --------------------------------------------------
 
+    ITUNES_INFO_PLIST = "/Applications/iTunes.app/Contents/Info.plist"
+    _itunes_version = None
+
+    @classmethod
+    def itunes_version(cls):
+        """iTunes' marketing version (12.9.5), not the XML's build string (12.9.5.5)."""
+        if cls._itunes_version is None:
+            try:
+                with open(cls.ITUNES_INFO_PLIST, "rb") as f:
+                    cls._itunes_version = plistlib.load(f).get("CFBundleShortVersionString", "")
+            except (OSError, ValueError):
+                cls._itunes_version = ""
+        return cls._itunes_version
+
     def get_library(self, params, query, body):
         info = self.store.lib.info()
         info.update(self.store.status())
+        info["itunesVersion"] = self.itunes_version() or info.get("applicationVersion", "")
         return info
 
     def _page(self, query, f):
@@ -310,7 +335,21 @@ class Api(object):
             }
         if f[10]:
             state["playlist"] = {"name": f[9], "persistentId": f[10]}
+        state["shuffle"] = len(f) > 11 and self._bool(f[11])
+        state["repeat"] = f[12] if len(f) > 12 else "off"
         return state
+
+    def post_shuffle(self, params, query, body):
+        enabled = bool((body or {}).get("enabled"))
+        out = self._script("player_set", "shuffle", "true" if enabled else "false", timeout=15)
+        return {"shuffle": self._bool(out)}
+
+    def post_repeat(self, params, query, body):
+        mode = (body or {}).get("mode")
+        if mode not in ("off", "one", "all"):
+            raise ApiError(400, "mode must be off, one or all")
+        out = self._script("player_set", "repeat", mode, timeout=15)
+        return {"repeat": out.strip()}
 
     def post_play(self, params, query, body):
         body = body or {}
@@ -351,6 +390,46 @@ class Api(object):
             raise ApiError(400, "body needs a numeric position in seconds")
         out = self._script("set_position", max(0.0, p), timeout=15)
         return {"position": self._num(out, p)}
+
+    # -- sources (read-only; sync is gated on the section 7 probe) --------
+
+    def get_sources(self, params, query, body):
+        recs = self.itunes.records(self._script("sources_list", timeout=20))
+        out = []
+        for r in recs:
+            if not r or not r[0]:
+                continue
+            free = self._num(r[2], -1) if len(r) > 2 else -1
+            cap = self._num(r[3], -1) if len(r) > 3 else -1
+            out.append({
+                "name": r[0],
+                "kind": r[1] if len(r) > 1 else "unknown",
+                "freeSpace": None if free < 0 else int(free),
+                "capacity": None if cap < 0 else int(cap),
+            })
+        return {"sources": out}
+
+    def _ipod_name(self, params):
+        name = unquote(params["name"])
+        sources = self.get_sources(params, None, None)["sources"]
+        if not any(s["name"] == name and s["kind"] == "iPod" for s in sources):
+            raise ApiError(404, "no iPod source named %r is connected" % name)
+        return name
+
+    def post_source_sync(self, params, query, body):
+        """Fires `update`. Section 7: report the verbatim result, no progress bar."""
+        name = self._ipod_name(params)
+        out = self._script("ipod_sync", name, timeout=60)
+        if self.write_log:
+            self.write_log.record("ipod-sync", name, None, None, "ok", out)
+        return {"source": name, "result": out}
+
+    def post_source_eject(self, params, query, body):
+        name = self._ipod_name(params)
+        out = self._script("ipod_eject", name, timeout=60)
+        if self.write_log:
+            self.write_log.record("ipod-eject", name, None, None, "ok", out)
+        return {"source": name, "result": out}
 
     # -- outputs (AirPlay) ----------------------------------------------
 
@@ -468,7 +547,7 @@ class Api(object):
 
     def _script_value(self, internal_name, value):
         """The text form handed to AppleScript as an argv item."""
-        if internal_name == "compilation":
+        if internal_name in self.BOOL_FIELDS:
             return "true" if value else "false"
         if internal_name in self.NUMERIC_FIELDS:
             if value in (None, ""):
@@ -485,7 +564,7 @@ class Api(object):
 
     def _memory_value(self, internal_name, value):
         """The typed form stored in the in-memory library."""
-        if internal_name == "compilation":
+        if internal_name in self.BOOL_FIELDS:
             if isinstance(value, str):
                 return value.strip().lower() == "true"
             return bool(value)
@@ -560,7 +639,7 @@ class Api(object):
                     old = {}
                     for i, (api_name, internal, _) in enumerate(ordered):
                         old[api_name] = self._memory_value(internal, record[2 + i]) \
-                            if internal in self.NUMERIC_FIELDS or internal == "compilation" else record[2 + i]
+                            if internal in self.NUMERIC_FIELDS or internal in self.BOOL_FIELDS else record[2 + i]
                     applied[pid] = {internal: self._memory_value(internal, value)
                                     for _, internal, value in ordered}
                     results.append({"persistentId": pid, "result": "ok", "old": old})

@@ -8,6 +8,7 @@ struct LibraryInfo: Decodable {
     let loadedAt: String
     let parseSeconds: Double
     let applicationVersion: String
+    let itunesVersion: String?
     let reloading: Bool
     let lastError: String?
 }
@@ -25,6 +26,7 @@ struct Track {
     var totalTime: Int?      // milliseconds
     var size: Int?           // bytes
     var compilation: Bool
+    var enabled: Bool = true // the checkbox column
 
     /// The artist shown in the browser and used for grouping.
     var displayArtist: String { albumArtist.isEmpty ? artist : albumArtist }
@@ -132,8 +134,19 @@ struct PlayerState: Decodable {
     let position: Double
     let track: PlayerTrack?
     let playlist: PlayerPlaylist?
+    let shuffle: Bool?
+    let `repeat`: String?
 
     var isPlaying: Bool { state == "playing" }
+    var repeatMode: String { `repeat` ?? "off" }
+}
+
+struct DeviceSource: Decodable, Equatable {
+    let name: String
+    let kind: String
+    let freeSpace: Int?
+    let capacity: Int?
+    var isIPod: Bool { kind == "iPod" }
 }
 
 struct Output: Decodable {

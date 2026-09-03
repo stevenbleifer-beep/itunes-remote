@@ -17,6 +17,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         case header(String)
         case library
         case playlist(Playlist)
+        case device(DeviceSource)
     }
 
     private var sourceRows: [SourceRow] = [.header("LIBRARY"), .library, .header("PLAYLISTS")]
@@ -31,6 +32,18 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let searchField = NSSearchField()
     private let statusBar = ChromeView()
     private let statusLabel = NSTextField(labelWithString: "")
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let viewCaption = AquaCaption("View")
+    private let searchCaption = AquaCaption("Search")
+    private let plusButton = AquaBevelButton(glyph: .plus)
+    private let shuffleButton = AquaBevelButton(glyph: .shuffle)
+    private let repeatButton = AquaBevelButton(glyph: .repeatAll)
+    private let artworkButton = AquaBevelButton(glyph: .artwork)
+    private let syncButton = AquaBevelButton(glyph: .sync)
+    private let ejectButton = AquaBevelButton(glyph: .eject)
+    private var artworkHeight: NSLayoutConstraint?
+    private var devices: [DeviceSource] = []
+    private var deviceTimer: Timer?
     private let mainSplit = NSSplitView()
     private let rightSplit = NSSplitView()
     private let browserSplit = NSSplitView()
@@ -101,7 +114,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         content.autoresizesSubviews = true
         window.contentView = content
         let W = content.bounds.width, H = content.bounds.height
-        let toolbarH: CGFloat = 64, statusH: CGFloat = 24
+        let toolbarH: CGFloat = 70, statusH: CGFloat = 24
 
         // Toolbar: transport at the left, display centred, search at the right.
         toolbar.frame = NSRect(x: 0, y: H - toolbarH, width: W, height: toolbarH)
@@ -164,6 +177,30 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             .font: Aqua.font(11),
             .foregroundColor: NSColor(white: 0.55, alpha: 1),
         ])
+
+        // Window title, drawn in the toolbar since the real title bar is hidden.
+        let emboss = NSShadow()
+        emboss.shadowColor = NSColor.white.withAlphaComponent(0.8)
+        emboss.shadowOffset = NSSize(width: 0, height: -1)
+        emboss.shadowBlurRadius = 0
+        let centred = NSMutableParagraphStyle()
+        centred.alignment = .center
+        titleLabel.attributedStringValue = NSAttributedString(string: "iTunes Remote", attributes: [
+            .font: Aqua.font(13, bold: true), .foregroundColor: NSColor(white: 0.30, alpha: 1),
+            .shadow: emboss, .paragraphStyle: centred,
+        ])
+        titleLabel.alignment = .center
+        titleLabel.frame = NSRect(x: 0, y: toolbarH - 19, width: W, height: 16)
+        titleLabel.autoresizingMask = [.width]
+        toolbar.addSubview(titleLabel)
+
+        // "View" and "Search" captions under their controls.
+        viewCaption.frame = NSRect(x: viewSwitcher.frame.minX - 10, y: 2, width: viewSwitcher.frame.width + 20, height: 13)
+        viewCaption.autoresizingMask = [.minXMargin]
+        toolbar.addSubview(viewCaption)
+        searchCaption.frame = NSRect(x: searchField.frame.minX, y: 2, width: searchField.frame.width, height: 13)
+        searchCaption.autoresizingMask = [.minXMargin]
+        toolbar.addSubview(searchCaption)
         searchField.delegate = self
         searchField.sendsWholeSearchString = false
         toolbar.addSubview(searchField)
@@ -179,6 +216,34 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         statusLabel.font = Aqua.font(11)
         statusLabel.textColor = NSColor(white: 0.2, alpha: 1)
         statusBar.addSubview(statusLabel)
+
+        var bx: CGFloat = 8
+        for (button, action, tip) in [
+            (plusButton, #selector(newPlaylist(_:)), "New Playlist"),
+            (shuffleButton, #selector(toggleShuffle(_:)), "Shuffle"),
+            (repeatButton, #selector(cycleRepeat(_:)), "Repeat"),
+            (artworkButton, #selector(toggleArtworkPane(_:)), "Show or hide artwork"),
+        ] {
+            button.frame = NSRect(x: bx, y: 2, width: 34, height: 20)
+            button.target = self
+            button.action = action
+            button.toolTip = tip
+            statusBar.addSubview(button)
+            bx += 36
+        }
+        for (button, action, tip, offset) in [
+            (syncButton, #selector(syncDevice(_:)), "Sync iPod", 8.0),
+            (ejectButton, #selector(ejectDevice(_:)), "Eject iPod", 44.0),
+        ] as [(AquaBevelButton, Selector, String, CGFloat)] {
+            button.frame = NSRect(x: W - offset - 34, y: 2, width: 34, height: 20)
+            button.autoresizingMask = [.minXMargin]
+            button.target = self
+            button.action = action
+            button.toolTip = tip
+            button.isHidden = true
+            statusBar.addSubview(button)
+        }
+        artworkButton.isOn = UserDefaults.standard.object(forKey: "artworkPane") as? Bool ?? true
 
         // Main split: [source list over artwork] | right side
         mainSplit.frame = NSRect(x: 0, y: statusH, width: W, height: H - toolbarH - statusH)
@@ -197,11 +262,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             v.translatesAutoresizingMaskIntoConstraints = false
             leftPane.addSubview(v)
         }
+        let artH = artworkView.heightAnchor.constraint(equalToConstant: artworkButton.isOn ? 200 : 0)
+        artworkHeight = artH
         NSLayoutConstraint.activate([
             artworkView.leadingAnchor.constraint(equalTo: leftPane.leadingAnchor),
             artworkView.trailingAnchor.constraint(equalTo: leftPane.trailingAnchor),
             artworkView.bottomAnchor.constraint(equalTo: leftPane.bottomAnchor),
-            artworkView.heightAnchor.constraint(equalToConstant: 200),
+            artH,
             sourceScroll.leadingAnchor.constraint(equalTo: leftPane.leadingAnchor),
             sourceScroll.trailingAnchor.constraint(equalTo: leftPane.trailingAnchor),
             sourceScroll.topAnchor.constraint(equalTo: leftPane.topAnchor),
@@ -346,6 +413,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         s.hasVerticalScroller = true
         s.hasHorizontalScroller = false
         s.autohidesScrollers = true
+        s.scrollerStyle = .legacy
+        s.verticalScroller = AquaScroller()
         s.borderType = .lineBorder
         s.drawsBackground = true
         s.backgroundColor = .white
@@ -387,6 +456,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func configureTrackTable() {
         trackTable.tag = Tag.tracks.rawValue
+        let check = AquaTables.column("enabled", title: "", width: 22, min: 22, sortable: false)
+        check.maxWidth = 22
+        check.resizingMask = []
+        trackTable.addTableColumn(check)
         trackTable.addTableColumn(AquaTables.column("name", title: "Name", width: 280, min: 100))
         trackTable.addTableColumn(AquaTables.column("totalTime", title: "Time", width: 52, min: 40, rightAligned: true))
         trackTable.addTableColumn(AquaTables.column("artist", title: "Artist", width: 180, min: 60))
@@ -453,14 +526,112 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         artworkCache.api = api
         artworkCache.clear()
         player.start()
+        loadDevices()
+        deviceTimer?.invalidate()
+        deviceTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.loadDevices() }
+        }
+    }
+
+    // MARK: Devices
+
+    private func loadDevices() {
+        guard let api = controller.api else { return }
+        Task { @MainActor in
+            guard let list = try? await api.sources() else { return }
+            let ipods = list.filter { $0.isIPod }
+            if ipods != devices {
+                devices = ipods
+                reloadSourceList()
+            }
+            syncButton.isHidden = ipods.isEmpty
+            ejectButton.isHidden = ipods.isEmpty
+        }
+    }
+
+    @objc private func syncDevice(_ sender: Any?) {
+        guard let device = devices.first, let api = controller.api else { return }
+        syncButton.isEnabled = false
+        Task { @MainActor in
+            defer { syncButton.isEnabled = true }
+            do {
+                try await api.syncSource(device.name)
+                flashStatus("Sync started on \(device.name). iTunes reports no progress; watch the iPod.")
+            } catch {
+                flashStatus("Sync failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    @objc private func ejectDevice(_ sender: Any?) {
+        guard let device = devices.first, let api = controller.api else { return }
+        Task { @MainActor in
+            do {
+                try await api.ejectSource(device.name)
+                flashStatus("Ejected \(device.name).")
+                devices = []
+                reloadSourceList()
+                syncButton.isHidden = true
+                ejectButton.isHidden = true
+            } catch {
+                flashStatus("Eject failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: Bottom bar
+
+    @objc private func toggleShuffle(_ sender: Any?) {
+        player.setShuffle(!(player.state?.shuffle ?? false))
+    }
+
+    @objc private func cycleRepeat(_ sender: Any?) {
+        player.cycleRepeat()
+    }
+
+    @objc private func toggleArtworkPane(_ sender: Any?) {
+        let show = !artworkButton.isOn
+        artworkButton.isOn = show
+        UserDefaults.standard.set(show, forKey: "artworkPane")
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            artworkHeight?.animator().constant = show ? 200 : 0
+        }
+    }
+
+    @objc private func enabledToggled(_ sender: AquaCheckbox) {
+        let row = trackTable.row(for: sender)
+        guard row >= 0, row < rows.count, let api = controller.api else { return }
+        let track = rows[row]
+        let on = sender.isOn
+        Task { @MainActor in
+            do {
+                _ = try await api.patchTracks(ids: [track.persistentId], fields: ["enabled": on])
+                controller.setEnabled(track.persistentId, on)
+                refreshRows()
+            } catch {
+                sender.isOn = !on
+                flashStatus("Could not change the checkbox: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func reloadSourceList() {
         updatingUI = true
-        sourceRows = [.header("LIBRARY"), .library, .header("PLAYLISTS")]
+        sourceRows = [.header("LIBRARY"), .library]
+        if !devices.isEmpty {
+            sourceRows.append(.header("DEVICES"))
+            sourceRows += devices.map { .device($0) }
+        }
+        sourceRows.append(.header("PLAYLISTS"))
         sourceRows += controller.playlists.map { .playlist($0) }
         sourceList.reloadData()
-        sourceList.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        var select = 1
+        if let current = controller.source.playlistId,
+           let i = sourceRows.firstIndex(where: { if case .playlist(let p) = $0 { return p.persistentId == current }; return false }) {
+            select = i
+        }
+        sourceList.selectRowIndexes(IndexSet(integer: select), byExtendingSelection: false)
         updatingUI = false
         // The clip view comes up offset by the artwork pane's height once the
         // split view has laid out, so pin it to the top after that pass.
@@ -639,7 +810,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             } else if let e = controller.lastError {
                 display.secondary = e
             } else if let info = controller.info {
-                display.secondary = "\(info.trackCount) songs in iTunes \(info.applicationVersion)"
+                let n = NumberFormatter()
+                n.numberStyle = .decimal
+                let count = n.string(from: NSNumber(value: info.trackCount)) ?? "\(info.trackCount)"
+                display.secondary = "\(count) songs in iTunes \(info.itunesVersion ?? info.applicationVersion)"
             } else {
                 display.secondary = controller.api == nil ? "Not connected" : "Loading…"
             }
@@ -647,6 +821,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         if let v = state?.volume, !volumeSlider.isDragging {
             volumeSlider.value = Double(v) / 100.0
         }
+        shuffleButton.isOn = state?.shuffle ?? false
+        let mode = state?.repeatMode ?? "off"
+        repeatButton.glyph = mode == "one" ? .repeatOne : .repeatAll
+        repeatButton.isOn = mode != "off"
         let up = player.itunesRunning
         for b in [previousButton, playButton, nextButton] { b.isEnabled = up }
         airPlayButton.isEnabled = up
@@ -885,13 +1063,15 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 ])
                 return cell
             case .library:
-                let cell = AquaTables.labelCell(tableView, id: "source")
-                cell.textField?.stringValue = "Library"
-                return cell
+                return sidebarCell(tableView, text: "Music", icon: .music)
             case .playlist(let p):
-                let cell = AquaTables.labelCell(tableView, id: "source")
-                cell.textField?.stringValue = p.name
-                return cell
+                return sidebarCell(tableView, text: p.name, icon: p.smart ? .smartPlaylist : .playlist)
+            case .device(let d):
+                var text = d.name
+                if let free = d.freeSpace, let cap = d.capacity, cap > 0 {
+                    text += "  (\(StatusFormat.size(free)) free of \(StatusFormat.size(cap)))"
+                }
+                return sidebarCell(tableView, text: text, icon: .ipod)
             }
         case .genre:
             let cell = AquaTables.labelCell(tableView, id: "facet")
@@ -908,6 +1088,18 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         case .tracks:
             guard let id = tableColumn?.identifier.rawValue, row < rows.count else { return nil }
             let t = rows[row]
+            if id == "enabled" {
+                let ident = NSUserInterfaceItemIdentifier("cell.enabled")
+                let box = (tableView.makeView(withIdentifier: ident, owner: nil) as? AquaCheckbox) ?? {
+                    let b = AquaCheckbox()
+                    b.identifier = ident
+                    b.target = self
+                    b.action = #selector(enabledToggled(_:))
+                    return b
+                }()
+                box.isOn = t.enabled
+                return box
+            }
             let right = ["totalTime", "year", "trackNumber"].contains(id)
             let cell = AquaTables.labelCell(tableView, id: right ? "trackR" : "track", rightAligned: right)
             let text: String
@@ -931,14 +1123,29 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
+    private func sidebarCell(_ table: NSTableView, text: String, icon: SidebarIcon) -> SidebarCellView {
+        let ident = NSUserInterfaceItemIdentifier("cell.sidebar")
+        let cell = (table.makeView(withIdentifier: ident, owner: nil) as? SidebarCellView) ?? SidebarCellView(frame: .zero)
+        cell.identifier = ident
+        cell.label.stringValue = text
+        cell.iconView.icon = icon
+        return cell
+    }
+
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         let tag = Tag(rawValue: tableView.tag)
         return AquaTables.rowView(tableView, row: row, striped: tag == .tracks,
-                                  background: tag == .source ? Aqua.sidebarBackground : .white)
+                                  background: tag == .source ? Aqua.sidebarBackground : .white,
+                                  selection: tag == .source ? .sidebar : .blue)
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        if Tag(rawValue: tableView.tag) == .source, case .header = sourceRows[row] { return false }
+        if Tag(rawValue: tableView.tag) == .source {
+            switch sourceRows[row] {
+            case .header, .device: return false
+            default: return true
+            }
+        }
         return true
     }
 
@@ -956,7 +1163,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             switch sourceRows[row] {
             case .library: controller.source = .library
             case .playlist(let p): controller.source = .playlist(p)
-            case .header: break
+            case .header, .device: break
             }
         case .genre:
             controller.selectedGenre = row > 0 ? controller.genres[row - 1].name : nil

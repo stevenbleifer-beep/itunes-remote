@@ -18,6 +18,14 @@ on run argv
         set dur to 0
         set plName to ""
         set plPid to ""
+        set shuf to "false"
+        if shuffle enabled then set shuf to "true"
+        set rep to "off"
+        if song repeat is one then
+            set rep to "one"
+        else if song repeat is all then
+            set rep to "all"
+        end if
         try
             set t to current track
             set pid to persistent ID of t
@@ -34,6 +42,6 @@ on run argv
                 set plPid to persistent ID of current playlist
             end try
         end try
-        return pstate & US & vol & US & pos & US & pid & US & dbid & US & nm & US & ar & US & al & US & dur & US & plName & US & plPid
+        return pstate & US & vol & US & pos & US & pid & US & dbid & US & nm & US & ar & US & al & US & dur & US & plName & US & plPid & US & shuf & US & rep
     end tell
 end run
