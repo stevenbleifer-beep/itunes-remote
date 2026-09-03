@@ -210,6 +210,27 @@ struct DeviceDetail: Decodable {
     let hasImage: Bool?
 }
 
+/// A modal dialog iTunes is showing on the MacBook Pro. Nobody is sitting in
+/// front of that machine, so the app surfaces these rather than letting them
+/// block iTunes unseen.
+struct ITunesAlert: Decodable, Equatable {
+    let message: String
+    let buttons: [String]
+}
+
+/// What came of copying tracks onto a device. `reason` is set when iTunes
+/// refused every one, and explains which setting is in the way.
+struct DeviceCopyResult: Decodable {
+    struct Failure: Decodable {
+        let persistentId: String
+        let error: String
+    }
+    let device: String
+    let added: [String]
+    let failed: [Failure]
+    let reason: String?
+}
+
 /// One track on the device, as iTunes reports it.
 struct DeviceTrack: Decodable, Equatable {
     let name: String

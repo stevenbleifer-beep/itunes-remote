@@ -27,6 +27,7 @@ final class DevicePageView: NSView {
     }
 
     private var rows: [Row] = [.header("Settings"), .summary]
+    private let nav = DeviceNavBar()
     private let header = DeviceHeaderView()
     private let list = NSTableView()
     private let listScroll = NSScrollView()
@@ -38,10 +39,13 @@ final class DevicePageView: NSView {
     private let statusLabel = NSTextField(labelWithString: "")
     private var detail: DeviceDetail?
     private var loadedPlaylist: String?
+    /// Collapses to nothing for a device whose capacity iTunes cannot report,
+    /// rather than leaving an empty band above the buttons.
+    private lazy var capacityHeight = capacity.heightAnchor.constraint(equalToConstant: 24)
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        for v in [header as NSView, listScroll, summary, trackTable.scrollView,
+        for v in [nav as NSView, header, listScroll, summary, trackTable.scrollView,
                   capacity, syncButton, doneButton, statusLabel] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
@@ -54,6 +58,8 @@ final class DevicePageView: NSView {
         doneButton.target = self
         doneButton.action = #selector(done(_:))
         header.onEject = { [weak self] in self?.onEject() }
+        nav.onBack = { [weak self] in self?.goBack() }
+        nav.onForward = { [weak self] in self?.goForward() }
 
         list.headerView = nil
         list.backgroundColor = Aqua.sidebarBackground
@@ -74,8 +80,13 @@ final class DevicePageView: NSView {
         let pad: CGFloat = 14
         let sidebar: CGFloat = 210
         NSLayoutConstraint.activate([
+            nav.leadingAnchor.constraint(equalTo: leadingAnchor),
+            nav.trailingAnchor.constraint(equalTo: trailingAnchor),
+            nav.topAnchor.constraint(equalTo: topAnchor),
+            nav.heightAnchor.constraint(equalToConstant: 36),
+
             header.leadingAnchor.constraint(equalTo: leadingAnchor),
-            header.topAnchor.constraint(equalTo: topAnchor),
+            header.topAnchor.constraint(equalTo: nav.bottomAnchor),
             header.widthAnchor.constraint(equalToConstant: sidebar),
             header.heightAnchor.constraint(equalToConstant: 72),
 
@@ -84,16 +95,20 @@ final class DevicePageView: NSView {
             listScroll.widthAnchor.constraint(equalToConstant: sidebar),
             listScroll.bottomAnchor.constraint(equalTo: capacity.topAnchor, constant: -10),
 
-            capacity.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
+            // The bar belongs to the content area, not the whole window:
+            // iTunes starts it at the sidebar's right edge.
+            capacity.leadingAnchor.constraint(equalTo: listScroll.trailingAnchor, constant: pad),
             capacity.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
-            capacity.heightAnchor.constraint(equalToConstant: 24),
+            capacityHeight,
             capacity.bottomAnchor.constraint(equalTo: doneButton.topAnchor, constant: -10),
 
             doneButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
             doneButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -pad),
             syncButton.trailingAnchor.constraint(equalTo: doneButton.leadingAnchor, constant: -8),
             syncButton.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
-            statusLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
+            // Lined up with the capacity bar above it, not with the window
+            // edge: under the sidebar it read as a stray caption.
+            statusLabel.leadingAnchor.constraint(equalTo: listScroll.trailingAnchor, constant: pad),
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: syncButton.leadingAnchor, constant: -10),
             statusLabel.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
         ])
@@ -101,7 +116,7 @@ final class DevicePageView: NSView {
             NSLayoutConstraint.activate([
                 content.leadingAnchor.constraint(equalTo: listScroll.trailingAnchor, constant: pad),
                 content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
-                content.topAnchor.constraint(equalTo: topAnchor, constant: pad),
+                content.topAnchor.constraint(equalTo: nav.bottomAnchor, constant: pad),
                 content.bottomAnchor.constraint(equalTo: capacity.topAnchor, constant: -12),
             ])
         }
@@ -113,17 +128,102 @@ final class DevicePageView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSColor(white: 0.96, alpha: 1).setFill()
         bounds.fill()
-        // The sidebar's own ground, and the hairline that separates it.
+        // The sidebar's own ground, and the hairline that separates it. It
+        // stops below the navigation strip, which spans the whole width.
+        let top = bounds.maxY - 36
         Aqua.sidebarBackground.setFill()
-        NSRect(x: 0, y: 0, width: 210, height: bounds.height).fill()
+        NSRect(x: 0, y: 0, width: 210, height: top).fill()
         NSColor(white: 0.66, alpha: 1).setFill()
-        NSRect(x: 210, y: 0, width: 1, height: bounds.height).fill()
+        NSRect(x: 210, y: 0, width: 1, height: top).fill()
+    }
+
+    // MARK: Navigation
+
+    /// The panes visited on this page, so the arrows have somewhere to go.
+    /// Stepping back past the first one leaves the device, as iTunes' does.
+    private var history: [Int] = []
+    private var historyIndex = -1
+
+    private func record(_ row: Int) {
+        if historyIndex >= 0, historyIndex < history.count, history[historyIndex] == row { return }
+        if historyIndex < history.count - 1 { history.removeSubrange((historyIndex + 1)...) }
+        history.append(row)
+        historyIndex = history.count - 1
+        updateNav()
+    }
+
+    private func updateNav() {
+        nav.canGoBack = true                      // the first step back leaves the device
+        nav.canGoForward = historyIndex < history.count - 1
+    }
+
+    private func goBack() {
+        guard historyIndex > 0 else {
+            onDone()
+            return
+        }
+        historyIndex -= 1
+        select(history[historyIndex])
+        updateNav()
+    }
+
+    private func goForward() {
+        guard historyIndex < history.count - 1 else { return }
+        historyIndex += 1
+        select(history[historyIndex])
+        updateNav()
+    }
+
+    /// Moves the list without pushing another history entry.
+    private var selectingFromHistory = false
+
+    private func select(_ row: Int) {
+        guard row >= 0, row < rows.count else { return }
+        selectingFromHistory = true
+        list.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        selectingFromHistory = false
+        switch rows[row] {
+        case .summary: showSummary()
+        case .content(let name, _): showTracks(name)
+        case .header: break
+        }
     }
 
     @objc private func sync(_ sender: Any?) { onSync() }
     @objc private func done(_ sender: Any?) { onDone() }
 
-    func setStatus(_ text: String) { statusLabel.stringValue = text }
+    func setStatus(_ text: String) {
+        readAt = nil
+        statusLabel.stringValue = text
+    }
+
+    /// When iTunes last answered. Shown so it is plain that the page is being
+    /// read live rather than frozen at whatever was true when it opened.
+    private var readAt: Date?
+    private var summaryLine = ""
+    private var clock: Timer?
+
+    func setRead(at date: Date) {
+        readAt = date
+        clock?.invalidate()
+        clock = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.updateStatusLine() }
+        }
+        updateStatusLine()
+    }
+
+    private func updateStatusLine() {
+        guard let at = readAt else { return }
+        let seconds = Int(Date().timeIntervalSince(at))
+        let age: String
+        switch seconds {
+        case ..<2: age = "just now"
+        case ..<60: age = "\(seconds)s ago"
+        default: age = "\(seconds / 60)m ago"
+        }
+        statusLabel.stringValue = summaryLine.isEmpty ? "Read from iTunes \(age)"
+                                                      : "\(summaryLine), read from iTunes \(age)"
+    }
 
     func setBusy(_ busy: Bool) {
         syncButton.isEnabled = !busy && (detail?.syncable ?? false)
@@ -136,6 +236,9 @@ final class DevicePageView: NSView {
         header.show(d)
         summary.show(d)
         capacity.show(d)
+        let hasBar = (d.capacity ?? 0) > 0
+        capacity.isHidden = !hasBar
+        capacityHeight.constant = hasBar ? 24 : 0
         var r: [Row] = [.header("Settings"), .summary]
         if !d.categories.isEmpty || !d.playlists.isEmpty {
             r.append(.header("On My Device"))
@@ -148,20 +251,25 @@ final class DevicePageView: NSView {
         }
         rows = r
         list.reloadData()
+        nav.title = d.name
         if firstLoad || list.selectedRow < 0 {
+            history = []
+            historyIndex = -1
             list.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
             showSummary()
+            updateNav()
             loadImage { [weak self] image in self?.header.image = image }
         }
         syncButton.isEnabled = d.syncable
         header.canEject = d.itunesSource
         if let reason = d.unavailableReason {
-            statusLabel.stringValue = reason
+            summaryLine = reason
         } else if let n = d.trackCount {
-            statusLabel.stringValue = "\(NumberFormatter.localizedString(from: NSNumber(value: n), number: .decimal)) items on \(d.name)"
+            summaryLine = "\(NumberFormatter.localizedString(from: NSNumber(value: n), number: .decimal)) items on \(d.name)"
         } else {
-            statusLabel.stringValue = ""
+            summaryLine = ""
         }
+        updateStatusLine()
     }
 
     private static func icon(for category: String) -> SidebarIcon {
@@ -236,6 +344,7 @@ extension DevicePageView: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard list.selectedRow >= 0, list.selectedRow < rows.count else { return }
+        if !selectingFromHistory { record(list.selectedRow) }
         switch rows[list.selectedRow] {
         case .summary: showSummary()
         case .content(let name, _): showTracks(name)
@@ -323,6 +432,7 @@ final class DeviceSummaryView: NSView {
     private var left: [(String, String)] = []
     private var softwareVersion: String?
     private var options: [(String, Bool?)] = []
+    private var optionsTitle = "Options"
     private var note = ""
 
     func show(_ d: DeviceDetail) {
@@ -335,11 +445,18 @@ final class DeviceSummaryView: NSView {
         if let n = d.useCount { l.append(("Times connected:", String(n))) }
         left = l
         softwareVersion = d.softwareVersion
-        options = [("Enable disk use", d.diskUse)]
-        note = "iTunes keeps its other sync settings — whole library or selected playlists, "
-            + "convert higher bit rate songs, sync only checked songs — inside its library "
-            + "database, where nothing outside iTunes can read or change them. Set those in "
-            + "iTunes on the MacBook Pro."
+        if let reason = d.unavailableReason {
+            options = []
+            note = reason + "\n\nThis is everything the USB bus can say about it. Open iTunes "
+                + "on the MacBook Pro with the device connected, and the rest of this page fills in."
+        } else {
+            options = [("Enable disk use", d.diskUse)]
+            note = "iTunes keeps its other sync settings — whole library or selected playlists, "
+                + "convert higher bit rate songs, sync only checked songs — inside its library "
+                + "database, where nothing outside iTunes can read or change them. Set those in "
+                + "iTunes on the MacBook Pro."
+        }
+        optionsTitle = d.unavailableReason == nil ? "Options" : "Why this page is short"
         needsDisplay = true
     }
 
@@ -382,11 +499,12 @@ final class DeviceSummaryView: NSView {
 
         // Options box.
         y = box.minY - 24
-        ("Options" as NSString).draw(at: NSPoint(x: 0, y: y), withAttributes: [
+        (optionsTitle as NSString).draw(at: NSPoint(x: 0, y: y), withAttributes: [
             .font: Aqua.font(15), .foregroundColor: NSColor(white: 0.12, alpha: 1),
         ])
         y -= 10
-        let optH = CGFloat(options.count) * 22 + 68
+        let noteHeight = DeviceSummaryView.height(of: note, width: bounds.width - 40)
+        let optH = CGFloat(options.count) * 22 + noteHeight + 34
         let obox = NSRect(x: 0, y: y - optH, width: bounds.width, height: optH)
         DeviceSummaryView.drawBox(obox)
         var oy = obox.maxY - 28
@@ -397,11 +515,23 @@ final class DeviceSummaryView: NSView {
         }
         let para = NSMutableParagraphStyle()
         para.lineBreakMode = .byWordWrapping
-        (note as NSString).draw(in: NSRect(x: obox.minX + 20, y: obox.minY + 8,
-                                           width: obox.width - 40, height: oy - obox.minY),
+        (note as NSString).draw(in: NSRect(x: obox.minX + 20, y: obox.minY + 12,
+                                           width: obox.width - 40, height: noteHeight),
                                 withAttributes: [.font: Aqua.font(11),
                                                  .foregroundColor: NSColor(white: 0.40, alpha: 1),
                                                  .paragraphStyle: para])
+    }
+
+    /// How tall the note runs at this width, so its box is never too short.
+    static func height(of text: String, width: CGFloat) -> CGFloat {
+        guard !text.isEmpty else { return 0 }
+        let para = NSMutableParagraphStyle()
+        para.lineBreakMode = .byWordWrapping
+        let attrs: [NSAttributedString.Key: Any] = [.font: Aqua.font(11), .paragraphStyle: para]
+        let r = (text as NSString).boundingRect(
+            with: NSSize(width: width, height: 400),
+            options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attrs)
+        return ceil(r.height) + 4
     }
 
     static func drawBox(_ r: NSRect) {
@@ -532,7 +662,11 @@ final class CapacityBarView: NSView {
                 ]
                 let size = (text as NSString).size(withAttributes: attrs)
                 if size.width + 12 < w {
-                    (text as NSString).draw(at: NSPoint(x: r.minX + 6, y: r.midY - size.height / 2),
+                    // The free-space figure is centred in the grey it is
+                    // describing; a media band is labelled from its left edge,
+                    // the way iTunes labels them.
+                    let x = band.dark ? r.midX - size.width / 2 : r.minX + 6
+                    (text as NSString).draw(at: NSPoint(x: x, y: r.midY - size.height / 2),
                                             withAttributes: attrs)
                 }
             }
@@ -618,5 +752,94 @@ final class SimpleTable: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         cell.textField?.stringValue = rows[row][i]
         cell.textField?.alignment = i == rows[row].count - 1 ? .right : .left
         return cell
+    }
+}
+
+
+// MARK: - Navigation strip
+
+/// iTunes 12's back and forward arrows with the device's name on a pill
+/// between them. Back at the first pane leaves the device, as iTunes' does.
+final class DeviceNavBar: NSView {
+    var title = "" { didSet { needsDisplay = true } }
+    var canGoBack = true { didSet { needsDisplay = true } }
+    var canGoForward = false { didSet { needsDisplay = true } }
+    var onBack: () -> Void = {}
+    var onForward: () -> Void = {}
+    private var pressed: Int?
+
+    private func arrowRect(_ i: Int) -> NSRect {
+        NSRect(x: 12 + CGFloat(i) * 27, y: bounds.midY - 10, width: 25, height: 20)
+    }
+
+    private var pillRect: NSRect {
+        let attrs: [NSAttributedString.Key: Any] = [.font: Aqua.font(12, bold: true)]
+        let w = max(70, (title as NSString).size(withAttributes: attrs).width + 22)
+        return NSRect(x: bounds.midX - w / 2, y: bounds.midY - 10, width: w, height: 19)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        for i in 0...1 where arrowRect(i).contains(p) {
+            guard i == 0 ? canGoBack : canGoForward else { return }
+            pressed = i
+            needsDisplay = true
+            while true {
+                guard let e = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) else { break }
+                if e.type == .leftMouseUp {
+                    let up = arrowRect(i).contains(convert(e.locationInWindow, from: nil))
+                    pressed = nil
+                    needsDisplay = true
+                    if up { i == 0 ? onBack() : onForward() }
+                    return
+                }
+            }
+            pressed = nil
+            needsDisplay = true
+            return
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSGradient(starting: NSColor(white: 0.94, alpha: 1), ending: NSColor(white: 0.86, alpha: 1))!
+            .draw(in: bounds, angle: -90)
+        NSColor(white: 0.68, alpha: 1).setFill()
+        NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()
+
+        for i in 0...1 {
+            let r = arrowRect(i)
+            let enabled = i == 0 ? canGoBack : canGoForward
+            let path = NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: 3, yRadius: 3)
+            if pressed == i {
+                NSGradient(starting: NSColor(white: 0.66, alpha: 1), ending: NSColor(white: 0.78, alpha: 1))!
+                    .draw(in: path, angle: -90)
+            } else {
+                NSGradient(starting: NSColor(white: 0.99, alpha: 1), ending: NSColor(white: 0.87, alpha: 1))!
+                    .draw(in: path, angle: -90)
+            }
+            NSColor(white: 0.52, alpha: 1).setStroke()
+            path.lineWidth = 1
+            path.stroke()
+            (enabled ? NSColor(white: 0.20, alpha: 1) : NSColor(white: 0.66, alpha: 1)).setFill()
+            let a = NSBezierPath()
+            let cx = r.midX, cy = r.midY, d: CGFloat = i == 0 ? 1 : -1
+            a.move(to: NSPoint(x: cx + 2.5 * d, y: cy + 4.5))
+            a.line(to: NSPoint(x: cx - 2.5 * d, y: cy))
+            a.line(to: NSPoint(x: cx + 2.5 * d, y: cy - 4.5))
+            a.close()
+            a.fill()
+        }
+
+        guard !title.isEmpty else { return }
+        let r = pillRect
+        let pill = NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3)
+        NSGradient(starting: NSColor(srgbRed: 0.36, green: 0.60, blue: 0.92, alpha: 1),
+                   ending: NSColor(srgbRed: 0.16, green: 0.45, blue: 0.86, alpha: 1))!
+            .draw(in: pill, angle: -90)
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        (title as NSString).draw(in: NSRect(x: r.minX, y: r.midY - 8, width: r.width, height: 16), withAttributes: [
+            .font: Aqua.font(12, bold: true), .foregroundColor: NSColor.white, .paragraphStyle: style,
+        ])
     }
 }

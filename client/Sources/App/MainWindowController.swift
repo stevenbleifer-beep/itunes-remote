@@ -40,11 +40,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let shuffleButton = AquaBevelButton(glyph: .shuffle)
     private let repeatButton = AquaBevelButton(glyph: .repeatAll)
     private let artworkButton = AquaBevelButton(glyph: .artwork)
+    private let reconnectButton = AquaBevelButton(glyph: .reconnect)
     private let syncButton = AquaBevelButton(glyph: .sync)
     private let ejectButton = AquaBevelButton(glyph: .eject)
     private var artworkHeight: NSLayoutConstraint?
     private var devices: [DeviceSource] = []
     private var deviceTimer: Timer?
+    private var alertTimer: Timer?
     private var miniPlayer: MiniPlayerWindowController?
     private var columnMenu: NSMenu?
     private var sourceMenu: NSMenu?
@@ -54,6 +56,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let devicePage = DevicePageView()
     /// The device whose page is showing, if any.
     private var openDevice: String?
+    private var devicePageTimer: Timer?
+    private var deviceReadInFlight = false
     private let rightSplit = NSSplitView()
     private let browserSplit = NSSplitView()
     /// Which browser panes are shown, in order. iTunes offered these five.
@@ -260,6 +264,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             (shuffleButton, #selector(toggleShuffle(_:)), "Shuffle"),
             (repeatButton, #selector(cycleRepeat(_:)), "Repeat"),
             (artworkButton, #selector(toggleArtworkPane(_:)), "Show or hide artwork"),
+            (reconnectButton, #selector(reconnect(_:)), "Reconnect to the MacBook Pro and reload everything"),
         ] {
             button.frame = NSRect(x: bx, y: 2, width: 34, height: 20)
             button.target = self
@@ -321,7 +326,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         rightSplit.dividerStyle = .thin
         rightSplit.delegate = self
         rightContainer.addSubview(rightSplit)
-        devicePage.frame = rightContainer.bounds
+        devicePage.frame = mainSplit.frame
         devicePage.autoresizingMask = [.width, .height]
         devicePage.isHidden = true
         devicePage.onSync = { [weak self] in self?.syncOpenDevice() }
@@ -342,7 +347,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 done((try? await api.deviceImage(name, size: 128)) ?? nil)
             }
         }
-        rightContainer.addSubview(devicePage)
+        // The device page takes the whole window below the toolbar, the way
+        // iTunes 12 gives a device the run of its content area.
+        content.addSubview(devicePage)
         mainSplit.addArrangedSubview(rightContainer)
         mainSplit.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
 
@@ -566,7 +573,108 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         return s
     }
 
+    // MARK: Drag and drop
+
+    /// Tracks dragged out of the track table carry their persistent IDs.
+    static let trackDragType = NSPasteboard.PasteboardType("local.stevenbleifer.itunesremote.track")
+
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+        guard Tag(rawValue: tableView.tag) == .tracks, let index = trackIndex(forRow: row) else { return nil }
+        let item = NSPasteboardItem()
+        item.setString(rows[index].persistentId, forType: MainWindowController.trackDragType)
+        // A plain-text flavour too, so dropping into a text field or another
+        // app gives something readable rather than nothing.
+        item.setString(rows[index].name + " — " + rows[index].artist, forType: .string)
+        return item
+    }
+
+    func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo,
+                   proposedRow row: Int, proposedDropOperation op: NSTableView.DropOperation) -> NSDragOperation {
+        guard Tag(rawValue: tableView.tag) == .source,
+              info.draggingPasteboard.canReadItem(withDataConformingToTypes: [MainWindowController.trackDragType.rawValue]),
+              row >= 0, row < sourceRows.count else { return [] }
+        switch sourceRows[row] {
+        case .playlist(let p) where !p.smart:
+            tableView.setDropRow(row, dropOperation: .on)
+            return .copy
+        case .device:
+            tableView.setDropRow(row, dropOperation: .on)
+            return .copy
+        default:
+            // Smart playlists are defined by their rules; the library and
+            // Recently Added already hold everything.
+            return []
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo,
+                   row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
+        guard Tag(rawValue: tableView.tag) == .source, row >= 0, row < sourceRows.count else { return false }
+        let ids = (info.draggingPasteboard.pasteboardItems ?? []).compactMap {
+            $0.string(forType: MainWindowController.trackDragType)
+        }
+        guard !ids.isEmpty else { return false }
+        switch sourceRows[row] {
+        case .playlist(let p):
+            addTracks(ids, toPlaylist: p)
+            return true
+        case .device(let d):
+            copyTracks(ids, toDevice: d)
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func addTracks(_ ids: [String], toPlaylist playlist: Playlist) {
+        guard let api = controller.api else { return }
+        flashStatus("Adding \(ids.count) track\(ids.count == 1 ? "" : "s") to \(playlist.name)…")
+        Task { @MainActor in
+            do {
+                let change = try await api.addToPlaylist(playlist.persistentId, ids: ids)
+                flashStatus(change.summary("Added") + " to \(playlist.name).")
+                await reloadPlaylists()
+                if controller.source.playlistId == playlist.persistentId { controller.reload() }
+            } catch {
+                flashStatus("Could not add to \(playlist.name): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func copyTracks(_ ids: [String], toDevice device: DeviceSource) {
+        guard let api = controller.api else { return }
+        flashStatus("Copying \(ids.count) track\(ids.count == 1 ? "" : "s") to \(device.name)…")
+        Task { @MainActor in
+            do {
+                let result = try await api.copyToDevice(device.name, ids: ids)
+                if let reason = result.reason {
+                    // iTunes refuses copies onto a device that syncs selected
+                    // playlists. Say which setting, not just "it failed".
+                    self.report(title: "\(device.name) does not accept dropped tracks", message: reason)
+                    self.flashStatus("iTunes refused the copy.")
+                } else if result.failed.isEmpty {
+                    self.flashStatus("Copied \(result.added.count) to \(device.name).")
+                } else {
+                    self.flashStatus("Copied \(result.added.count) of \(ids.count); \(result.failed.count) failed.")
+                }
+            } catch {
+                self.flashStatus("Could not copy to \(device.name): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// A plain sheet for something the status line is too small to explain.
+    private func report(title: String, message: String) {
+        guard let window = window else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.beginSheetModal(for: window, completionHandler: nil)
+    }
+
     private func configureSourceList() {
+        sourceList.registerForDraggedTypes([MainWindowController.trackDragType])
         sourceList.tag = Tag.source.rawValue
         let c = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("source"))
         c.resizingMask = .autoresizingMask
@@ -630,6 +738,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func configureTrackTable() {
         trackTable.tag = Tag.tracks.rawValue
+        // Tracks can be dragged onto a playlist or onto the iPod in the
+        // source list.
+        trackTable.setDraggingSourceOperationMask(.copy, forLocal: true)
+        trackTable.setDraggingSourceOperationMask(.copy, forLocal: false)
         trackTable.isGroupRowProvider = { [weak self] row in
             guard let self = self, row < self.displayRows.count, case .group = self.displayRows[row] else { return false }
             return true
@@ -716,6 +828,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         artworkCache.clear()
         player.start()
         loadDevices()
+        startAlertPolling()
         deviceTimer?.invalidate()
         deviceTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.loadDevices() }
@@ -723,6 +836,80 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     // MARK: Devices
+
+    // MARK: iTunes' own alerts
+
+    /// The alert currently on screen here, so the same iTunes dialog is not
+    /// presented twice, and a new one replaces it.
+    private var shownAlert: ITunesAlert?
+    private var alertSheet: NSAlert?
+    private var alertPollInFlight = false
+
+    private func startAlertPolling() {
+        alertTimer?.invalidate()
+        alertTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.pollAlert() }
+        }
+    }
+
+    /// iTunes runs headless on the MacBook Pro, so a modal dialog there stops
+    /// everything and nobody sees it. Poll for one and show it here.
+    private func pollAlert() {
+        guard let api = controller.api, !alertPollInFlight else { return }
+        alertPollInFlight = true
+        Task { @MainActor in
+            defer { self.alertPollInFlight = false }
+            guard let result = try? await api.itunesAlert() else { return }
+            guard let alert = result.alert else {
+                // It went away — dismissed in iTunes, or by us.
+                if self.shownAlert != nil { self.closeAlertSheet() }
+                return
+            }
+            guard alert != self.shownAlert else { return }
+            self.showITunesAlert(alert)
+        }
+    }
+
+    private func closeAlertSheet() {
+        shownAlert = nil
+        if let window = window, let sheet = window.attachedSheet, alertSheet != nil {
+            window.endSheet(sheet)
+        }
+        alertSheet = nil
+    }
+
+    private func showITunesAlert(_ alert: ITunesAlert) {
+        guard let window = window else { return }
+        closeAlertSheet()
+        shownAlert = alert
+        let sheet = NSAlert()
+        sheet.messageText = "iTunes on the MacBook Pro is asking something"
+        sheet.informativeText = alert.message.isEmpty
+            ? "iTunes is showing a dialog with no text." : alert.message
+        sheet.alertStyle = .warning
+        // The dialog's own buttons, in its own order, so clicking one here
+        // does exactly what clicking it there would.
+        let buttons = alert.buttons.isEmpty ? ["OK"] : alert.buttons
+        for title in buttons { sheet.addButton(withTitle: title) }
+        sheet.addButton(withTitle: "Leave It")
+        alertSheet = sheet
+        sheet.beginSheetModal(for: window) { [weak self] response in
+            guard let self = self else { return }
+            self.alertSheet = nil
+            let index = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+            guard index >= 0, index < buttons.count, let api = self.controller.api else { return }
+            let title = buttons[index]
+            Task { @MainActor in
+                do {
+                    try await api.dismissITunesAlert(button: title)
+                    self.flashStatus("Clicked “\(title)” in iTunes.")
+                    self.shownAlert = nil
+                } catch {
+                    self.flashStatus("Could not click “\(title)”: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
 
     private func loadDevices() {
         guard let api = controller.api else { return }
@@ -755,27 +942,40 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func openDevicePage(for device: DeviceSource) {
         openDevice = device.name
         devicePage.isHidden = false
-        rightSplit.isHidden = true
-        devicePage.setStatus("Reading \(device.name)…")
+        devicePage.frame = mainSplit.frame
+        mainSplit.isHidden = true
+        window?.makeFirstResponder(devicePage)
+        devicePage.setStatus("Reading \(device.name) from iTunes…")
         devicePage.setBusy(true)
         refreshDevicePage()
+        // Free space and item counts change while a sync runs, so keep
+        // reading rather than showing whatever was true when the page opened.
+        devicePageTimer?.invalidate()
+        devicePageTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshDevicePage() }
+        }
     }
 
     private func closeDevicePage() {
         guard openDevice != nil else { return }
         openDevice = nil
+        devicePageTimer?.invalidate()
+        devicePageTimer = nil
         devicePage.isHidden = true
-        rightSplit.isHidden = false
+        mainSplit.isHidden = false
     }
 
     private func refreshDevicePage() {
-        guard let name = openDevice, let api = controller.api else { return }
+        guard let name = openDevice, let api = controller.api, !deviceReadInFlight else { return }
+        deviceReadInFlight = true
         Task { @MainActor in
+            defer { self.deviceReadInFlight = false }
             do {
                 let detail = try await api.deviceDetail(name)
                 // The user may have moved on while iTunes was answering.
                 guard self.openDevice == name else { return }
                 self.devicePage.show(detail)
+                self.devicePage.setRead(at: Date())
             } catch {
                 guard self.openDevice == name else { return }
                 self.devicePage.setStatus("Could not read \(name): \(error.localizedDescription)")
@@ -879,6 +1079,33 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     // MARK: Bottom bar
+
+    /// Drops everything and asks the daemon again: library, playlists,
+    /// devices, player and artwork. For when a request failed and the app is
+    /// sitting on a stale or empty view.
+    @objc private func reconnect(_ sender: Any?) {
+        guard let api = controller.api else { return }
+        reconnectButton.isEnabled = false
+        flashStatus("Reconnecting to \(api.baseURL.host ?? "the MacBook Pro")…")
+        artworkCache.clear()
+        controller.connect(api)
+        player.api = api
+        player.start()
+        loadDevices()
+        startAlertPolling()
+        if openDevice != nil { refreshDevicePage() }
+        Task { @MainActor in
+            // Give the reloads a moment, then say what actually happened
+            // rather than claiming success straight away.
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            self.reconnectButton.isEnabled = true
+            if let e = self.controller.lastError {
+                self.flashStatus("Still failing: \(e)")
+            } else if self.controller.info != nil {
+                self.flashStatus("Reconnected.")
+            }
+        }
+    }
 
     @objc private func toggleShuffle(_ sender: Any?) {
         player.setShuffle(!(player.state?.shuffle ?? false))

@@ -142,6 +142,7 @@ class Api(object):
             ("GET", r"/api/devices/(?P<name>[^/]+)", self.get_device),
             ("GET", r"/api/devices/(?P<name>[^/]+)/image", self.get_device_image),
             ("GET", r"/api/devices/(?P<name>[^/]+)/tracks", self.get_device_tracks),
+            ("POST", r"/api/devices/(?P<name>[^/]+)/tracks", self.post_device_tracks),
             ("POST", r"/api/devices/(?P<name>[^/]+)/sync", self.post_source_sync),
             ("POST", r"/api/devices/(?P<name>[^/]+)/eject", self.post_source_eject),
             ("POST", r"/api/sources/(?P<name>[^/]+)/sync", self.post_source_sync),
@@ -865,6 +866,56 @@ class Api(object):
             })
         return {"device": name, "playlist": playlist, "tracks": rows,
                 "truncated": len(rows) >= limit}
+
+    # Copying onto a device is one AppleScript call per track, and each one
+    # can fail on its own, so keep the batches small enough that the Apple
+    # Events lock is released often.
+    DEVICE_ADD_CHUNK = 25
+
+    def post_device_tracks(self, params, query, body):
+        """Copies library tracks onto a device — what a drag and drop does.
+
+        iTunes allows this only when the device is set to manual management;
+        otherwise every copy fails with -54. That is reported as the setting
+        it is, not as a mystery error."""
+        name = self._ipod_name(params)
+        ids = (body or {}).get("tracks")
+        if not isinstance(ids, list) or not ids:
+            raise ApiError(400, "tracks must be a non-empty list of persistent IDs")
+        ids = [str(i).upper() for i in ids]
+        for pid in ids:
+            if pid not in self.store.lib.tracks:
+                raise ApiError(404, "no such track: %s" % pid)
+        added, failed = [], []
+        for start in range(0, len(ids), self.DEVICE_ADD_CHUNK):
+            chunk = ids[start:start + self.DEVICE_ADD_CHUNK]
+            recs = self.itunes.records(self._script("device_add", name, *chunk, timeout=180))
+            for r in recs:
+                if len(r) > 1 and r[1] == "ok":
+                    added.append(r[0])
+                else:
+                    # Keep the AppleScript number in the text: -54 is how
+                    # iTunes says "this device is not manually managed", and
+                    # the message alone does not say that.
+                    code = r[1] if len(r) > 1 else "failed"
+                    message = r[2] if len(r) > 2 else ""
+                    failed.append({"persistentId": r[0],
+                                   "error": ("%s: %s" % (code, message)).strip(": ")})
+        if self.write_log:
+            self.write_log.record("device-add", name, None, None,
+                                  "ok" if not failed else "partial",
+                                  "%d added, %d failed" % (len(added), len(failed)))
+        out = {"device": name, "added": added, "failed": failed}
+        if failed and not added and any("-54" in (f["error"] or "")
+                                        or "permission" in (f["error"] or "").lower()
+                                        for f in failed):
+            out["reason"] = (
+                "iTunes refused every copy. It only accepts tracks dragged onto a device "
+                "when that device is set to \u201cManually manage music and videos\u201d; "
+                "%s is set to sync selected playlists instead. Turn that on in iTunes on "
+                "the MacBook Pro, or drop the tracks on a playlist that %s syncs." % (name, name)
+            )
+        return out
 
     def get_device(self, params, query, body):
         """One device in full: identity, what is on it by category, and its

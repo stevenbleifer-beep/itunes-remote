@@ -25,6 +25,32 @@ final class APIClient {
 
     // MARK: Transport
 
+    /// URL errors worth trying again. Reaching the MacBook Pro by its .local
+    /// name goes through mDNS, which occasionally fails to resolve on the
+    /// first attempt right after launch; one such failure used to leave the
+    /// app showing an empty library with "the Internet connection appears to
+    /// be offline" and no way back short of relaunching.
+    private static let retryableURLErrors: Set<Int> = [
+        NSURLErrorNotConnectedToInternet,
+        NSURLErrorCannotFindHost,
+        NSURLErrorCannotConnectToHost,
+        NSURLErrorNetworkConnectionLost,
+        NSURLErrorDNSLookupFailed,
+        NSURLErrorTimedOut,
+    ]
+
+    private func send(_ req: URLRequest) async throws -> (Data, URLResponse) {
+        var attempt = 0
+        while true {
+            do {
+                return try await session.data(for: req)
+            } catch let error as URLError where APIClient.retryableURLErrors.contains(error.errorCode) && attempt < 2 {
+                attempt += 1
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 700_000_000)
+            }
+        }
+    }
+
     private func request(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Any? = nil) async throws -> Data {
         var comps = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { comps.queryItems = query }
@@ -35,7 +61,7 @@ final class APIClient {
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        let (data, resp) = try await session.data(for: req)
+        let (data, resp) = try await send(req)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if status != 200 {
             let msg = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
@@ -146,6 +172,23 @@ final class APIClient {
     // appendingPathComponent, which percent-encodes the component itself; a
     // name escaped here first came out double-encoded ("iPod%2520classic") and
     // the daemon answered 404.
+    /// Any modal dialog iTunes is showing, and whether it can be read at all.
+    func itunesAlert() async throws -> (alert: ITunesAlert?, readable: Bool) {
+        struct Wrap: Decodable { let alert: ITunesAlert?; let readable: Bool }
+        let w: Wrap = try await get("/api/itunes/alert")
+        return (w.alert, w.readable)
+    }
+
+    func dismissITunesAlert(button: String) async throws {
+        _ = try await request("POST", "/api/itunes/alert/dismiss", body: ["button": button])
+    }
+
+    /// Copies library tracks onto a device — what dropping them on it does.
+    func copyToDevice(_ name: String, ids: [String]) async throws -> DeviceCopyResult {
+        let data = try await request("POST", "/api/devices/\(name)/tracks", body: ["tracks": ids])
+        return try JSONDecoder().decode(DeviceCopyResult.self, from: data)
+    }
+
     func deviceTracks(_ name: String, playlist: String, limit: Int = 500) async throws -> [DeviceTrack] {
         struct Wrap: Decodable { let tracks: [DeviceTrack] }
         let w: Wrap = try await get("/api/devices/\(name)/tracks", query: [

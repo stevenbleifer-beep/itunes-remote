@@ -19,6 +19,8 @@ This file is the state of play and the traps that are not in the spec.
 | iTunes alerts | Added 2026-09-03. `GET /api/itunes/alert` reads any modal dialog iTunes is showing and `POST /api/itunes/alert/dismiss` clicks one of its buttons. Needs Accessibility for the agent's Python; without it the System Events call *hangs* rather than failing, so one bad result disables the check for the life of the process. `?recheck=1` re-arms it. This is how the sync warning dialog was found. |
 | 8 Polish | Done: legacy scrollers, toned button, sidebar icons and dark selection, DEVICES section, View/Search captions, title, bottom-bar buttons (add, shuffle, repeat, artwork toggle, sync, eject), checkbox column, Cover Flow scrubber arrows, Apple's AirPlay symbol. Not done: a drawn capsule search field (the small-size system field was accepted); square bezels on sheet text fields. |
 | Device page | Added 2026-09-03. Picking a device in the source list replaces the browser and track table with an iTunes 10 device page: Summary / Music / Playlists tabs, the identity panel, the segmented capacity bar with its legend, and Sync and Eject. `GET /api/devices` merges iTunes' own sources with the Apple devices on the USB bus, so an iPhone or iPad iTunes has not opened as a source still gets a row and a page that says why it is empty rather than silently not appearing. `GET /api/devices/{name}` adds the per-category item counts and byte totals, and the device's playlists. The chosen tab persists in `defaults` under `deviceTab`. |
+| Drag and drop | Added 2026-09-03. Tracks drag out of the track table onto a playlist or onto the iPod in the source list. Dropping on a playlist works. Dropping on the device asks iTunes to `duplicate` the tracks onto it, which iTunes allows **only** when the device is set to "Manually manage music and videos"; otherwise every copy fails with -54 (File permission error) and the app says which setting is in the way instead of showing the raw error. Verified against the real iPod: it is set to sync selected playlists, so it refuses, and the explanation is what appears. |
+| Artwork cache | Added 2026-09-03. Covers exported from iTunes are written to `~/Library/Caches/iTunesRemote/artwork`, so each one costs its 0.3 s AppleScript export once ever rather than once per daemon run. A miss is recorded too, but only after iTunes has actually answered. Freshness is the track's Date Modified. A background warmer fills the cache one cover at a time, and only after `artwork_warm_idle` seconds with no request, so it never competes with someone using the app. |
 | Browser grouping | Corrected 2026-09-03 against iTunes' own column browser. See "iTunes browser grouping" below. |
 | 9 iPod sync | Verified 2026-09-03: `update` on "iPod classic" returned "sync started", and afterwards 160 files had been written under `/Volumes/iPod/iPod_Control` with fresh MP3s at 23:26, so the sync engine really ran. Built: DEVICES row with free space, Sync and Eject buttons, `/api/sources`, `/api/sources/{name}/sync` and `/eject`. Eject is untested because it would have disconnected the iPod. iTunes logs a harmless read-only `com.apple.iPod` prefs warning on that machine. |
 | Play on This Mac | Added 2026-09-03 at Steven's request. iTunes 12.9.5 cannot AirPlay to a current Mac (error -15022; iTunes shows "not compatible with the current AirPlay playback configuration"), so `GET /api/tracks/{id}/audio` streams the file with range support and the client plays it with AVFoundation. Transport, seek, volume and auto-advance drive the local player in that mode; picking any AirPlay device switches back and stops local playback. Verified headless: ready in ~2 s, seeks land within a second. |
@@ -95,6 +97,18 @@ it counted.
 - `NSSplitView.setPosition` does nothing before the window is on screen, which
   left the column browser collapsed on every launch in List view. Apply it in
   a `DispatchQueue.main.async` after the first layout pass.
+- `name of tracks 1 thru n of pl` is the plural form iTunes answers in one
+  event. Binding that range to a variable first yields a list of references,
+  and `name of` that list fails with -1700.
+- iTunes refuses `duplicate <track> to <device playlist>` with -54 unless the
+  device is set to manual management. The file is fine; the setting is not.
+- iTunes writes device sizes in binary units but labels them GB: a
+  159,839,977,472-byte iPod reads as "148.87 GB" on its Summary pane, so the
+  device page uses GiB there and decimal GB nowhere.
+- `com.apple.iPod.plist` is the only place the printed serial number and the
+  firmware version live. Its `Devices` dictionary is keyed by the same id the
+  USB bus reports, and its `Family ID` names the picture in iTunes.app
+  (`iPod11-Black.icns` for this iPod classic).
 - `zPosition` is a real z coordinate under a perspective `sublayerTransform`; keep it tiny.
 - A regular-size NSSearchField with an 11-point font sits its text low; use `.small`.
 - An attributed `stringValue` ignores the field's `alignment`; put the paragraph style in the attributes.

@@ -99,6 +99,11 @@ final class LibraryController {
         Task { await loadLibrary() }
     }
 
+    /// Retries the first load until it works. Without this a single failure
+    /// at launch left the app sitting on an empty library forever, because
+    /// nothing ever asked again.
+    private var loadRetry: Timer?
+
     private func loadLibrary() async {
         guard let api = api else { return }
         loading = true
@@ -107,14 +112,31 @@ final class LibraryController {
             info = try await api.libraryInfo()
             playlists = try await api.playlists()
             lastError = nil
+            loadRetry?.invalidate()
+            loadRetry = nil
             onPlaylistsChanged()
         } catch {
-            lastError = error.localizedDescription
+            lastError = error.localizedDescription + " — retrying"
             loading = false
             onStatusChanged()
+            scheduleLoadRetry()
             return
         }
         reload()
+    }
+
+    private func scheduleLoadRetry() {
+        guard loadRetry == nil else { return }
+        loadRetry = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, self.info == nil else {
+                    self?.loadRetry?.invalidate()
+                    self?.loadRetry = nil
+                    return
+                }
+                await self.loadLibrary()
+            }
+        }
     }
 
     func setRating(_ persistentId: String, _ value: Int) {

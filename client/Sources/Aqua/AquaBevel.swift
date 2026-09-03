@@ -1,7 +1,7 @@
 import Cocoa
 
 enum BevelGlyph {
-    case plus, shuffle, repeatAll, repeatOne, artwork, eject, sync
+    case plus, shuffle, repeatAll, repeatOne, artwork, eject, sync, reconnect
 }
 
 /// The small square buttons along the bottom bar of iTunes 10: a light
@@ -105,6 +105,21 @@ final class AquaBevelButton: NSView {
             t.move(to: NSPoint(x: cx - 6, y: cy - 1)); t.line(to: NSPoint(x: cx + 6, y: cy - 1)); t.line(to: NSPoint(x: cx, y: cy + 5))
             t.close(); t.fill()
             NSRect(x: cx - 6, y: cy - 5, width: 12, height: 2).fill()
+        case .reconnect:
+            // The restart mark: a ring broken at the top with a bar through
+            // the gap. Two half-rings read as "oo" at this size.
+            let ring = NSBezierPath()
+            ring.lineWidth = 1.8
+            ring.lineCapStyle = .round
+            ring.appendArc(withCenter: NSPoint(x: cx, y: cy - 0.5), radius: 4.6,
+                           startAngle: 68, endAngle: 112, clockwise: true)
+            ring.stroke()
+            let bar = NSBezierPath()
+            bar.lineWidth = 1.8
+            bar.lineCapStyle = .round
+            bar.move(to: NSPoint(x: cx, y: cy + 1.4))
+            bar.line(to: NSPoint(x: cx, y: cy + 6.2))
+            bar.stroke()
         case .sync:
             let p = NSBezierPath()
             p.lineWidth = 1.6
