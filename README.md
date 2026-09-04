@@ -66,11 +66,13 @@ anything off the Mac:
 - **A fine-tune, when there is enough data.** Saving a list also writes
   the turns that led to it to `curator/training.jsonl`, in the chat
   format `mlx-lm` reads. `client/finetune/finetune.sh` trains a LoRA
-  adapter on those, fuses it, imports the result into Ollama as
+  adapter on those (base: Qwen 2.5 7B Instruct, which both trains at
+  full length in 24 GB and imports into Ollama), fuses it, imports it as
   `itunes-curator` and points the app at it. It wants a few hundred saved
   playlists to be worth running, refuses under 40 without `--force`, takes
-  an hour or two on an M-series Mac, and `--revert` goes back to the
-  stock picker.
+  several hours on an M-series Mac, needs Python 3.10+ (it fetches one
+  with `uv` if there is none), and `--revert` goes back to the stock
+  picker.
 
 ## Built with Claude Code
 

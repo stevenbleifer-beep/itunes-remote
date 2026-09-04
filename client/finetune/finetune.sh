@@ -9,23 +9,33 @@
 # "itunes-curator", and points the app at it. Run it again as the file
 # grows; each run starts from the base model, not the last adapter.
 #
+# The base is Qwen 2.5 7B Instruct, not the Qwen 3.5 the stock picker
+# uses. Two constraints choose it: mlx-lm must train it inside 24 GB
+# (Qwen 3.5's linear-attention layers keep every step's state in the
+# backward pass and run out of memory; so does Gemma 4 E4B), and Ollama
+# must import the fused result (its converter takes Qwen 2 and Qwen 3.5
+# but not plain Qwen 3). Qwen 2.5 7B trains at full length in about 13 GB
+# and imports cleanly. A tuned 7B beats a stock 4B at this one job once
+# there is data.
+#
 # It needs a few hundred approved turns to make a difference; it refuses
-# to run on fewer than 40 unless told --force. A run takes an hour or two
-# on an M-series Mac and uses the GPU throughout, so the curator is slow
-# while it trains.
+# to run on fewer than 40 unless told --force. A run takes several hours
+# on an M-series Mac (about 25 s a step) and uses the GPU throughout, so
+# the curator is slow while it trains.
 #
 #   ./finetune.sh              train on what is on file
 #   ./finetune.sh --force      even with few examples (to try the pipeline)
 #   ./finetune.sh --revert     go back to the stock picker
 #
 # Environment: ITR_ITERS (training steps; default from the data size),
-# ITR_BASE_MODEL (Hugging Face id of the 4-bit MLX base), ITR_TUNED_NAME.
+# ITR_BASE_MODEL (Hugging Face id of the 4-bit MLX base), ITR_TUNED_NAME,
+# ITR_NO_SWITCH=1 (build the model but leave the app on its current picker).
 set -euo pipefail
 
 SUPPORT="$HOME/Library/Application Support/iTunes Remote"
 DATA="$SUPPORT/curator/training.jsonl"
 WORK="$SUPPORT/finetune"
-BASE="${ITR_BASE_MODEL:-mlx-community/Qwen3.5-4B-MLX-4bit}"
+BASE="${ITR_BASE_MODEL:-mlx-community/Qwen2.5-7B-Instruct-4bit}"
 STOCK="qwen3.5:4b"
 NAME="${ITR_TUNED_NAME:-itunes-curator}"
 MIN="${ITR_MIN_EXAMPLES:-40}"
@@ -127,9 +137,12 @@ PYEOF
 #    long candidate list the model is shown, not something it should write.
 ITERS="${ITR_ITERS:-}"
 if [ -z "$ITERS" ]; then
-    ITERS=$(( N * 6 )); [ "$ITERS" -lt 100 ] && ITERS=100; [ "$ITERS" -gt 1500 ] && ITERS=1500
+    ITERS=$(( N * 6 )); [ "$ITERS" -lt 100 ] && ITERS=100; [ "$ITERS" -gt 800 ] && ITERS=800
 fi
-bold "Training $ITERS steps on $BASE (the first run downloads the base, about 3 GB)…"
+bold "Training $ITERS steps on $BASE (the first run downloads the base, about 4.5 GB)…"
+# The whole snapshot, not just the weights: fuse opens it offline, and the
+# hub library refuses a snapshot with files missing.
+"$PY" -c 'import sys; from huggingface_hub import snapshot_download; snapshot_download(sys.argv[1])' "$BASE" 2>&1 | grep -v "warn" | tail -1 || true
 rm -rf "$WORK/adapters"
 "$PY" -m mlx_lm lora --model "$BASE" --train --data "$WORK/data" \
     --iters "$ITERS" --batch-size 1 --num-layers 8 --learning-rate 1e-5 \
@@ -142,15 +155,19 @@ bold "Fusing…"
 rm -rf "$WORK/fused"
 "$PY" -m mlx_lm fuse --model "$BASE" --adapter-path "$WORK/adapters" --save-path "$WORK/fused" --dequantize
 
-# 6. Into Ollama, quantised the way the stock model is, with its parameters.
+# 6. Into Ollama, quantised the way the stock picker is. The chat template
+#    comes from the fused model's own tokenizer files; the app sets
+#    temperature and context per question.
 bold "Importing into Ollama as $NAME…"
-{
-    echo "FROM $WORK/fused"
-    "$OLLAMA" show --modelfile "$STOCK" 2>/dev/null | grep -E '^(PARAMETER|TEMPLATE)' || true
-} > "$WORK/Modelfile"
+printf 'FROM %s\nPARAMETER num_ctx 16384\n' "$WORK/fused" > "$WORK/Modelfile"
 "$OLLAMA" create "$NAME" --quantize q4_K_M -f "$WORK/Modelfile"
+rm -rf "$WORK/fused"
 
 # 7. Point the app at it.
+if [ -n "${ITR_NO_SWITCH:-}" ]; then
+    echo; bold "Done. $NAME is in Ollama; the app was left on its current picker."
+    exit 0
+fi
 defaults write "$DEFAULTS_DOMAIN" curatorModel "$NAME"
 echo
 bold "Done. The curator uses $NAME from its next question (File ▸ Set Up iTunes Remote… shows it as “Trained on your edits”)."

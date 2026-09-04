@@ -668,14 +668,39 @@ It writes the first turn's prompt with the *final* list as the answer
 feedback turn's prompt with the edit *as applied* (remove/add/order after
 the code rules), to `curator/training.jsonl` as
 `{"messages":[system,user,assistant]}`. The script: private venv with
-mlx-lm; 90/10 split; `mlx_lm lora` on
-`mlx-community/Qwen3.5-4B-MLX-4bit` with `--mask-prompt` (the prompt is a
-long candidate list, only the answer is learned), 8 layers, lr 1e-5,
-seq 12288, grad checkpointing, iters = 6×examples clamped 100–1500;
+mlx-lm 0.31 on Python 3.12 (macOS's 3.9 only gets mlx-lm 0.29, which
+lacks the newer models; the script finds a 3.10+ Python, or has `uv`
+fetch a standalone 3.12 into `~/.local` — done on the Air, no admin
+password); 90/10 split; `mlx_lm lora` on
+**`mlx-community/Qwen2.5-7B-Instruct-4bit`** with `--mask-prompt` (the
+prompt is a long candidate list, only the answer is learned), 8 layers,
+lr 1e-5, seq 12288, grad checkpointing, iters = 6×examples clamped
+100–800 (~25 s a step at 4.5k tokens);
 `mlx_lm fuse --dequantize`; `ollama create itunes-curator --quantize
-q4_K_M` from the fused safetensors (Ollama's converter handles
-`Qwen3_5ForConditionalGeneration`) with the stock model's PARAMETER
-lines; then `defaults write … curatorModel itunes-curator`. The setup
+q4_K_M` from the fused safetensors with only `num_ctx` set (the chat
+template comes from the tokenizer files; do NOT copy the stock model's
+`TEMPLATE {{ .Prompt }}`, which is a built-in-renderer marker); then
+`defaults write … curatorModel itunes-curator`. `ITR_NO_SWITCH=1` builds
+without switching the app; `ITR_TUNED_NAME` names the model.
+
+**Why Qwen 2.5 7B, not Qwen 3.5 (measured, 2026-09-04):** two
+constraints. (1) *Trains in 24 GB:* `mlx-community/Qwen3.5-4B-MLX-4bit`
+died with Metal "Insufficient Memory" at the first training step even
+with examples cut to 2048 tokens — mlx-lm's `qwen3_5.py` passes
+`use_kernel=not self.training` to `gated_delta_update`, so in training
+the linear-attention layers (three of every four) use the plain-ops scan
+that keeps every step's state for the backward pass. Gemma 4 E4B
+(`gemma-4-E4B-it-qat-4bit`) also OOMs. Plain-attention models are fine:
+Qwen 3 4B peaked at 10.3 GB, Qwen 2.5 7B Instruct at 12.7 GB, both at
+the full 4.5k length, against an 18 GB GPU working set. (2) *Imports into
+Ollama:* `ollama create` from safetensors (Ollama 0.33.2) refused Qwen 3
+with `unsupported architecture "Qwen3ForCausalLM"` — `convert/convert.go`
+takes `Qwen2ForCausalLM` and `Qwen3_5ForConditionalGeneration` but not
+plain Qwen 3. Qwen 2.5 7B satisfies both. Two other snags fixed on the
+way: `mlx_lm fuse` opens the base offline and the hub library rejects a
+snapshot missing README/.gitattributes, so the script completes the
+snapshot first; and mlx-lm needs Python 3.10+. The examples' prompts are
+~4.4k tokens each (two on file after the test session). The setup
 assistant's model popup lists a non-tier model as "Trained on your
 edits". It refuses under 40 examples without `--force`. Runs on the
 embedded Ollama too (`OLLAMA_HOST=127.0.0.1:11435`, `OLLAMA_MODELS` under
