@@ -52,6 +52,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let ejectButton = AquaBevelButton(glyph: .eject)
     /// Home or away, at the right end of the status bar.
     private let connectionBadge = AquaConnectionBadge()
+    /// When iTunes last saved its library, beside the badge.
+    private let libraryStamp = NSTextField(labelWithString: "")
     private var artworkHeight: NSLayoutConstraint?
     private var devices: [DeviceSource] = []
     private var deviceTimer: Timer?
@@ -331,6 +333,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         connectionBadge.autoresizingMask = [.minXMargin]
         connectionBadge.toolTip = "Working out whether the MacBook Pro is on the local network."
         statusBar.addSubview(connectionBadge)
+        libraryStamp.font = Aqua.font(11)
+        libraryStamp.textColor = NSColor(white: 0.35, alpha: 1)
+        libraryStamp.alignment = .right
+        libraryStamp.lineBreakMode = .byClipping
+        libraryStamp.frame = NSRect(x: connectionBadge.frame.minX - 14 - 220, y: 4, width: 220, height: 16)
+        libraryStamp.autoresizingMask = [.minXMargin]
+        statusBar.addSubview(libraryStamp)
 
         // Main split: [source list over artwork] | right side
         mainSplit.frame = NSRect(x: 0, y: statusH, width: W, height: H - toolbarH - statusH)
@@ -1840,7 +1849,39 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func updateStatus() {
         statusLabel.stringValue = statusOverride ?? controller.statusText
+        updateLibraryStamp()
         updatePlayerUI()
+    }
+
+    /// "Library as of 3:41 PM": when iTunes last wrote the library the
+    /// MacBook Pro is serving. Adds and deletes made in iTunes itself show
+    /// up here a minute or two after they happen; edits made in this app
+    /// are applied at once and do not wait for it.
+    private func updateLibraryStamp() {
+        guard let info = controller.info else {
+            libraryStamp.stringValue = ""
+            return
+        }
+        let written = MainWindowController.parseISO(info.xmlWrittenAt)
+        let read = MainWindowController.parseISO(info.loadedAt)
+        let f = DateFormatter()
+        f.doesRelativeDateFormatting = true
+        f.dateStyle = written.map { Calendar.current.isDateInToday($0) } == true ? .none : .medium
+        f.timeStyle = .short
+        libraryStamp.stringValue = written.map { "Library as of \(f.string(from: $0))" } ?? ""
+        let full = DateFormatter()
+        full.dateStyle = .medium
+        full.timeStyle = .medium
+        libraryStamp.toolTip = "iTunes last saved its library " + (written.map { full.string(from: $0) } ?? "?")
+            + "; the MacBook Pro read it " + (read.map { full.string(from: $0) } ?? "?")
+            + ". The daemon checks the file every 5 seconds and this app asks it every \(Int(controller.versionInterval)) seconds. Changes made from this app show at once."
+    }
+
+    static func parseISO(_ iso: String) -> Date? {
+        if let d = isoParser.date(from: iso) { return d }
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: iso)
     }
 
     /// Shows a result line in the status bar for a few seconds.
