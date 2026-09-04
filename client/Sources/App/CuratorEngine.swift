@@ -61,8 +61,27 @@ final class OllamaClient {
         ]
         let obj = try await post("api/chat", body, timeout: 600)
         let text = ((obj["message"] as? [String: Any])?["content"] as? String) ?? ""
-        return ChatResult(text: text, promptTokens: obj["prompt_eval_count"] as? Int ?? 0,
-                          outputTokens: obj["eval_count"] as? Int ?? 0, seconds: Date().timeIntervalSince(started))
+        let result = ChatResult(text: text, promptTokens: obj["prompt_eval_count"] as? Int ?? 0,
+                                outputTokens: obj["eval_count"] as? Int ?? 0, seconds: Date().timeIntervalSince(started))
+        OllamaClient.log("\(model) prompt \(result.promptTokens) tok, output \(result.outputTokens) tok (cap \(maxTokens)), \(String(format: "%.1f", result.seconds)) s\n--- prompt ---\n\(prompt.prefix(3000))\n--- reply ---\n\(text.prefix(6000))\n")
+        return result
+    }
+
+    /// ~/Library/Logs/iTunesRemote/curator.log: every prompt and reply, so
+    /// a bad playlist can be traced to what the model was shown and said.
+    static func log(_ line: String) {
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/iTunesRemote")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("curator.log")
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        guard let data = ("[\(stamp)] " + line + "\n").data(using: .utf8) else { return }
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile()
+            h.write(data)
+            try? h.close()
+        } else {
+            try? data.write(to: url)
+        }
     }
 }
 
@@ -110,6 +129,12 @@ final class CuratorEngine {
     private var byId: [String: Track] = [:]
     private var byArtist: [String: [Track]] = [:]
     private var artistNames: [String: String] = [:]   // folded -> display
+    /// The earliest year tagged on anything by each artist: a 2013 Beatles
+    /// track is a reissue, and this is how the model gets told so.
+    private var artistSince: [String: Int] = [:]
+    /// The order candidates came out of retrieval on the last turn, best
+    /// first, for topping a list up without going alphabetical.
+    private var lastRank: [String: Int] = [:]
     private var history: [String] = []
     private var request = ""
     private(set) var current: [CuratorPick] = []
@@ -140,6 +165,7 @@ final class CuratorEngine {
                 let key = CuratorEngine.fold(name)
                 byArtist[key, default: []].append(t)
                 if artistNames[key] == nil { artistNames[key] = name }
+                if let y = t.year, y > 1900 { artistSince[key] = min(artistSince[key] ?? y, y) }
             }
         }
         Task { await buildIndex() }
@@ -346,16 +372,21 @@ final class CuratorEngine {
         var seen = Set<String>()
         var out: [Track] = []
         var undated: [Track] = []
+        var rank: [String: Int] = [:]
         func take(_ t: Track) {
             let key = CuratorEngine.fold(t.name) + "|" + CuratorEngine.fold(t.artist)
             guard !seen.contains(key), !t.name.isEmpty else { return }
             if let years = plan.years {
-                // An era was asked for: a song from outside it is out, and
-                // one with no year tag waits behind the dated ones.
+                // An era was asked for: a song from outside it is out; one
+                // with no year tag, or on a live album, remaster or
+                // compilation (whose year is the reissue's, not the song's),
+                // waits behind the dated ones.
                 guard let y = t.year else { seen.insert(key); undated.append(t); return }
                 guard years.contains(y) else { return }
+                if CuratorEngine.isReissue(t) { seen.insert(key); undated.append(t); return }
             }
             seen.insert(key)
+            rank[t.persistentId] = rank.count
             out.append(t)
         }
         if feedback { current.forEach { take($0.track) } }
@@ -380,9 +411,11 @@ final class CuratorEngine {
                 lists.append(searchTracks(q, k: 25).filter { !avoided($0) })
             }
         }
-        // Round-robin so no single source or artist swamps the list.
+        // Round-robin so no single source or artist swamps the list. A long
+        // list needs a longer shelf: two per artist means fifty songs want
+        // twenty-five artists with something to spare.
         var i = 0
-        let cap = 140
+        let cap = max(140, plan.length * 4)
         while out.count < cap, lists.contains(where: { $0.count > i }) {
             for list in lists where i < list.count && out.count < cap {
                 if !avoided(list[i]) { take(list[i]) }
@@ -390,8 +423,12 @@ final class CuratorEngine {
             i += 1
         }
         if plan.years != nil, out.count < cap {
-            out += undated.prefix(min(cap - out.count, cap / 4))
+            for t in undated.prefix(min(cap - out.count, cap / 4)) {
+                rank[t.persistentId] = rank.count
+                out.append(t)
+            }
         }
+        lastRank = rank
         // Grouped by artist so the model reads it like a record shelf.
         let head = feedback ? current.count : 0
         let rest = out.dropFirst(head).sorted {
@@ -399,6 +436,17 @@ final class CuratorEngine {
             return a == b ? $0.name < $1.name : a < b
         }
         return Array(out.prefix(head)) + rest
+    }
+
+    private static let reissueWords = try! NSRegularExpression(
+        pattern: "\\b(live|remaster(ed)?|anthology|greatest|best of|collection|deluxe|anniversary|bbc|sessions?|complete|box set|singles|rarities|demos|bootleg|compilation|reissue|edition|hits)\\b|\\b(19|20)\\d\\d-\\d\\d-\\d\\d\\b",
+        options: .caseInsensitive)
+
+    /// A live album, remaster, anthology or compilation: its year is when
+    /// it came out, not when the songs did.
+    static func isReissue(_ t: Track) -> Bool {
+        let s = t.album + " | " + t.name
+        return reissueWords.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
     }
 
     /// The listener's own favourites first: rated, then played, studio
@@ -450,8 +498,18 @@ final class CuratorEngine {
             s += ")"
             if !t.genre.isEmpty { s += " [\(t.genre)]" }
             if t.rating > 0 { s += " ★\(t.rating / 20)" }
+            if let years = plan.years {
+                if let since = artistSince[CuratorEngine.fold(t.artist)], since < years.lowerBound - 12 {
+                    s += " ⚠ artist since \(since)"
+                }
+                if CuratorEngine.isReissue(t) { s += " ⚠ live/reissue" }
+            }
             if feedback, inList.contains(t.persistentId) { s += " ✓ in the current playlist" }
             lines.append(s)
+        }
+        var eraRule = ""
+        if let years = plan.years {
+            eraRule = "- The listener wants songs from \(years.lowerBound) to \(years.upperBound). The year shown is the album's release. Skip anything that is really an older song: a live recording, remaster, reissue, or a cover of an old standard. ⚠ marks an artist active since long before then, or a live/reissue album; take those only if you know the song itself is from the era.\n"
         }
         var prompt = "Request: \(request)\n"
         if feedback {
@@ -478,7 +536,7 @@ final class CuratorEngine {
             - If the feedback asks for a length, remove or add enough to reach it.
             - At most 2 songs by the same artist unless the request is about one artist.
             - "order" is every remaining ✓ song and every added song, sequenced like a real playlist.
-
+            \(eraRule)
             Return JSON: {"remove": [numbers], "add": [{"n": 12, "why": "a few words"}, ...], "order": [numbers], "note": "one or two sentences to the listener about what changed", "name": "a short playlist name"}
 
             Candidates:
@@ -486,12 +544,12 @@ final class CuratorEngine {
             """
         } else {
             prompt += """
-            Choose \(plan.length + 6) songs for the playlist. Rules:
+            Choose \(plan.length + max(6, plan.length / 3)) songs for the playlist. Rules:
             - Use ONLY the numbers listed. Never invent a song.
             - Sequence them like a real playlist: an opener, a flow, an ender.
             - Vary artists; at most 2 songs by the same artist unless the request is about one artist.
             - Prefer songs that clearly fit the request over merely famous ones.
-
+            \(eraRule)
             Return JSON: {"playlist": [{"n": 12, "why": "a few words"}, ...], "note": "one or two sentences to the listener about the choices", "name": "a short playlist name"}
 
             Candidates:
@@ -499,7 +557,8 @@ final class CuratorEngine {
             """
         }
         prompt += lines.joined(separator: "\n")
-        let r = try await ollama.chatJSON(model: model, system: CuratorEngine.system, prompt: prompt, maxTokens: 2500, temperature: 0.5)
+        let r = try await ollama.chatJSON(model: model, system: CuratorEngine.system, prompt: prompt,
+                                          maxTokens: 600 + 60 * (plan.length + max(6, plan.length / 3)), temperature: 0.5)
         let obj = CuratorEngine.parseJSON(r.text)
         if feedback {
             return applyEdit(obj, text: text, plan: plan, candidates: cands, seconds: r.seconds)
@@ -532,11 +591,77 @@ final class CuratorEngine {
             if picks.count >= plan.length { break }
         }
         guard !picks.isEmpty else { throw CuratorError("The model did not pick any songs. Try again, or say it differently.") }
-        // The rules above cost a few picks; twenty asked for is twenty given.
+        // The rules above cost a few picks. Short, the model is asked for
+        // the rest — with reasons — rather than the list being padded from
+        // candidates it never judged.
+        var seconds = r.seconds
+        if picks.count < plan.length {
+            onStatus("Choosing \(plan.length - picks.count) more…")
+            let more = try await chooseMore(plan.length - picks.count, plan: plan, candidates: cands, eraRule: eraRule,
+                                            used: &used, perArtist: &perArtist, requestFold: requestFold,
+                                            allowHoliday: wantsHoliday, isHoliday: isHoliday)
+            picks += more.picks
+            seconds += more.seconds
+        }
         fill(&picks, to: plan.length, from: cands, perArtist: &perArtist, requestFold: requestFold,
              allowHoliday: wantsHoliday, isHoliday: isHoliday, years: plan.years)
         return Reply(picks: picks, note: obj["note"] as? String ?? "", name: obj["name"] as? String ?? plan.name,
-                     seconds: r.seconds)
+                     seconds: seconds)
+    }
+
+    /// A second, smaller ask: this many more songs from the candidates not
+    /// yet taken, same rules, each with its reason.
+    private func chooseMore(_ count: Int, plan: Plan, candidates cands: [Track], eraRule: String,
+                            used: inout Set<String>, perArtist: inout [String: Int], requestFold: String,
+                            allowHoliday: Bool, isHoliday: (String) -> Bool) async throws -> (picks: [CuratorPick], seconds: Double) {
+        var lines: [String] = []
+        for (i, t) in cands.enumerated() where !used.contains(t.persistentId) {
+            let a = CuratorEngine.fold(t.artist)
+            if perArtist[a, default: 0] >= 2 && !(a.count >= 3 && requestFold.contains(a)) { continue }
+            if let years = plan.years, let y = t.year, !years.contains(y) { continue }
+            var s = "\(i + 1). \(t.artist) – \(t.name) (\(t.album.isEmpty ? "?" : t.album)"
+            if let y = t.year { s += " \(y)" }
+            s += ")"
+            if !t.genre.isEmpty { s += " [\(t.genre)]" }
+            if let years = plan.years {
+                if let since = artistSince[a], since < years.lowerBound - 12 { s += " ⚠ artist since \(since)" }
+                if CuratorEngine.isReissue(t) { s += " ⚠ live/reissue" }
+            }
+            lines.append(s)
+        }
+        guard !lines.isEmpty else { return ([], 0) }
+        let prompt = """
+        Request: \(request)
+        Your plan: \(plan.vibe)
+        The playlist already has most of its songs. Choose \(count + 2) MORE from the candidates below, one per line as N. artist – title (album year) [genre]. Rules:
+        - Use ONLY the numbers listed. Never invent a song.
+        - Prefer songs that clearly fit the request.
+        \(eraRule)
+        Return JSON: {"playlist": [{"n": 12, "why": "a few words"}, ...]}
+
+        Candidates:
+
+        """ + lines.joined(separator: "\n")
+        let r = try await ollama.chatJSON(model: model, system: CuratorEngine.system, prompt: prompt,
+                                          maxTokens: 300 + 60 * (count + 2), temperature: 0.5)
+        let obj = CuratorEngine.parseJSON(r.text)
+        var out: [CuratorPick] = []
+        for item in (obj["playlist"] as? [[String: Any]]) ?? [] {
+            var n = item["n"] as? Int
+            if n == nil, let s = item["n"] as? String { n = Int(s) }
+            guard let k = n, k >= 1, k <= cands.count else { continue }
+            let t = cands[k - 1]
+            guard !used.contains(t.persistentId) else { continue }
+            let a = CuratorEngine.fold(t.artist)
+            if perArtist[a, default: 0] >= 2 && !(a.count >= 3 && requestFold.contains(a)) { continue }
+            if !allowHoliday && (isHoliday(t.name) || isHoliday(t.album)) { continue }
+            if let years = plan.years, let y = t.year, !years.contains(y) { continue }
+            used.insert(t.persistentId)
+            perArtist[a, default: 0] += 1
+            out.append(CuratorPick(track: t, why: item["why"] as? String ?? ""))
+            if out.count >= count { break }
+        }
+        return (out, r.seconds)
     }
 
     /// Tops a list up to `length` from the candidates the model passed over,
@@ -545,8 +670,17 @@ final class CuratorEngine {
                       requestFold: String, allowHoliday: Bool, isHoliday: (String) -> Bool, years: ClosedRange<Int>?) {
         guard picks.count < length else { return }
         let used = Set(picks.map { $0.track.persistentId })
+        // Best retrieval rank first, never alphabetical; with an era asked
+        // for, dated studio songs before undated or reissued ones.
         let pool = cands.filter { !used.contains($0.persistentId) }
-        let ordered = years == nil ? pool : pool.filter { $0.year != nil } + pool.filter { $0.year == nil }
+            .sorted { (lastRank[$0.persistentId] ?? .max) < (lastRank[$1.persistentId] ?? .max) }
+        func doubtful(_ t: Track) -> Bool {
+            guard let years = years else { return false }
+            if t.year == nil || CuratorEngine.isReissue(t) { return true }
+            if let since = artistSince[CuratorEngine.fold(t.artist)], since < years.lowerBound - 12 { return true }
+            return false
+        }
+        let ordered = years == nil ? pool : pool.filter { !doubtful($0) } + pool.filter { doubtful($0) }
         for t in ordered where picks.count < length {
             if let years = years, let y = t.year, !years.contains(y) { continue }
             let a = CuratorEngine.fold(t.artist)
@@ -554,7 +688,7 @@ final class CuratorEngine {
             if perArtist[a, default: 0] >= 2 && !aboutArtist { continue }
             if !allowHoliday && (isHoliday(t.name) || isHoliday(t.album)) { continue }
             perArtist[a, default: 0] += 1
-            picks.append(CuratorPick(track: t, why: "rounds out the list"))
+            picks.append(CuratorPick(track: t, why: ""))
         }
     }
 
@@ -646,6 +780,17 @@ final class CuratorEngine {
         if let a = text.firstIndex(of: "{"), let b = text.lastIndex(of: "}"), a < b,
            let d = String(text[a...b]).data(using: .utf8),
            let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] { return o }
+        // Cut off mid-list by the output cap: keep the complete entries.
+        if let a = text.firstIndex(of: "{"), let b = text.lastIndex(of: "}"), a < b {
+            let head = String(text[a...b])
+            for tail in ["]}", "]}}", "}]}"] {
+                if let d = (head + tail).data(using: .utf8),
+                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                    OllamaClient.log("salvaged a cut-off reply")
+                    return o
+                }
+            }
+        }
         return [:]
     }
 }

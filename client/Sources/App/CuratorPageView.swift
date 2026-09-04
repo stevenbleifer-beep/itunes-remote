@@ -107,7 +107,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate 
         // The playlist.
         for (id, title, width, right) in [
             ("n", "", 28.0, true), ("name", "Name", 190.0, false), ("artist", "Artist", 130.0, false),
-            ("album", "Album", 140.0, false), ("time", "Time", 46.0, true), ("why", "Why", 200.0, false),
+            ("album", "Album", 140.0, false), ("year", "Year", 40.0, true), ("time", "Time", 46.0, true), ("why", "Why", 200.0, false),
         ] as [(String, String, CGFloat, Bool)] {
             table.addTableColumn(AquaTables.column(id, title: title, width: width, min: 24, sortable: false, rightAligned: right))
         }
@@ -344,7 +344,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard row < picks.count, let id = tableColumn?.identifier.rawValue else { return nil }
         let p = picks[row]
-        let right = id == "n" || id == "time"
+        let right = id == "n" || id == "time" || id == "year"
         let cell = AquaTables.labelCell(tableView, id: right ? "curatorR" : "curator", rightAligned: right)
         let text: String
         switch id {
@@ -353,6 +353,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate 
         case "artist": text = p.track.artist
         case "album": text = p.track.album
         case "time": text = p.track.durationText
+        case "year": text = p.track.year.map(String.init) ?? ""
         case "why": text = p.why
         default: text = ""
         }
