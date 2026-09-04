@@ -749,3 +749,70 @@ does not find this window; capture the screen with `screencapture -x -m`
 instead. Verified 2026-09-04: the run streamed into the window, imported
 `itunes-curator-smoke`, and the app switched to it; then reverted and the
 smoke model removed.
+
+## Audit pass (2026-09-04, evening)
+
+Steven asked for a sweep of the whole app for bugs and inefficiencies.
+Every file in `client/Sources` and `daemon/itunes_remote` was read, plus
+the hot-path AppleScripts. Fixed in this pass:
+
+- **Next track swallowed after a resume** (`PlayerController`):
+  `suppressFinish` was set on every play/pause, including a resume, and
+  only cleared by a later stop; the next natural end of a track was then
+  taken as a deliberate stop and nothing followed. Now set only when
+  pausing from playing, and cleared by any poll that shows playing.
+- **Sync/Eject buttons acted on the wrong device** (`MainWindowController`):
+  `devices.first` could be an iPhone on the USB bus rather than the iPod;
+  now the first iPod. Eject drops only that device from the list.
+- **Local playback KVO crash risk** (`LocalPlayer`): the status observer
+  was removed only when the first status change arrived; two quick track
+  changes could deallocate an observed item. The observer now follows one
+  `observedItem` and comes off before the item is replaced.
+- **Album dot on the iPod's Music pane never showed** (`DevicePageView`):
+  the device lists albums as "Artist - Album" and the match used the bare
+  title.
+- **Double-click on a playlist played the previous list's first song**:
+  the click's reload had not finished; now `playFirstWhenLoaded` waits
+  for the rows.
+- **Media keys**: Play and Pause both toggled; Control Centre's Play on a
+  playing app paused it.
+- **Grid memory**: every cover ever scrolled past stayed decoded (9,135 ×
+  ~90 KB); covers far from the visible rows are let go past 600.
+- **Column sorts on the full library** (`LibraryController.applySort`):
+  the six-field artist key was built inside the comparator, a few million
+  times per sort; keys are computed once per track and indices sorted.
+- **Cover Flow scrub** filtered 93k tracks on every mouse move
+  (`coverSelectionChanged`); coalesced to one refresh per run-loop turn.
+- **Music pane ticks** rebuilt all four lists (9k album rows) per tick;
+  only the touched list now.
+- **Daemon**: `_reconcile_artwork_flags` stat-ed the disk cache for every
+  no-art album on every `/api/albumlist` (thousands of stats per browser
+  click on the Pro) — settled answers are remembered per Library object;
+  `itunes_running()` spawned `pgrep` before every script (twice a second
+  with the player poll) — cached 2 s; the warmer's `queue.pop(0)` is a
+  deque; duplicate `server_version`; misplaced docstring in
+  `_connected_pod`; a non-numeric Content-Length was a 500, now a 400;
+  `sync_rebuild.applescript` treated an album selection with no artist
+  as "artist is empty" where the daemon's count treats it as any artist.
+
+Noted, not changed (Steven's call or bigger jobs):
+
+- **Reconnect button** (rightmost in the bottom-left row, `reconnectButton`):
+  largely redundant now. Reconnection to a restarted daemon is automatic
+  (`LibraryController` retries, `ConnectionMonitor` switches hosts), and
+  the Refresh button re-reads the library. What it still uniquely does is
+  clear the artwork cache. Recommendation: remove it, or fold "clear the
+  art cache" into Refresh.
+- The daemon token lives in UserDefaults in plain text; the Keychain
+  would be the right place. The token also rides in the audio URL's query
+  string for AVFoundation, which the daemon accepts (`?token=`); the
+  `AVURLAssetHTTPHeaderFieldsKey` header is set too, so the query copy may
+  be droppable — untested.
+- "MacBook Pro" is hard-coded in a dozen user-facing strings; for other
+  people's installs the daemon's `name` should be used.
+- `/api/library` is probed every 45 s by the connection monitor even at
+  home; harmless but could back off.
+- `library.albums()` regroups 93k tracks on every album list; a per-Library
+  cache of the unfiltered result would make browser clicks on the Pro
+  faster still.
+- `AlbumGridView` decodes images on the main thread on first draw.

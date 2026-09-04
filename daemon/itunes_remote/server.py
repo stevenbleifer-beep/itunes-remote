@@ -472,6 +472,14 @@ class Api(object):
         it; where they have none, say maybe — the quick path answers from
         the file in milliseconds and queues the rest for the warmer."""
         lib = self.store.lib
+        # The disk answer for a cover is stable until the library reloads,
+        # and every album list — each browser click, each search — asked the
+        # disk again for thousands of albums. Remembered per library.
+        flags = getattr(self, "_art_flags", None)
+        if flags is None or flags[0] is not lib:
+            flags = (lib, {})
+            self._art_flags = flags
+        known = flags[1]
         for a in albums:
             if a.get("hasArtwork"):
                 continue
@@ -483,8 +491,14 @@ class Api(object):
                 if pid in self.artwork_cache:
                     a["hasArtwork"] = self.artwork_cache[pid] is not None
                     continue
+            if pid in known:
+                a["hasArtwork"] = known[pid]
+                continue
             cached = self.artwork_disk.get(pid, not_before=_epoch(t.date_modified))
             a["hasArtwork"] = True if cached is None else cached is not artwork_mod.MISS
+            # Only a settled answer is kept; "maybe" is asked again later.
+            if cached is not None:
+                known[pid] = a["hasArtwork"]
 
     def get_playlists(self, params, query, body):
         return {"playlists": self.store.lib.playlist_summaries()}
@@ -594,7 +608,7 @@ class Api(object):
         # Let the library settle and the first client finish loading.
         time.sleep(idle)
         done = 0
-        queue = []
+        queue = collections.deque()
         swept_at = 0.0
         while True:
             # Covers someone is looking at right now come first, and do not
@@ -615,10 +629,10 @@ class Api(object):
             if not queue and time.time() - swept_at > 600:
                 swept_at = time.time()
                 try:
-                    queue = self._warm_queue()
+                    queue = collections.deque(self._warm_queue())
                 except Exception as e:
                     log.warning("artwork warmer could not build its queue: %s", e)
-                    queue = []
+                    queue = collections.deque()
                 if queue:
                     log.info("artwork warmer: %d covers to fetch", len(queue))
                 else:
@@ -632,7 +646,7 @@ class Api(object):
                     or not self.itunes.itunes_running():
                 time.sleep(2.0)
                 continue
-            pid = queue.pop(0)
+            pid = queue.popleft()
             try:
                 self._artwork(pid)
             except ApiError:
@@ -874,11 +888,11 @@ class Api(object):
     DEVICE_QUIET_SECONDS = 30
 
     def _connected_pod(self):
-        if getattr(self, "device_quiet_until", 0) > time.time():
-            return None
         """The iPod iTunes currently has open, with its serial. Serial is the
         plan key: Steven has five iPods and two are the same model, so names
         would collide."""
+        if getattr(self, "device_quiet_until", 0) > time.time():
+            return None
         cached = getattr(self, "_pod_cache", None)
         if cached and time.time() - cached[0] < self.POD_CACHE_SECONDS:
             return cached[1]
@@ -1953,7 +1967,6 @@ class Handler(BaseHTTPRequestHandler):
     # Bulk track edits are the biggest legitimate body, well under this.
     MAX_BODY = 4 * 1024 * 1024
     # No "BaseHTTP/0.6 Python/3.13" banner for scanners to read.
-    server_version = "iTunesRemote"
     sys_version = ""
     server_version = "iTunesRemote/0.2"
     protocol_version = "HTTP/1.1"
@@ -2070,7 +2083,10 @@ class Handler(BaseHTTPRequestHandler):
             if parts.path not in ("/api/hello", "/api/pair") and not self._authorized(query):
                 raise ApiError(401, "missing or bad token")
             body = None
-            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                raise ApiError(400, "bad Content-Length")
             if length > self.MAX_BODY:
                 raise ApiError(413, "request body too large")
             if length:

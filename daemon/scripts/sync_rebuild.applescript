@@ -68,9 +68,13 @@ on run argv
                     else if selKind is "genre" then
                         duplicate (every track of lib whose genre is v1) to target
                     else if selKind is "album" then
-                        if (count of cols) > 2 then
+                        if (count of cols) > 2 and (item 2 of cols) is not "" then
                             set v2 to item 3 of cols
                             duplicate (every track of lib whose album is v2 and artist is v1) to target
+                        else if (count of cols) > 2 then
+                            -- No artist recorded: the album by whoever, as the
+                            -- daemon counts it.
+                            duplicate (every track of lib whose album is (item 3 of cols)) to target
                         else
                             duplicate (every track of lib whose album is v1) to target
                         end if

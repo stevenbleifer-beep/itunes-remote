@@ -11,6 +11,10 @@ final class LocalPlayer: NSObject {
     private(set) var current: Track?
     private var endObserver: NSObjectProtocol?
     private var timeObserver: Any?
+    /// The item whose status is being watched, so the observer comes off
+    /// before the item is replaced: an observed item deallocated with its
+    /// observer still on crashes.
+    private var observedItem: AVPlayerItem?
 
     var onTick: () -> Void = {}
     var onFinished: () -> Void = {}
@@ -53,7 +57,9 @@ final class LocalPlayer: NSObject {
             forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.onFinished() }
         }
+        stopObserving()
         item.addObserver(self, forKeyPath: "status", options: [.new], context: nil)
+        observedItem = item
         player.replaceCurrentItem(with: item)
         player.play()
         onTick()
@@ -66,7 +72,13 @@ final class LocalPlayer: NSObject {
             let message = item.error?.localizedDescription ?? "could not play this file"
             Task { @MainActor in self.onError(message) }
         }
+        Task { @MainActor in if self.observedItem === item { self.stopObserving() } }
+    }
+
+    private func stopObserving() {
+        guard let item = observedItem else { return }
         item.removeObserver(self, forKeyPath: "status")
+        observedItem = nil
     }
 
     func playPause() {
@@ -82,6 +94,7 @@ final class LocalPlayer: NSObject {
 
     func stop() {
         player.pause()
+        stopObserving()
         player.replaceCurrentItem(with: nil)
         current = nil
         onTick()

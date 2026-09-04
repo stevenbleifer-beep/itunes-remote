@@ -340,22 +340,32 @@ final class LibraryController {
         func less<T: Comparable>(_ a: T, _ b: T, tie: () -> Bool) -> Bool {
             a == b ? tie() : (asc ? a < b : a > b)
         }
-        func byArtist(_ a: Track, _ b: Track) -> Bool {
-            less(LibraryController.artistKey(a), LibraryController.artistKey(b), tie: { false })
-        }
+        // The artist key is six fields built from strings; made inside the
+        // comparator it was built a few million times per sort of the whole
+        // library. Once per track instead, then the sort moves indices.
+        let artist = tracks.map(LibraryController.artistKey)
+        func byArtist(_ i: Int, _ j: Int) -> Bool { artist[i] < artist[j] }
+        var order = Array(tracks.indices)
         switch key {
-        case "artist": tracks.sort(by: byArtist)
-        case "album": tracks.sort { less(LibraryController.albumKey($0), LibraryController.albumKey($1), tie: { false }) }
-        case "name": tracks.sort { a, b in less(a.sortName, b.sortName, tie: { byArtist(a, b) }) }
-        case "genre": tracks.sort { a, b in less(a.genre.lowercased(), b.genre.lowercased(), tie: { byArtist(a, b) }) }
-        case "year": tracks.sort { a, b in less(a.year ?? 0, b.year ?? 0, tie: { byArtist(a, b) }) }
-        case "totalTime": tracks.sort { a, b in less(a.totalTime ?? 0, b.totalTime ?? 0, tie: { byArtist(a, b) }) }
-        case "trackNumber": tracks.sort { a, b in less(a.trackNumber ?? 0, b.trackNumber ?? 0, tie: { byArtist(a, b) }) }
-        case "rating": tracks.sort { a, b in less(a.rating, b.rating, tie: { byArtist(a, b) }) }
-        case "playCount": tracks.sort { a, b in less(a.playCount, b.playCount, tie: { byArtist(a, b) }) }
-        case "dateAdded": tracks.sort { a, b in less(a.dateAdded, b.dateAdded, tie: { byArtist(a, b) }) }
-        default: break
+        case "artist": order.sort { less(artist[$0], artist[$1], tie: { false }) }
+        case "album":
+            let album = tracks.map(LibraryController.albumKey)
+            order.sort { less(album[$0], album[$1], tie: { false }) }
+        case "name":
+            let k = tracks.map { $0.sortName }
+            order.sort { i, j in less(k[i], k[j], tie: { byArtist(i, j) }) }
+        case "genre":
+            let k = tracks.map { $0.genre.lowercased() }
+            order.sort { i, j in less(k[i], k[j], tie: { byArtist(i, j) }) }
+        case "year": order.sort { i, j in less(tracks[i].year ?? 0, tracks[j].year ?? 0, tie: { byArtist(i, j) }) }
+        case "totalTime": order.sort { i, j in less(tracks[i].totalTime ?? 0, tracks[j].totalTime ?? 0, tie: { byArtist(i, j) }) }
+        case "trackNumber": order.sort { i, j in less(tracks[i].trackNumber ?? 0, tracks[j].trackNumber ?? 0, tie: { byArtist(i, j) }) }
+        case "rating": order.sort { i, j in less(tracks[i].rating, tracks[j].rating, tie: { byArtist(i, j) }) }
+        case "playCount": order.sort { i, j in less(tracks[i].playCount, tracks[j].playCount, tie: { byArtist(i, j) }) }
+        case "dateAdded": order.sort { i, j in less(tracks[i].dateAdded, tracks[j].dateAdded, tie: { byArtist(i, j) }) }
+        default: return
         }
+        tracks = order.map { tracks[$0] }
     }
 
     /// The daemon's default order: sort artist, year, sort album, disc, track, sort name.

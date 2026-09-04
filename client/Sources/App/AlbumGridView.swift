@@ -30,6 +30,7 @@ final class AlbumGridView: NSView, NSDraggingSource {
 
     private var images: [Int: NSImage] = [:]
     private var requested: Set<Int> = []
+    private var observing = false
     private var generation = 0
     private let cellW: CGFloat = 176
     private let cellH: CGFloat = 214
@@ -43,8 +44,11 @@ final class AlbumGridView: NSView, NSDraggingSource {
         super.viewDidMoveToSuperview()
         guard let clip = superview as? NSClipView else { return }
         clip.postsFrameChangedNotifications = true
-        NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: clip, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.relayout() }
+        if !observing {
+            observing = true
+            NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: clip, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.relayout() }
+            }
         }
         relayout()
     }
@@ -84,6 +88,16 @@ final class AlbumGridView: NSView, NSDraggingSource {
         let start = firstRow * columns
         let end = min(albums.count, (lastRow + 1) * columns)
         guard start < end else { return }
+        // Covers far from the screen are let go: every cover ever scrolled
+        // past used to stay decoded, which is hundreds of megabytes across
+        // a nine-thousand-album library.
+        if images.count > 600 {
+            let keep = (start - 12 * columns)...(end + 12 * columns)
+            for i in Array(images.keys) where !keep.contains(i) {
+                images[i] = nil
+                requested.remove(i)
+            }
+        }
 
         let titleStyle = NSMutableParagraphStyle()
         titleStyle.alignment = .center

@@ -55,10 +55,20 @@ class AppleScript(object):
 
     # -- iTunes process -------------------------------------------------
 
-    @staticmethod
-    def itunes_running():
+    _running = (0.0, False)
+
+    @classmethod
+    def itunes_running(cls):
+        # Asked before every script — the player poll alone once a second —
+        # and each ask was a pgrep spawn. Two seconds of memory is plenty:
+        # a script against a just-quit iTunes fails on its own anyway.
+        at, was = cls._running
+        now = time.time()
+        if now - at < 2.0:
+            return was
         r = subprocess.run(["pgrep", "-x", "iTunes"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return r.returncode == 0
+        cls._running = (now, r.returncode == 0)
+        return cls._running[1]
 
     @staticmethod
     def ipod_mounted():

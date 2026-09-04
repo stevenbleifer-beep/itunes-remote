@@ -140,6 +140,10 @@ final class PlayerController {
         do {
             let s = try await api.playerState()
             let finished = reachedEnd(s)
+            // Playing again means the stop the flag was waiting for never
+            // came (play/pause pressed to resume): let it go, or the next
+            // real end of a track would be swallowed and nothing would follow.
+            if s.isPlaying { suppressFinish = false }
             remoteState = s
             lastPoll = Date()
             lastError = nil
@@ -210,7 +214,8 @@ final class PlayerController {
     func playPause() {
         if mode == .local { local.playPause(); return }
         guard let api = api else { return }
-        suppressFinish = true
+        // Only a pause is a deliberate stop; resuming is not.
+        if remoteState?.isPlaying == true { suppressFinish = true }
         command { try await api.playerCommand("playpause") }
     }
 

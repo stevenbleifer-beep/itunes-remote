@@ -574,9 +574,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
+    /// Coalesced: a scrub through Cover Flow changes the selection on every
+    /// mouse move, and each change filtered the whole library for the
+    /// album's rows. One refresh per turn of the run loop is plenty.
+    private var coverRefreshScheduled = false
     private func coverSelectionChanged() {
-        refreshRows()
-        updateArtwork()
+        guard !coverRefreshScheduled else { return }
+        coverRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.coverRefreshScheduled = false
+            self.refreshRows()
+            self.updateArtwork()
+        }
     }
 
     /// Recomputes the rows the table shows and reloads it.
@@ -994,6 +1004,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 self.loadAlbums()
             }
             self.updateArtwork()
+            if let wanted = self.playFirstWhenLoaded, self.controller.source.playlistId == wanted {
+                self.playFirstWhenLoaded = nil
+                if let first = self.rows.first { self.startPlayback(first, playlist: wanted, context: self.rows) }
+            }
         }
         controller.onStatusChanged = { [weak self] in self?.updateStatus() }
         controller.onFirstLoad = { [weak self] in self?.firstLoadDone() }
@@ -1016,8 +1030,16 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         // The Mac's media keys go to whichever app here is the "now playing"
         // app, so the app claims that role and forwards them on.
         mediaKeys.onTogglePlayPause = { [weak self] in self?.player.playPause() }
-        mediaKeys.onPlay = { [weak self] in self?.player.playPause() }
-        mediaKeys.onPause = { [weak self] in self?.player.playPause() }
+        // Play and Pause are separate commands: Control Centre's Play on an
+        // already playing app must not pause it.
+        mediaKeys.onPlay = { [weak self] in
+            guard let self = self, self.player.state?.isPlaying != true else { return }
+            self.player.playPause()
+        }
+        mediaKeys.onPause = { [weak self] in
+            guard let self = self, self.player.state?.isPlaying == true else { return }
+            self.player.playPause()
+        }
         mediaKeys.onNext = { [weak self] in self?.step(by: 1) }
         mediaKeys.onPrevious = { [weak self] in self?.previousPressed() }
         mediaKeys.onSeek = { [weak self] seconds in self?.player.seek(to: seconds) }
@@ -1711,7 +1733,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     @objc private func syncDevice(_ sender: Any?) {
-        guard let device = devices.first, let api = controller.api else { return }
+        // The iPod, not whatever USB device happens to be listed first.
+        guard let device = devices.first(where: { $0.isIPod }), let api = controller.api else { return }
         syncButton.isEnabled = false
         Task { @MainActor in
             defer { syncButton.isEnabled = true }
@@ -1725,7 +1748,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     @objc private func ejectDevice(_ sender: Any?) {
-        guard let device = devices.first, let api = controller.api else { return }
+        guard let device = devices.first(where: { $0.isIPod }), let api = controller.api else { return }
         ejectButton.isEnabled = false
         flashStatus("Ejecting \(device.name)…")
         stopDevicePolling()
@@ -1733,10 +1756,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             do {
                 try await api.ejectSource(device.name)
                 flashStatus("Ejected \(device.name).")
-                devices = []
+                devices.removeAll { $0.name == device.name }
                 reloadSourceList()
-                syncButton.isHidden = true
-                ejectButton.isHidden = true
+                let ipods = devices.contains { $0.isIPod }
+                syncButton.isHidden = !ipods
+                ejectButton.isHidden = !ipods
             } catch {
                 // The iPod is still there. Say why, put the row back, and
                 // start reading it again.
@@ -2820,10 +2844,20 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             toggleFolder(p.persistentId)
             return
         }
-        if case .playlist(let p) = sourceRows[row], let first = rows.first {
-            startPlayback(first, playlist: p.persistentId, context: rows)
+        if case .playlist(let p) = sourceRows[row] {
+            // The click that came first is still loading the playlist; play
+            // from its rows once they arrive, not from the list that was
+            // showing before.
+            if controller.source.playlistId == p.persistentId, !controller.loading, let first = rows.first {
+                startPlayback(first, playlist: p.persistentId, context: rows)
+            } else {
+                playFirstWhenLoaded = p.persistentId
+            }
         }
     }
+
+    /// A playlist double-clicked before its tracks had loaded.
+    private var playFirstWhenLoaded: String?
 
     private var clickMonitor: Any?
 

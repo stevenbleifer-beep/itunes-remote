@@ -1074,10 +1074,9 @@ final class DeviceMusicView: NSView {
             v.translatesAutoresizingMaskIntoConstraints = false
             doc.addSubview(v)
         }
-        for (i, l) in lists.enumerated() {
+        for l in lists {
             l.translatesAutoresizingMaskIntoConstraints = false
             l.onToggle = { [weak self] row in self?.toggle(row) }
-            _ = i
             doc.addSubview(l)
         }
         doc.translatesAutoresizingMaskIntoConstraints = false
@@ -1104,8 +1103,6 @@ final class DeviceMusicView: NSView {
             caveat.topAnchor.constraint(equalTo: optionsBox.bottomAnchor, constant: 10),
         ])
         // Two columns of two, as iTunes arranges them.
-        let mid = doc.leadingAnchor.anchorWithOffset(to: doc.trailingAnchor)
-        _ = mid
         for (i, l) in lists.enumerated() {
             let left = i % 2 == 0
             let topAnchor: NSLayoutYAxisAnchor = i < 2 ? caveat.bottomAnchor : lists[i - 2].bottomAnchor
@@ -1141,9 +1138,11 @@ final class DeviceMusicView: NSView {
         var set = ticks[row.kind.rawValue] ?? []
         if on { set.insert(row.planKey) } else { set.remove(row.planKey) }
         ticks[row.kind.rawValue] = set
-        for l in lists {
+        // Only the list the row lives in: rewriting all four rebuilt the
+        // nine-thousand-row albums list on every tick.
+        for l in lists where l.rows.first?.kind == row.kind {
             l.rows = l.rows.map {
-                guard $0.kind == row.kind, $0.planKey == row.planKey else { return $0 }
+                guard $0.planKey == row.planKey else { return $0 }
                 var copy = $0
                 copy.checked = on
                 return copy
@@ -1212,9 +1211,12 @@ final class DeviceMusicView: NSView {
             let title = a.album.isEmpty ? "Unknown Album" : a.album
             let shown = a.artist.isEmpty ? title : "\(a.artist) - \(title)"
             let planKey = "\(a.artist)\u{1f}\(a.album)"
+            // The daemon lists a device's albums as "Artist - Album", the
+            // same shape as the row's name; matching on the bare title
+            // never hit, so the dot never showed for an album.
             return Row(kind: .album, name: shown, albumArtist: a.artist, albumTitle: a.album,
                        checked: ticked(.album, planKey),
-                       onDevice: onDeviceAlbums.contains(key(a.album)))
+                       onDevice: onDeviceAlbums.contains(key(shown)) || onDeviceAlbums.contains(key(a.album)))
         }
     }
 }
