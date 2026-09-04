@@ -103,7 +103,18 @@ UID_NUM="$(id -u)"
 launchctl bootout "gui/$UID_NUM/$OLD_LABEL" 2>/dev/null || true
 rm -f "$HOME/Library/LaunchAgents/$OLD_LABEL.plist"
 launchctl bootout "gui/$UID_NUM/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$UID_NUM" "$PLIST" || fail "launchctl could not load the agent."
+# bootout returns before the job is gone; a bootstrap that lands too soon
+# fails with "Input/output error" and leaves nothing loaded.
+for i in $(seq 1 20); do
+    launchctl print "gui/$UID_NUM/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.5
+done
+LOADED=""
+for i in 1 2 3 4 5; do
+    if launchctl bootstrap "gui/$UID_NUM" "$PLIST" 2>/dev/null; then LOADED=1; break; fi
+    sleep 2
+done
+[ -n "$LOADED" ] || launchctl print "gui/$UID_NUM/$LABEL" >/dev/null 2>&1 || fail "launchctl could not load the agent."
 launchctl kickstart -k "gui/$UID_NUM/$LABEL"
 echo "Daemon started (it reads the whole library first; a big one takes half a minute)."
 

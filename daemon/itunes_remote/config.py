@@ -32,7 +32,8 @@ DEFAULTS = {
 
 
 class Config(object):
-    def __init__(self, values):
+    def __init__(self, values, path=None):
+        self.path = path
         merged = dict(DEFAULTS)
         merged.update(values)
         self.host = merged["host"]
@@ -68,7 +69,24 @@ def load(path):
                 f.write("\n")
         except OSError:
             pass
-    return Config(values)
+    return Config(values, path)
+
+
+def rotate_pairing_code(cfg):
+    """Writes a fresh pairing code into the config file and returns it."""
+    code = new_pairing_code()
+    if cfg.path:
+        try:
+            with open(cfg.path, "r", encoding="utf-8") as f:
+                values = json.load(f)
+            values["pairing_code"] = code
+            with open(cfg.path, "w", encoding="utf-8") as f:
+                json.dump(values, f, indent=2)
+                f.write("\n")
+            os.chmod(cfg.path, 0o600)
+        except (OSError, ValueError):
+            pass
+    return code
 
 
 def write_default(path):

@@ -21,6 +21,7 @@ from . import artwork as artwork_mod
 from .applescript import AppleScriptError, AppleScriptTimeout, ITunesNotRunning
 from .library import Track, fold
 from .syncplan import SyncPlans
+from . import config as config_mod
 import hmac
 
 
@@ -384,7 +385,11 @@ class Api(object):
                 time.sleep(1.0)
                 raise ApiError(403, "that is not the pairing code")
             Api._pair_failures = 0
-        log.info("paired a new client")
+            # One code, one pairing: a new code is made for the next Mac,
+            # and only someone at this Mac (running the installer, or
+            # --pairing-code) can read it.
+            self.config.pairing_code = config_mod.rotate_pairing_code(self.config)
+        log.info("paired a new client; pairing code rotated")
         return {
             "token": self.config.token,
             "name": computer_name(),
@@ -1936,6 +1941,11 @@ class Api(object):
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Bulk track edits are the biggest legitimate body, well under this.
+    MAX_BODY = 4 * 1024 * 1024
+    # No "BaseHTTP/0.6 Python/3.13" banner for scanners to read.
+    server_version = "iTunesRemote"
+    sys_version = ""
     server_version = "iTunesRemote/0.2"
     protocol_version = "HTTP/1.1"
     api = None  # set by make_server
@@ -1950,7 +1960,13 @@ class Handler(BaseHTTPRequestHandler):
             token = auth[7:].strip()
         if not token:
             token = (query.get("token") or [""])[0]
-        return token and token == self.api.config.token
+        # Constant-time compare, and a wrong token costs half a second: the
+        # token is 128 random bits, so guessing is hopeless anyway, but a
+        # scanner gets nothing to time and nothing fast to hammer.
+        ok = bool(token) and hmac.compare_digest(str(token), self.api.config.token)
+        if not ok:
+            time.sleep(0.5)
+        return ok
 
     def _send_file(self, response):
         try:
@@ -2046,6 +2062,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(401, "missing or bad token")
             body = None
             length = int(self.headers.get("Content-Length") or 0)
+            if length > self.MAX_BODY:
+                raise ApiError(413, "request body too large")
             if length:
                 raw = self.rfile.read(length)
                 try:

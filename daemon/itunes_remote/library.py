@@ -236,6 +236,8 @@ _QUOTES = "\"'\u2018\u2019\u201c\u201d\u00ab\u00bb"
 # point above every letter does; this one is private-use, so it never occurs
 # in a real tag.
 _DIGITS_LAST = "\uf8ff"
+# And a title that is only punctuation goes after the digits.
+_SYMBOLS_LAST = "\uffff"
 
 
 def _plain(value):
@@ -261,6 +263,10 @@ def sort_form(text, override=None):
             break
     if value and value[0].isdigit():
         return _DIGITS_LAST + value
+    if not value and (override or text or "").strip():
+        # Nothing but symbols — Ed Sheeran's "=" — used to sort first, on an
+        # empty key. iTunes puts these after everything; so does this.
+        return _SYMBOLS_LAST + fold((override or text).strip())
     return value
 
 

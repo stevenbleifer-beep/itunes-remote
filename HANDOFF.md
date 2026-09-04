@@ -534,7 +534,13 @@ LaunchAgent label **`local.itunesremote.daemon`** (the old
 the installer). **New deploy recipe:**
 
     rsync -a -e "ssh -i ~/.ssh/id_ed25519_mbp2012" --exclude __pycache__ --exclude tests \
-        daemon/ "stevenbleifer@Stevens-MacBook-Pro.local:Library/Application Support/iTunesRemote/daemon/"
+        daemon/ "stevenbleifer@Stevens-MacBook-Pro.local:Library/Application\ Support/iTunesRemote/daemon/"
+
+**The backslash before the space is not optional:** the remote shell splits
+the path at the space and rsync quietly creates `~/Library/Application` and
+puts the daemon there, while the real one keeps running old code. Done
+that once (2026-09-04); the stray folder was removed. macOS's rsync has no
+`-s`/`--protect-args`, so escaping is the only way.
     ssh -i ~/.ssh/id_ed25519_mbp2012 stevenbleifer@Stevens-MacBook-Pro.local \
         'launchctl kickstart -k gui/$(id -u)/local.itunesremote.daemon'
 
@@ -574,3 +580,13 @@ with the app, the `Daemon/` folder (installer inside) and a Read Me.
 `ITR_NOTARY_PROFILE` notarizes and staples. Steven has a Developer ID; he
 declined a keychain check, so ask him for the identity string and the
 notarytool profile name rather than looking.
+
+**Hardening (2026-09-04):** token compare is `hmac.compare_digest` and a bad
+or missing token costs 0.5 s; request bodies over 4 MB are refused (413);
+no Python banner in the Server header; the pairing code rotates after every
+successful pairing (rerun the installer or `--pairing-code` to read the new
+one); five wrong codes lock pairing for ten minutes. Still plain HTTP: on
+the LAN the token rides inside WPA, over Tailscale inside WireGuard. The
+token on the Air lives in UserDefaults (a 0600 plist), not the Keychain —
+an ad-hoc-signed app has no stable identity for a Keychain item, so it would
+prompt on every rebuild; revisit once the Developer ID signature is in use.
