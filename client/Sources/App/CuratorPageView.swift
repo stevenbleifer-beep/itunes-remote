@@ -196,10 +196,17 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         indexLabel.setContentHuggingPriority(.required, for: .horizontal)
         welcome()
         updateButtons()
-        // A first run starts with a third of the width for the conversation.
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.leftPane.frame.width < 200 || self.leftPane.frame.width > self.bounds.width * 0.6 else { return }
-            self.split.setPosition(max(340, round(self.bounds.width * 0.32)), ofDividerAt: 0)
+    }
+
+    /// A first run starts with a third of the width for the conversation;
+    /// after that the split view remembers where the divider was dragged.
+    private var dividerPlaced = false
+    override func layout() {
+        super.layout()
+        guard !dividerPlaced, bounds.width > 700 else { return }
+        dividerPlaced = true
+        if UserDefaults.standard.object(forKey: "NSSplitView Subview Frames curatorSplit") == nil {
+            split.setPosition(max(340, round(bounds.width * 0.3)), ofDividerAt: 0)
         }
     }
 
