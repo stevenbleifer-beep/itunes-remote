@@ -9,11 +9,15 @@ final class AquaConnectionBadge: NSView {
     var state: State = .connecting {
         didSet { needsDisplay = true; invalidateIntrinsicContentSize() }
     }
+    /// "Thunderbolt" or "Wi-Fi", shown after Home when known.
+    var link = "" {
+        didSet { needsDisplay = true; invalidateIntrinsicContentSize() }
+    }
 
     private var text: String {
         switch state {
         case .connecting: return "Connecting…"
-        case .home: return "Home network"
+        case .home: return link.isEmpty ? "Home network" : "Home · \(link)"
         case .away: return "Away via Tailscale"
         }
     }

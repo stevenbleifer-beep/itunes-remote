@@ -4,6 +4,7 @@ import argparse
 import logging
 import logging.handlers
 import os
+import subprocess
 import sys
 
 from . import config as config_mod
@@ -38,6 +39,8 @@ def main(argv=None):
     ap.add_argument("--port", type=int, help="override port from the config")
     ap.add_argument("--host", help="override host from the config")
     ap.add_argument("--no-log-file", action="store_true")
+    ap.add_argument("--pairing-code", action="store_true",
+                    help="print the pairing code the app asks for, and exit")
     args = ap.parse_args(argv)
 
     if args.init_config:
@@ -48,6 +51,7 @@ def main(argv=None):
             return 1
         print("wrote %s" % args.config)
         print("token: %s" % values["token"])
+        print("pairing code: %s" % values["pairing_code"])
         return 0
 
     try:
@@ -64,6 +68,9 @@ def main(argv=None):
         cfg.port = args.port
     if args.host:
         cfg.host = args.host
+    if args.pairing_code:
+        print(cfg.pairing_code)
+        return 0
 
     setup_logging(None if args.no_log_file else cfg.log_dir)
     log = logging.getLogger("itunes_remote")
@@ -84,6 +91,7 @@ def main(argv=None):
     api.start_artwork_warmer()
     server = make_server(api)
     log.info("listening on http://%s:%d/", cfg.host, cfg.port)
+    bonjour = advertise(cfg.port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -91,7 +99,27 @@ def main(argv=None):
     finally:
         store.stop()
         server.server_close()
+        if bonjour is not None:
+            bonjour.terminate()
     return 0
+
+
+def advertise(port):
+    """Registers _itunesremote._tcp with Bonjour through the system's dns-sd,
+    so the app finds this Mac by browsing instead of by a typed name. The
+    registration lives as long as the child process does."""
+    try:
+        name = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        name = ""
+    name = name or os.uname().nodename
+    try:
+        return subprocess.Popen(
+            ["/usr/bin/dns-sd", "-R", name, "_itunesremote._tcp", ".", str(port), "protocol=1"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        logging.getLogger("itunes_remote").warning("Bonjour registration failed: %s", e)
+        return None
 
 
 if __name__ == "__main__":

@@ -21,6 +21,74 @@ from . import artwork as artwork_mod
 from .applescript import AppleScriptError, AppleScriptTimeout, ITunesNotRunning
 from .library import Track, fold
 from .syncplan import SyncPlans
+import hmac
+
+
+_computer_name = None
+
+
+def computer_name():
+    """The Mac's name as System Preferences shows it."""
+    global _computer_name
+    if _computer_name is None:
+        try:
+            out = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True, timeout=5)
+            _computer_name = out.stdout.strip() or os.uname().nodename
+        except (OSError, subprocess.SubprocessError):
+            _computer_name = os.uname().nodename
+    return _computer_name
+
+
+_local_host_name = None
+
+
+def local_host_name():
+    """The Bonjour name, "Stevens-MacBook-Pro.local": what the app should
+    keep as the home address, since it survives a new DHCP lease."""
+    global _local_host_name
+    if _local_host_name is None:
+        try:
+            out = subprocess.run(["scutil", "--get", "LocalHostName"], capture_output=True, text=True, timeout=5)
+            base = out.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            base = ""
+        _local_host_name = (base + ".local") if base else os.uname().nodename
+    return _local_host_name
+
+
+_tailscale = {"name": None, "at": 0.0}
+TAILSCALE_BINARIES = [
+    os.path.expanduser("~/tailscale/tailscale"),
+    "/usr/local/bin/tailscale",
+    "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+]
+
+
+def tailscale_name():
+    """This machine's MagicDNS name, if Tailscale is running here, so the
+    app can learn its away address without anyone typing it. Empty when
+    there is no Tailscale. Asked at most every five minutes."""
+    if time.time() - _tailscale["at"] < 300 and _tailscale["name"] is not None:
+        return _tailscale["name"]
+    name = ""
+    for binary in TAILSCALE_BINARIES:
+        if not os.path.exists(binary):
+            continue
+        for args in (["status", "--json"], ["--socket=/var/run/tailscaled.socket", "status", "--json"]):
+            try:
+                out = subprocess.run([binary] + args, capture_output=True, text=True, timeout=8)
+                if out.returncode != 0 or not out.stdout.strip():
+                    continue
+                dns = (json.loads(out.stdout).get("Self") or {}).get("DNSName") or ""
+                name = dns.rstrip(".")
+                break
+            except (OSError, subprocess.SubprocessError, ValueError):
+                continue
+        if name:
+            break
+    _tailscale["name"] = name
+    _tailscale["at"] = time.time()
+    return name
 
 log = logging.getLogger("itunes_remote.server")
 
@@ -127,6 +195,8 @@ class Api(object):
         self.alerts_readable = None
         pid = r"(?P<pid>[0-9A-Fa-f]{16})"
         self.routes = [
+            ("GET", r"/api/hello", self.get_hello),
+            ("POST", r"/api/pair", self.post_pair),
             ("GET", r"/api/library", self.get_library),
             ("GET", r"/api/tracks", self.get_tracks),
             ("GET", r"/api/tracks/" + pid, self.get_track),
@@ -273,7 +343,54 @@ class Api(object):
         info = self.store.lib.info()
         info.update(self.store.status())
         info["itunesVersion"] = self.itunes_version() or info.get("applicationVersion", "")
+        info["name"] = computer_name()
+        info["tailscaleName"] = tailscale_name()
         return info
+
+    # -- pairing: the only two calls that need no token -------------------
+
+    def get_hello(self, params, query, body):
+        """Who this is, for the app's setup assistant: safe to answer anyone
+        on the network, because it says nothing a Bonjour browse does not."""
+        return {
+            "app": "iTunes Remote",
+            "protocol": 1,
+            "name": computer_name(),
+            "host": local_host_name(),
+            "port": self.config.port,
+            "itunesVersion": self.itunes_version(),
+        }
+
+    _pair_lock = threading.Lock()
+    _pair_failures = 0
+    _pair_locked_until = 0.0
+
+    def post_pair(self, params, query, body):
+        """Trades the six-digit pairing code for the bearer token. Wrong
+        codes cost a second each and five of them lock this for ten
+        minutes: a million codes is not many, but not at that rate."""
+        code = str((body or {}).get("code") or "").strip()
+        with Api._pair_lock:
+            now = time.time()
+            if now < Api._pair_locked_until:
+                raise ApiError(429, "too many wrong codes; try again in %d minutes"
+                               % max(1, int((Api._pair_locked_until - now) / 60) + 1))
+            expected = self.config.pairing_code
+            if not expected or not code or not hmac.compare_digest(code, expected):
+                Api._pair_failures += 1
+                if Api._pair_failures >= 5:
+                    Api._pair_failures = 0
+                    Api._pair_locked_until = now + 600
+                time.sleep(1.0)
+                raise ApiError(403, "that is not the pairing code")
+            Api._pair_failures = 0
+        log.info("paired a new client")
+        return {
+            "token": self.config.token,
+            "name": computer_name(),
+            "port": self.config.port,
+            "tailscaleName": tailscale_name(),
+        }
 
     def _page(self, query, f):
         compact = self._one(query, "compact", "0") not in ("0", "", "false")
@@ -1925,7 +2042,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             parts = urlsplit(self.path)
             query = parse_qs(parts.query, keep_blank_values=True)
-            if not self._authorized(query):
+            if parts.path not in ("/api/hello", "/api/pair") and not self._authorized(query):
                 raise ApiError(401, "missing or bad token")
             body = None
             length = int(self.headers.get("Content-Length") or 0)

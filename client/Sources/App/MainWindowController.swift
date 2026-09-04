@@ -328,8 +328,6 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         artworkButton.isOn = UserDefaults.standard.object(forKey: "artworkPane") as? Bool ?? true
         // Left of where the iPod's Sync and Eject buttons appear.
-        let bs = connectionBadge.intrinsicContentSize
-        connectionBadge.frame = NSRect(x: W - 84 - bs.width, y: 4, width: bs.width, height: bs.height)
         connectionBadge.autoresizingMask = [.minXMargin]
         connectionBadge.toolTip = "Working out whether the MacBook Pro is on the local network."
         statusBar.addSubview(connectionBadge)
@@ -337,9 +335,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         libraryStamp.textColor = NSColor(white: 0.35, alpha: 1)
         libraryStamp.alignment = .right
         libraryStamp.lineBreakMode = .byClipping
-        libraryStamp.frame = NSRect(x: connectionBadge.frame.minX - 14 - 220, y: 4, width: 220, height: 16)
         libraryStamp.autoresizingMask = [.minXMargin]
         statusBar.addSubview(libraryStamp)
+        layoutStatusRight()
 
         // Main split: [source list over artwork] | right side
         mainSplit.frame = NSRect(x: 0, y: statusH, width: W, height: H - toolbarH - statusH)
@@ -1071,21 +1069,31 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         startAlertPolling()
         flashStatus(isAway ? "Away — connected through Tailscale."
                            : "Home — connected on the local network.")
+        connectionBadge.link = monitor.link
         showConnectionBadge(isAway ? .away : .home, host: api.baseURL.host ?? "")
         // If the first load failed before the right host was known (Tailscale
         // off at home, say), ask again now that it is.
         if controller.info == nil { controller.connect(api) }
     }
 
-    /// The badge keeps its right edge where it is as the text changes width.
+    /// The right end of the status bar: the badge against the iPod buttons'
+    /// space, the library stamp to its left. Both change width, so both are
+    /// placed together whenever either changes.
+    private func layoutStatusRight() {
+        let W = statusBar.bounds.width
+        let bs = connectionBadge.intrinsicContentSize
+        connectionBadge.frame = NSRect(x: W - 84 - bs.width, y: 4, width: bs.width, height: bs.height)
+        let sw = ceil((libraryStamp.stringValue as NSString).size(withAttributes: [.font: Aqua.font(11)]).width) + 4
+        libraryStamp.frame = NSRect(x: connectionBadge.frame.minX - 16 - sw, y: 4, width: sw, height: 16)
+    }
+
     private func showConnectionBadge(_ state: AquaConnectionBadge.State, host: String) {
-        let right = connectionBadge.frame.maxX
         connectionBadge.state = state
-        let w = connectionBadge.intrinsicContentSize.width
-        connectionBadge.frame = NSRect(x: right - w, y: connectionBadge.frame.minY, width: w, height: connectionBadge.frame.height)
+        layoutStatusRight()
         switch state {
         case .connecting: connectionBadge.toolTip = "Working out whether the MacBook Pro is on the local network."
-        case .home: connectionBadge.toolTip = "Connected on the local network: \(host). Every request goes straight to the MacBook Pro."
+        case .home: connectionBadge.toolTip = "Connected on the local network: \(host)"
+            + (connectionBadge.link.isEmpty ? "" : " over \(connectionBadge.link)") + ". Every request goes straight to the MacBook Pro."
         case .away: connectionBadge.toolTip = "Connected through the Tailscale tunnel: \(host). The local network did not answer; polling is slower."
         }
     }
@@ -1869,6 +1877,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         f.dateStyle = written.map { Calendar.current.isDateInToday($0) } == true ? .none : .medium
         f.timeStyle = .short
         libraryStamp.stringValue = written.map { "Library as of \(f.string(from: $0))" } ?? ""
+        layoutStatusRight()
         let full = DateFormatter()
         full.dateStyle = .medium
         full.timeStyle = .medium

@@ -3,6 +3,7 @@
 import json
 import os
 import secrets
+import random
 
 DEFAULT_CONFIG_PATH = os.path.expanduser(
     "~/Library/Application Support/iTunesRemote/config.json"
@@ -12,6 +13,9 @@ DEFAULTS = {
     "host": "0.0.0.0",
     "port": 8765,
     "token": "",
+    # Six digits the installer prints; the app trades it for the token over
+    # POST /api/pair, so nobody types a 32-character token by hand.
+    "pairing_code": "",
     "xml_path": "~/Music/iTunes/iTunes Music Library.xml",
     "log_dir": "~/Library/Logs/iTunesRemote",
     "poll_interval": 5,
@@ -34,6 +38,7 @@ class Config(object):
         self.host = merged["host"]
         self.port = int(merged["port"])
         self.token = merged["token"]
+        self.pairing_code = str(merged.get("pairing_code") or "")
         self.xml_path = os.path.expanduser(merged["xml_path"])
         self.log_dir = os.path.expanduser(merged["log_dir"])
         self.poll_interval = float(merged["poll_interval"])
@@ -46,9 +51,24 @@ class Config(object):
             raise ValueError("config has no token; run with --init-config first")
 
 
+def new_pairing_code():
+    return "%06d" % random.SystemRandom().randrange(0, 1000000)
+
+
 def load(path):
     with open(path, "r", encoding="utf-8") as f:
-        return Config(json.load(f))
+        values = json.load(f)
+    # A config from before pairing existed gets a code the first time it
+    # is read, and keeps it.
+    if not values.get("pairing_code"):
+        values["pairing_code"] = new_pairing_code()
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(values, f, indent=2)
+                f.write("\n")
+        except OSError:
+            pass
+    return Config(values)
 
 
 def write_default(path):
@@ -58,6 +78,7 @@ def write_default(path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     values = dict(DEFAULTS)
     values["token"] = secrets.token_hex(16)
+    values["pairing_code"] = new_pairing_code()
     with open(path, "w", encoding="utf-8") as f:
         json.dump(values, f, indent=2)
         f.write("\n")
