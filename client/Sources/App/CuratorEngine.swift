@@ -128,9 +128,47 @@ struct CuratorPick {
 /// picks from those by number, so it cannot name a song that is not here.
 /// Feedback re-plans, so "add some slow indie rock" can reach artists that
 /// were not on the table the first time.
+/// The pickers on offer, and which one suits the Mac. Bigger models
+/// choose with more taste and take longer; the memory figure is what the
+/// model needs loaded, beside the app and whatever else is open.
+enum CuratorModels {
+    struct Tier {
+        let name: String
+        let model: String
+        let downloadGB: Double
+        let minRAMGB: Int          // where it runs without swapping
+        let note: String
+    }
+
+    static let tiers: [Tier] = [
+        Tier(name: "Small", model: "qwen3.5:4b", downloadGB: 3.4, minRAMGB: 8,
+             note: "about half a minute a turn on an M-series Mac"),
+        Tier(name: "Medium", model: "gemma4:12b", downloadGB: 7.6, minRAMGB: 16,
+             note: "better taste, about a minute a turn"),
+        Tier(name: "Large", model: "gemma4:26b", downloadGB: 19, minRAMGB: 32,
+             note: "the most taste, two minutes or more a turn"),
+    ]
+
+    static var physicalRAMGB: Int { Int((Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824).rounded()) }
+
+    /// The tier for this Mac: the biggest that leaves room to breathe.
+    /// 8 GB gets Small; 16 and 24 get Small too (Medium runs on 24 but the
+    /// wait doubles for a modest gain); 32 GB and up get Medium; 64 gets Large.
+    static func recommended(ramGB: Int = physicalRAMGB) -> Tier {
+        if ramGB >= 64 { return tiers[2] }
+        if ramGB >= 32 { return tiers[1] }
+        return tiers[0]
+    }
+
+    static func tier(for model: String) -> Tier? { tiers.first { $0.model == model } }
+
+    /// The tiers that fit in this Mac's memory at all.
+    static func available(ramGB: Int = physicalRAMGB) -> [Tier] { tiers.filter { $0.minRAMGB <= ramGB } }
+}
+
 @MainActor
 final class CuratorEngine {
-    static let defaultModel = "qwen3.5:4b"
+    static var defaultModel: String { CuratorModels.recommended().model }
     static let embedModel = "embeddinggemma:300m"
 
     struct Reply {
@@ -143,7 +181,10 @@ final class CuratorEngine {
     /// Whichever server the runtime has up: the Ollama app, or the bundled one.
     var ollama: OllamaClient { OllamaClient(baseURL: OllamaRuntime.shared.currentURL ?? OllamaRuntime.shared.systemURL) }
     let index = CuratorIndex()
-    var model: String
+    /// The picker: chosen in setup (defaults key `curatorModel`), else the
+    /// one recommended for this Mac's memory. Read each time, so a change
+    /// in setup takes effect on the next question.
+    var model: String { UserDefaults.standard.string(forKey: "curatorModel") ?? CuratorEngine.defaultModel }
     var onStatus: (String) -> Void = { _ in }
     /// Called as the index grows: (done, total).
     var onIndexProgress: (Int, Int) -> Void = { _, _ in }
@@ -164,9 +205,7 @@ final class CuratorEngine {
     private var building = false
     private var asking = false
 
-    init() {
-        model = UserDefaults.standard.string(forKey: "curatorModel") ?? CuratorEngine.defaultModel
-    }
+    init() {}
 
     // MARK: Library and index
 
@@ -296,7 +335,7 @@ final class CuratorEngine {
         let span = NSRange(t.startIndex..., in: t)
         if let m = try? NSRegularExpression(pattern: "\\b([1-9][0-9]?)\\s*(?:-|\\s)?(?:song|track|tune)s?\\b").firstMatch(in: t, range: span),
            let r = Range(m.range(at: 1), in: t), let n = Int(t[r]) { return n }
-        if let m = try? NSRegularExpression(pattern: "\\b(?:about|around|roughly|make it|keep it to|just)\\s+([1-9][0-9]?)\\b").firstMatch(in: t, range: span),
+        if let m = try? NSRegularExpression(pattern: "\\b(?:about|around|roughly|make it|keep it to|keep it at|down to|up to|just)\\s+([1-9][0-9]?)\\b").firstMatch(in: t, range: span),
            let r = Range(m.range(at: 1), in: t), let n = Int(t[r]) { return n }
         for (w, n) in words.sorted(by: { $0.key.count > $1.key.count }) {
             if let _ = try? NSRegularExpression(pattern: "\\b\(NSRegularExpression.escapedPattern(for: w))\\s+(?:upbeat |slow |great |good |more )?(?:song|track|tune)s?\\b").firstMatch(in: t, range: span) { return n }
@@ -811,8 +850,9 @@ final class CuratorEngine {
         // four and adds three, and the listener did not ask for nineteen.
         // Removals with nothing added are taken as removals, and stay.
         let added = list.count - (current.count - removed.count)
-        if let m = try? NSRegularExpression(pattern: "\\b([1-9][0-9]?)\\b").firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-           let r = Range(m.range(at: 1), in: text), let n = Int(text[r]), n >= 3 {
+        // A count only when it reads as one — "keep it to 20", "30 songs" —
+        // not any digit: "maroon 5 isn't indie" once cut a list to five.
+        if let n = CuratorEngine.requestedCount(in: text), n >= 1 {
             if list.count > n {
                 list = Array(list.prefix(n))
             } else if list.count < n {

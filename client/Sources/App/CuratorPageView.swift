@@ -8,7 +8,7 @@ import Cocoa
 /// song, double-click to hear one, drag songs out to any playlist in the
 /// sidebar. Feedback typed after an edit starts from the edited list.
 @MainActor
-final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate {
+final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSplitViewDelegate {
     var onAsk: (String) -> Void = { _ in }
     var onPlay: ([Track], Int) -> Void = { _, _ in }
     var onSave: ([Track], String) -> Void = { _, _ in }
@@ -42,15 +42,38 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate 
     private var busyTimer: Timer?
 
     private static let dragType = NSPasteboard.PasteboardType("local.stevenbleifer.itunesremote.curator")
-    private static let columnWidth: CGFloat = 300
+
+    private let split = NSSplitView()
+    private let leftPane = NSView()
+    private let rightPane = NSView()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        for v in [transcriptScroll as NSView, field, askButton, heading, tableScroll, statusLabel, indexLabel,
-                  newButton, playButton, saveButton] {
+        // Two panes with a divider the listener can drag: the conversation
+        // was a fixed 300 points and read cramped once the answers got long.
+        split.isVertical = true
+        split.dividerStyle = .thin
+        split.autosaveName = "curatorSplit"
+        split.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(split)
+        NSLayoutConstraint.activate([
+            split.leadingAnchor.constraint(equalTo: leadingAnchor),
+            split.trailingAnchor.constraint(equalTo: trailingAnchor),
+            split.topAnchor.constraint(equalTo: topAnchor),
+            split.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        split.delegate = self
+        for v in [transcriptScroll as NSView, field, askButton] {
             v.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(v)
+            leftPane.addSubview(v)
         }
+        for v in [heading as NSView, tableScroll, statusLabel, indexLabel, newButton, playButton, saveButton] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            rightPane.addSubview(v)
+        }
+        split.addArrangedSubview(leftPane)
+        split.addArrangedSubview(rightPane)
+        split.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
 
         // The conversation.
         transcript.isEditable = false
@@ -58,7 +81,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate 
         transcript.isRichText = true
         transcript.drawsBackground = true
         transcript.backgroundColor = .white
-        transcript.textContainerInset = NSSize(width: 6, height: 8)
+        transcript.textContainerInset = NSSize(width: 8, height: 10)
         transcript.font = Aqua.font(12)
         transcript.isVerticallyResizable = true
         transcript.isHorizontallyResizable = false
@@ -76,13 +99,14 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate 
 
         field.font = Aqua.font(13)
         field.bezelStyle = .squareBezel
-        field.placeholderString = "Ask for a playlist, or say what to change"
+        field.placeholderString = "Ask, or say what to change"
         field.target = self
         field.action = #selector(ask(_:))
         field.lineBreakMode = .byTruncatingTail
         field.cell?.usesSingleLineMode = true
         field.cell?.wraps = false
         field.cell?.isScrollable = true
+        field.cell?.sendsActionOnEndEditing = false
 
         askButton.target = self
         askButton.action = #selector(ask(_:))
@@ -129,31 +153,33 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate 
         tableScroll.autohidesScrollers = false
 
         let pad: CGFloat = 14
-        let col = CuratorPageView.columnWidth
         NSLayoutConstraint.activate([
-            transcriptScroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
-            transcriptScroll.topAnchor.constraint(equalTo: topAnchor, constant: pad),
-            transcriptScroll.widthAnchor.constraint(equalToConstant: col),
+            leftPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
+            rightPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 480),
+
+            transcriptScroll.leadingAnchor.constraint(equalTo: leftPane.leadingAnchor, constant: pad),
+            transcriptScroll.trailingAnchor.constraint(equalTo: leftPane.trailingAnchor, constant: -6),
+            transcriptScroll.topAnchor.constraint(equalTo: leftPane.topAnchor, constant: pad),
             transcriptScroll.bottomAnchor.constraint(equalTo: field.topAnchor, constant: -8),
 
-            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
+            field.leadingAnchor.constraint(equalTo: leftPane.leadingAnchor, constant: pad),
             field.trailingAnchor.constraint(equalTo: askButton.leadingAnchor, constant: -2),
-            field.centerYAnchor.constraint(equalTo: saveButton.centerYAnchor),
+            field.bottomAnchor.constraint(equalTo: leftPane.bottomAnchor, constant: -pad + 1),
             field.heightAnchor.constraint(equalToConstant: 22),
-            askButton.trailingAnchor.constraint(equalTo: transcriptScroll.trailingAnchor, constant: 4),
-            askButton.centerYAnchor.constraint(equalTo: saveButton.centerYAnchor),
+            askButton.trailingAnchor.constraint(equalTo: leftPane.trailingAnchor, constant: -2),
+            askButton.centerYAnchor.constraint(equalTo: field.centerYAnchor),
 
-            heading.leadingAnchor.constraint(equalTo: transcriptScroll.trailingAnchor, constant: pad),
-            heading.topAnchor.constraint(equalTo: topAnchor, constant: pad),
+            heading.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor, constant: 8),
+            heading.topAnchor.constraint(equalTo: rightPane.topAnchor, constant: pad),
             heading.trailingAnchor.constraint(lessThanOrEqualTo: indexLabel.leadingAnchor, constant: -10),
 
-            tableScroll.leadingAnchor.constraint(equalTo: transcriptScroll.trailingAnchor, constant: pad),
-            tableScroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
+            tableScroll.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor, constant: 8),
+            tableScroll.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor, constant: -pad),
             tableScroll.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 6),
             tableScroll.bottomAnchor.constraint(equalTo: saveButton.topAnchor, constant: -8),
 
-            saveButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad + 4),
-            saveButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -pad + 4),
+            saveButton.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor, constant: -pad + 4),
+            saveButton.bottomAnchor.constraint(equalTo: rightPane.bottomAnchor, constant: -pad + 4),
             playButton.trailingAnchor.constraint(equalTo: saveButton.leadingAnchor, constant: 2),
             playButton.centerYAnchor.constraint(equalTo: saveButton.centerYAnchor),
             newButton.trailingAnchor.constraint(equalTo: playButton.leadingAnchor, constant: 2),
@@ -162,7 +188,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate 
             statusLabel.leadingAnchor.constraint(equalTo: tableScroll.leadingAnchor, constant: 2),
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: newButton.leadingAnchor, constant: -10),
             statusLabel.centerYAnchor.constraint(equalTo: saveButton.centerYAnchor),
-            indexLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad - 2),
+            indexLabel.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor, constant: -pad - 2),
             indexLabel.centerYAnchor.constraint(equalTo: heading.centerYAnchor),
         ])
         heading.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -170,6 +196,11 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate 
         indexLabel.setContentHuggingPriority(.required, for: .horizontal)
         welcome()
         updateButtons()
+        // A first run starts with a third of the width for the conversation.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.leftPane.frame.width < 200 || self.leftPane.frame.width > self.bounds.width * 0.6 else { return }
+            self.split.setPosition(max(340, round(self.bounds.width * 0.32)), ofDividerAt: 0)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -336,6 +367,9 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate 
         s += "page layer=\(layer != nil) wantsLayer=\(wantsLayer) window=\(window != nil) visible=\(window?.isVisible ?? false) occlusion=\(window?.occlusionState.contains(.visible) ?? false)"
         return s
     }
+
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat { 280 }
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat { splitView.bounds.width - 480 }
 
     // MARK: Table
 

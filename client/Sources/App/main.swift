@@ -166,6 +166,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                              keyEquivalent: "0")
         resetSortItem.keyEquivalentModifierMask = [NSEvent.ModifierFlags.command, NSEvent.ModifierFlags.option]
         viewMenu.addItem(.separator())
+        // Ticked when the CURATOR section is in the sidebar; untick to hide it.
+        viewMenu.addItem(withTitle: "Playlist Curator", action: #selector(MainWindowController.toggleCuratorVisible(_:)), keyEquivalent: "")
+        viewMenu.addItem(.separator())
         for (i, title) in ["as List", "as Album List", "as Grid", "as Cover Flow"].enumerated() {
             let item = viewMenu.addItem(withTitle: title,
                                         action: #selector(MainWindowController.pickViewMode(_:)),

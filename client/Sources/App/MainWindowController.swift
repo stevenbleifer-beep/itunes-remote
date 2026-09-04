@@ -1520,7 +1520,27 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         rightSplit.isHidden = false
     }
 
+    static var curatorHidden: Bool {
+        get { UserDefaults.standard.bool(forKey: "curatorHidden") }
+        set { UserDefaults.standard.set(newValue, forKey: "curatorHidden") }
+    }
+
+    /// View ▸ Playlist Curator: the section comes and goes from the sidebar.
+    @objc func toggleCuratorVisible(_ sender: Any?) {
+        let hide = !MainWindowController.curatorHidden
+        MainWindowController.curatorHidden = hide
+        if hide && curatorOpen {
+            closeCuratorPage()
+            controller.source = .library
+        }
+        reloadSourceList()
+    }
+
     @objc func showCurator(_ sender: Any?) {
+        if MainWindowController.curatorHidden {
+            MainWindowController.curatorHidden = false
+            reloadSourceList()
+        }
         guard let i = sourceRows.firstIndex(where: { if case .curator = $0 { return true }; return false }) else { return }
         sourceList.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false)
         window?.makeKeyAndOrderFront(nil)
@@ -1795,8 +1815,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             sourceRows.append(.header("DEVICES"))
             sourceRows += devices.map { .device($0) }
         }
-        sourceRows.append(.header("CURATOR"))
-        sourceRows.append(.curator)
+        // The curator's section can be switched off entirely, for anyone
+        // who would rather not see it: View ▸ Playlist Curator.
+        if !MainWindowController.curatorHidden {
+            sourceRows.append(.header("CURATOR"))
+            sourceRows.append(.curator)
+        }
         sourceRows.append(.header("PLAYLISTS"))
         // Playlists as a tree: a folder's playlists sit under it, stepped in,
         // and stay hidden while it is closed. The daemon lists them flat,
@@ -2483,6 +2507,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(toggleMiniPlayer(_:)) {
             item.state = (miniPlayer?.window?.isVisible == true) ? .on : .off
+        }
+        if item.action == #selector(toggleCuratorVisible(_:)) {
+            item.state = MainWindowController.curatorHidden ? .off : .on
         }
         return true
     }

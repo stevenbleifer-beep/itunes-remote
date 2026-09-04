@@ -39,7 +39,14 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
     private var pulled = false
 
     private static let W: CGFloat = 560, H: CGFloat = 440
-    static let curatorModels = [CuratorEngine.defaultModel, CuratorEngine.embedModel]
+    /// The picker chosen (or recommended) plus the search model.
+    static var curatorModels: [String] {
+        [UserDefaults.standard.string(forKey: "curatorModel") ?? CuratorEngine.defaultModel, CuratorEngine.embedModel]
+    }
+    private let modelLabel = NSTextField(labelWithString: "Model:")
+    private let modelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let hideBox = AquaCheckbox()
+    private let hideLabel = NSTextField(labelWithString: "Hide the Playlist Curator from the sidebar (View ▸ Playlist Curator brings it back)")
 
     init(settings: ServerSettings) {
         draft = settings
@@ -121,6 +128,26 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
         statusLabel.frame = NSRect(x: 24, y: 62, width: W - 48, height: 44)
         content.addSubview(statusLabel)
 
+        // Which picker: the recommendation for this Mac's memory is marked,
+        // and tiers that would not fit are left out of the list.
+        modelLabel.font = Aqua.font(12)
+        modelLabel.frame = NSRect(x: 24, y: 230, width: 50, height: 18)
+        content.addSubview(modelLabel)
+        modelPopup.font = Aqua.font(12)
+        modelPopup.controlSize = .small
+        modelPopup.frame = NSRect(x: 74, y: 226, width: W - 98, height: 24)
+        modelPopup.target = self
+        modelPopup.action = #selector(modelPicked(_:))
+        content.addSubview(modelPopup)
+        fillModelPopup()
+        hideBox.frame = NSRect(x: 26, y: 120, width: 14, height: 14)
+        hideBox.target = self
+        hideBox.action = #selector(hideToggled(_:))
+        content.addSubview(hideBox)
+        hideLabel.font = Aqua.font(12)
+        hideLabel.frame = NSRect(x: 46, y: 118, width: W - 70, height: 18)
+        content.addSubview(hideLabel)
+
         for (b, sel) in [(actionButton, #selector(action(_:))), (secondButton, #selector(secondAction(_:))),
                          (cancelButton, #selector(cancel(_:))), (backButton, #selector(back(_:))),
                          (skipButton, #selector(skip(_:))), (nextButton, #selector(next(_:)))] {
@@ -150,11 +177,39 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
         secondButton.frame = NSRect(x: actionButton.frame.maxX + 2, y: 176, width: sb.width, height: sb.height)
     }
 
+    private func fillModelPopup() {
+        modelPopup.removeAllItems()
+        let ram = CuratorModels.physicalRAMGB
+        let rec = CuratorModels.recommended()
+        let chosen = UserDefaults.standard.string(forKey: "curatorModel") ?? rec.model
+        for t in CuratorModels.available() {
+            let gb = t.downloadGB == t.downloadGB.rounded() ? String(Int(t.downloadGB)) : String(format: "%.1f", t.downloadGB)
+            var title = "\(t.name) — \(t.model), \(gb) GB download, \(t.note)"
+            if t.model == rec.model { title += "  (recommended for this \(ram) GB Mac)" }
+            modelPopup.addItem(withTitle: title)
+            modelPopup.lastItem?.representedObject = t.model
+        }
+        if let i = modelPopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == chosen }) {
+            modelPopup.selectItem(at: i)
+        }
+    }
+
+    @objc private func hideToggled(_ sender: Any?) {
+        UserDefaults.standard.set(hideBox.isOn, forKey: "curatorHidden")
+    }
+
+    @objc private func modelPicked(_ sender: Any?) {
+        guard let m = modelPopup.selectedItem?.representedObject as? String else { return }
+        UserDefaults.standard.set(m, forKey: "curatorModel")
+        Task { await checkOllama() }
+    }
+
     // MARK: Steps
 
     private func show(_ s: Step) {
         step = s
-        for v in [tableScroll as NSView, manualLabel, manualHost, manualPort, codeField, progress, actionButton, secondButton] {
+        for v in [tableScroll as NSView, manualLabel, manualHost, manualPort, codeField, progress, actionButton, secondButton,
+                  modelLabel, modelPopup, hideBox, hideLabel] {
             v.isHidden = true
         }
         statusLabel.stringValue = ""
@@ -203,8 +258,14 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
         case .curator:
             titleLabel.stringValue = "Playlist Curator (optional)"
             bodyLabel.stringValue = OllamaRuntime.shared.hasEmbedded
-                ? "The curator builds playlists from your library with a small language model that runs on this Mac, so nothing leaves the house. The model server is built in; it needs two models, about 4 GB, downloaded once. Skip this and everything else still works."
-                : "The curator builds playlists from your library with a small language model that runs on this Mac through Ollama, so nothing leaves the house. It needs Ollama and two models, about 4 GB in all. Skip this and everything else still works."
+                ? "The curator builds playlists from your library with a language model that runs on this Mac, so nothing leaves the house. The model server is built in. Pick a model size — bigger ones choose with more taste and answer more slowly — and it downloads once, with the small search model beside it. Skip this and everything else still works."
+                : "The curator builds playlists from your library with a language model that runs on this Mac through Ollama, so nothing leaves the house. Pick a model size — bigger ones choose with more taste and answer more slowly. Skip this and everything else still works."
+            modelLabel.isHidden = false
+            modelPopup.isHidden = false
+            fillModelPopup()
+            hideBox.isOn = UserDefaults.standard.bool(forKey: "curatorHidden")
+            hideBox.isHidden = false
+            hideLabel.isHidden = false
             Task { await checkOllama() }
         case .done:
             titleLabel.stringValue = "All set"
@@ -371,7 +432,8 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
             statusLabel.stringValue = "Using \(server); both models are here. The curator is ready; it indexes the library the first time its page opens."
             actionButton.isHidden = true
         } else {
-            statusLabel.stringValue = "Using \(server). Still to download: \(missing.joined(separator: ", ")) (about \(missing.count == 2 ? "4 GB" : "3 GB"))."
+            let gb = missing.reduce(0.0) { $0 + (CuratorModels.tier(for: $1)?.downloadGB ?? 0.6) }
+            statusLabel.stringValue = "Using \(server). Still to download: \(missing.joined(separator: ", ")) (about \(String(format: "%.1f", gb)) GB)."
             actionButton.title = "Download Models"
         }
         placeButtons()
