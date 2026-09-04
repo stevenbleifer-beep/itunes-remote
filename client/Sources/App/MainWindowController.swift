@@ -1402,6 +1402,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     // MARK: Curator
 
     private func wireCurator() {
+        curatorPage.modelLine = "Powered by \(curator.model), running on this Mac through Ollama · library search: \(CuratorEngine.embedModel)"
         curatorPage.onAsk = { [weak self] text in Task { @MainActor in await self?.askCurator(text) } }
         curatorPage.onPlay = { [weak self] tracks, i in
             guard let self = self, i < tracks.count else { return }

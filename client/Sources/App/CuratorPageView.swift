@@ -32,6 +32,10 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate 
     private let statusLabel = NSTextField(labelWithString: "")
     private let indexLabel = NSTextField(labelWithString: "")
 
+    /// Shown along the bottom whenever the curator is idle: which model is
+    /// doing the picking, and where it runs.
+    var modelLine = "" { didSet { if !busy { statusLabel.stringValue = modelLine } } }
+
     private var busy = false
     private var busySince: Date?
     private var busyText = ""
@@ -237,7 +241,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate 
             }
             tick()
         } else {
-            statusLabel.stringValue = ""
+            statusLabel.stringValue = modelLine
             window?.makeFirstResponder(field)
         }
         updateButtons()
