@@ -962,6 +962,37 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         updateStatus()
     }
 
+    // MARK: Restarting iTunes
+
+    /// For the iPod that is plugged in but never mounts and never shows up:
+    /// iTunes 12.9.5 stops handling devices after an eject that timed out,
+    /// and only a restart of iTunes clears it. Playback on the MacBook Pro
+    /// stops; this Mac's playback carries on.
+    @objc func restartITunes(_ sender: Any?) {
+        guard let api = controller.api, let window = window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Restart iTunes on the MacBook Pro?"
+        alert.informativeText = "Use this when the iPod is plugged in but never appears. Playback on the MacBook Pro stops; it takes about half a minute to come back."
+        alert.addButton(withTitle: "Restart iTunes")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self = self else { return }
+            self.flashStatus("Restarting iTunes on the MacBook Pro…")
+            Task { @MainActor in
+                do {
+                    try await api.restartITunes()
+                    self.flashStatus("iTunes restarted. Looking for the iPod…")
+                    try? await Task.sleep(nanoseconds: 40_000_000_000)
+                    self.loadDevices()
+                    await self.player.refresh()
+                } catch {
+                    self.flashStatus("Restart failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     // MARK: Home or away
 
     /// Polling cadence. Away, every request crosses the tunnel, so the

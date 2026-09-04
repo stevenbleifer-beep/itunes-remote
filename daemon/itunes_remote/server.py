@@ -144,6 +144,7 @@ class Api(object):
             ("GET", r"/api/itunes/alert", self.get_alert),
             ("POST", r"/api/itunes/alert/dismiss", self.post_alert_dismiss),
             ("POST", r"/api/itunes/launch", self.post_itunes_launch),
+            ("POST", r"/api/itunes/restart", self.post_itunes_restart),
             ("GET", r"/api/player", self.get_player),
             ("POST", r"/api/player/play", self.post_play),
             ("POST", r"/api/player/(?P<cmd>pause|playpause|next|previous|stop)", self.post_player_cmd),
@@ -591,6 +592,21 @@ class Api(object):
         except AppleScriptError as e:
             raise ApiError(409, str(e))
         return {"launched": True}
+
+    def post_itunes_restart(self, params, query, body):
+        """Quit and relaunch iTunes. The cure for an iPod that is on USB but
+        never mounts and never appears as a source: iTunes stopped handling
+        devices, usually after an eject that timed out."""
+        if self.itunes is None:
+            raise ApiError(501, "AppleScript is not configured")
+        self._progress_end()
+        self._pod_cache = None
+        gone = self.itunes.quit_itunes()
+        if not gone:
+            raise ApiError(504, "iTunes did not quit within 30 seconds")
+        time.sleep(2)
+        self.itunes.launch_itunes(force=True)
+        return {"restarted": True}
 
     # -- player ---------------------------------------------------------
 

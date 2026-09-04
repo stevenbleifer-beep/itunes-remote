@@ -153,6 +153,12 @@ final class APIClient {
         _ = try await request("POST", "/api/itunes/launch")
     }
 
+    /// Quits and relaunches iTunes on the MacBook Pro. Takes up to half a
+    /// minute on the far end, so the timeout is generous.
+    func restartITunes() async throws {
+        _ = try await request("POST", "/api/itunes/restart", timeout: 90)
+    }
+
     func playerState() async throws -> PlayerState {
         let data = try await request("GET", "/api/player", timeout: 10)
         return try JSONDecoder().decode(PlayerState.self, from: data)

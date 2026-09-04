@@ -12,6 +12,7 @@ import logging
 import os
 import subprocess
 import threading
+import time
 
 log = logging.getLogger("itunes_remote.applescript")
 
@@ -63,14 +64,31 @@ class AppleScript(object):
     def ipod_mounted():
         return os.path.ismount(IPOD_MOUNT)
 
-    def launch_itunes(self):
+    def launch_itunes(self, force=False):
         """Opens iTunes. Refuses while an iPod volume is mounted, because that
-        has hung iTunes at launch on this machine before."""
-        if self.ipod_mounted():
+        has hung iTunes at launch on this machine before — unless `force`,
+        which a restart uses: there the iPod being mounted is the normal
+        state, and the point is to make iTunes pick it up again."""
+        if self.ipod_mounted() and not force:
             raise AppleScriptError(
                 "an iPod is mounted at %s; eject it before launching iTunes" % IPOD_MOUNT
             )
         subprocess.run(["open", "-a", "iTunes"], check=False)
+
+    def quit_itunes(self, wait=30):
+        """Asks iTunes to quit and waits for it to go. iTunes 12.9.5's device
+        handling wedges after an eject that timed out — iPods attach on USB,
+        present no disk, and iTunes never lists them — and only a restart of
+        iTunes clears it. Quit is a plain Apple Event; no script file needed,
+        and it is not serialized behind the lock because the whole point may
+        be that iTunes is not answering scripts."""
+        subprocess.run(["osascript", "-e", 'tell application "iTunes" to quit'],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+        for _ in range(wait):
+            if not self.itunes_running():
+                return True
+            time.sleep(1)
+        return False
 
     # -- running scripts ------------------------------------------------
 

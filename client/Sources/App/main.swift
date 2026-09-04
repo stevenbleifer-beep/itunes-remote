@@ -152,6 +152,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let showQueue = controlsMenu.addItem(withTitle: "Show Up Next",
                                              action: #selector(MainWindowController.showUpNext(_:)), keyEquivalent: "u")
         showQueue.keyEquivalentModifierMask = [NSEvent.ModifierFlags.command, NSEvent.ModifierFlags.option]
+        controlsMenu.addItem(.separator())
+        controlsMenu.addItem(withTitle: "Restart iTunes on the MacBook Pro…",
+                             action: #selector(MainWindowController.restartITunes(_:)), keyEquivalent: "")
         let controlsItem = NSMenuItem()
         controlsItem.submenu = controlsMenu
         mainMenu.addItem(controlsItem)
