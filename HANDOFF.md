@@ -626,3 +626,67 @@ sit-still wait (`LibraryStore.check_now()`, guarded by `_reload_lock` so it
 never races the watcher). Blocks for the parse (~25 s on the Pro). The
 client then runs its normal version check. It cannot make iTunes *write*
 the XML — nothing can — so "Nothing new" means iTunes has not saved yet.
+
+## The curator learns (2026-09-04, evening)
+
+Steven asked whether the model could be trained to do better. Three
+layers, cheapest first, all built; the third has a pipeline but no data
+yet.
+
+**1. Lessons from edits — `client/Sources/App/CuratorMemory.swift`.** One
+`Lesson` per request: the request, its embedding (256-d, from the same
+query embedding as search), what the listener said (`feedback`), songs
+that went out (`removed`: by feedback edit or by hand delete —
+`setCurrent` diffs the list), songs that came in (`added`), and the list
+as saved (`kept`, `saved`). Persisted to `curator/memory.json`, capped at
+500, empty lessons dropped on `close()`. On a fresh request `recall()`
+embeds the text, takes lessons with the same folded words or cosine ≥
+0.62 (`similar(to:request:)`), and opens a new lesson. Uses: (a)
+`gather` skips `memory.unwanted(near:)` — songs removed under a similar
+lesson, or removed under any two lessons — plus one-star songs, unless
+they are on the current list; (b) the choose prompt gets "What this
+listener did with playlists like this before" (`summary(of:)`, up to
+three lessons); (c) the plan prompt gets the listener's past remarks on
+similar requests so the plan can avoid them. Verified: after a session
+that took out two songs, "songs from the nineties" recalled the lesson
+and neither song was among the candidates (see `curator.log`
+"recalled N lesson(s)").
+
+**2. Taste from plays — in `CuratorEngine`.** `buildTaste()` sums
+playCount + 3×stars (three stars and up) per folded artist and per genre,
+squashed `log1p(x)/log1p(max)` to 0…1. `searchTracks` fetches 2k by
+meaning and re-sorts by `score + 0.06·artist + 0.03·genre`, so plays
+break ties but never change the subject (embedding scores sit around
+0.5–0.8). Candidate lines carry ♥ for artists at ≥ 0.6, with a prompt
+rule to prefer them between equal fits.
+
+**3. Fine-tune — `client/finetune/finetune.sh`.** Data: `approve(_:name:)`
+runs when a list is saved (both the Save button and `--curate-save`; the
+test flag `--curate-approve NAME` approves without making a playlist).
+It writes the first turn's prompt with the *final* list as the answer
+(only if ≥ 60 % of the final list was on that turn's table) and every
+feedback turn's prompt with the edit *as applied* (remove/add/order after
+the code rules), to `curator/training.jsonl` as
+`{"messages":[system,user,assistant]}`. The script: private venv with
+mlx-lm; 90/10 split; `mlx_lm lora` on
+`mlx-community/Qwen3.5-4B-MLX-4bit` with `--mask-prompt` (the prompt is a
+long candidate list, only the answer is learned), 8 layers, lr 1e-5,
+seq 12288, grad checkpointing, iters = 6×examples clamped 100–1500;
+`mlx_lm fuse --dequantize`; `ollama create itunes-curator --quantize
+q4_K_M` from the fused safetensors (Ollama's converter handles
+`Qwen3_5ForConditionalGeneration`) with the stock model's PARAMETER
+lines; then `defaults write … curatorModel itunes-curator`. The setup
+assistant's model popup lists a non-tier model as "Trained on your
+edits". It refuses under 40 examples without `--force`. Runs on the
+embedded Ollama too (`OLLAMA_HOST=127.0.0.1:11435`, `OLLAMA_MODELS` under
+Application Support) when the Ollama app is not running.
+
+**Bug found by the test:** an edit's top-up (`fill`) refilled from the
+candidates, whose head is the current list, so the songs the edit had
+just removed came straight back at the end with blank reasons. `fill`
+now takes `exclude:` and `applyEdit` passes the removed ids.
+
+**Layout:** the curator split's autosaved frames from the Studio Display
+kept their 1279-pt total on the 1470-pt built-in screen, so the right
+pane ran past the window edge; `layout()` now calls `adjustSubviews()`
+whenever the panes do not span the split.

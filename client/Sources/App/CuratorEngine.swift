@@ -199,6 +199,18 @@ final class CuratorEngine {
     /// The order candidates came out of retrieval on the last turn, best
     /// first, for topping a list up without going alphabetical.
     private var lastRank: [String: Int] = [:]
+    /// How much this listener plays each artist and genre, 0 to 1, from
+    /// play counts and ratings: the search leans toward what gets played.
+    private var artistTaste: [String: Float] = [:]
+    private var genreTaste: [String: Float] = [:]
+    /// What editing earlier playlists taught, and the lessons that apply
+    /// to the request in progress.
+    let memory = CuratorMemory()
+    private var lessons: [CuratorMemory.Lesson] = []
+    /// The turns of the request in progress, kept until the listener saves
+    /// the list: then they are approved, and written out as training examples.
+    private var firstTurn: (prompt: String, ids: [String], note: String)?
+    private var editTurns: [(prompt: String, answer: [String: Any])] = []
     private var history: [String] = []
     private var request = ""
     private(set) var current: [CuratorPick] = []
@@ -228,8 +240,37 @@ final class CuratorEngine {
                 if let y = t.year, y > 1900 { artistSince[key] = min(artistSince[key] ?? y, y) }
             }
         }
+        buildTaste()
         Task { await buildIndex() }
     }
+
+    /// Plays and stars, summed per artist and per genre and squashed to
+    /// 0...1 on a log scale, so a thousand plays of one band does not
+    /// flatten everything else.
+    private func buildTaste() {
+        var artist: [String: Double] = [:], genre: [String: Double] = [:]
+        for t in library {
+            let w = Double(t.playCount) + (t.rating >= 60 ? Double(t.rating / 20) * 3 : 0)
+            guard w > 0 else { continue }
+            artist[CuratorEngine.fold(t.artist), default: 0] += w
+            if !t.genre.isEmpty { genre[CuratorEngine.fold(t.genre), default: 0] += w }
+        }
+        func squash(_ m: [String: Double]) -> [String: Float] {
+            guard let top = m.values.max(), top > 0 else { return [:] }
+            return m.mapValues { Float(log1p($0) / log1p(top)) }
+        }
+        artistTaste = squash(artist)
+        genreTaste = squash(genre)
+    }
+
+    /// The nudge a song gets in search for being by someone the listener
+    /// plays: worth a little, never a change of subject.
+    private func taste(_ t: Track) -> Float {
+        0.06 * (artistTaste[CuratorEngine.fold(t.artist)] ?? 0) + 0.03 * (genreTaste[CuratorEngine.fold(t.genre)] ?? 0)
+    }
+
+    /// An artist this listener plays a lot: marked ♥ for the model.
+    private func favourite(_ t: Track) -> Bool { (artistTaste[CuratorEngine.fold(t.artist)] ?? 0) >= 0.6 }
 
     private func buildIndex() async {
         guard !building else { return }
@@ -303,14 +344,49 @@ final class CuratorEngine {
     // MARK: Conversation
 
     func reset() {
+        memory.close()
+        lessons = []
+        firstTurn = nil
+        editTurns = []
         history = []
         request = ""
         current = []
     }
 
     /// The list as the listener has edited it, so feedback starts from what
-    /// is on screen rather than what the model last said.
-    func setCurrent(_ picks: [CuratorPick]) { current = picks }
+    /// is on screen rather than what the model last said. A song deleted by
+    /// hand is a lesson too.
+    func setCurrent(_ picks: [CuratorPick]) {
+        let keep = Set(picks.map { $0.track.persistentId })
+        let gone = current.filter { !keep.contains($0.track.persistentId) }.map { $0.track }
+        if !gone.isEmpty { memory.noteRemoved(gone) }
+        current = picks
+    }
+
+    /// The listener saved the list: the songs in it are approved, and the
+    /// turns that led there become training examples.
+    func approve(_ tracks: [Track], name: String) {
+        memory.noteSaved(tracks)
+        let final = tracks.map { $0.persistentId }
+        if let first = firstTurn {
+            let byId = Dictionary(first.ids.enumerated().map { ($1, $0 + 1) }, uniquingKeysWith: { a, _ in a })
+            let whys = Dictionary(current.map { ($0.track.persistentId, $0.why) }, uniquingKeysWith: { a, _ in a })
+            let numbered = final.compactMap { id -> [String: Any]? in
+                guard let n = byId[id] else { return nil }
+                let why = whys[id] ?? ""
+                return ["n": n, "why": why.isEmpty ? "fits the request" : why]
+            }
+            // Only when the first answer could have been this list: most of
+            // it must have been on that turn's table.
+            if !numbered.isEmpty, numbered.count * 10 >= final.count * 6 {
+                memory.recordExample(system: CuratorEngine.system, prompt: first.prompt,
+                                     answer: ["playlist": numbered, "note": first.note, "name": name])
+            }
+        }
+        for e in editTurns { memory.recordExample(system: CuratorEngine.system, prompt: e.prompt, answer: e.answer) }
+        firstTurn = nil
+        editTurns = []
+    }
 
     private struct Plan {
         var vibe = ""
@@ -388,6 +464,10 @@ final class CuratorEngine {
         var isFeedback = !current.isEmpty && !request.isEmpty
         if !isFeedback { request = text }
 
+        // What happened on requests like this one before: found by the
+        // request's own embedding, so "songs from the nineties" reaches a
+        // lesson about "90s anthems".
+        if !isFeedback { await recall(text) }
         onStatus("Thinking about what fits…")
         let plan = try await makePlan(text, feedback: isFeedback)
         // "Now something for a road trip" after a date-night list is a new
@@ -396,7 +476,9 @@ final class CuratorEngine {
             reset()
             request = text
             isFeedback = false
+            await recall(text)
         }
+        if isFeedback { memory.noteFeedback(text) }
 
         onStatus("Searching the library…")
         await embedQueries(plan.queries)
@@ -414,8 +496,23 @@ final class CuratorEngine {
                      seconds: Date().timeIntervalSince(started))
     }
 
+    /// Finds the lessons that apply to a fresh request and opens its own.
+    private func recall(_ text: String) async {
+        await embedQueries([text])
+        let vector = queryCache[text]
+        lessons = memory.similar(to: vector, request: text)
+        memory.begin(request: text, vector: vector)
+        firstTurn = nil
+        editTurns = []
+        if !lessons.isEmpty { OllamaClient.log("recalled \(lessons.count) lesson(s): " + lessons.map { $0.request }.joined(separator: " | ")) }
+    }
+
     private func makePlan(_ text: String, feedback: Bool) async throws -> Plan {
         var prompt = ""
+        let remarks = memory.remarks(of: lessons)
+        if !remarks.isEmpty {
+            prompt += "On requests like this one before, the listener said: " + remarks.map { "“\($0)”" }.joined(separator: "; ") + ". Plan so those complaints do not come up again.\n\n"
+        }
         if feedback {
             prompt += "The conversation so far:\n" + history.joined(separator: "\n") + "\n\n"
             prompt += "The listener's feedback on the current playlist: \(text)\n\n"
@@ -471,9 +568,14 @@ final class CuratorEngine {
         var out: [Track] = []
         var undated: [Track] = []
         var rank: [String: Int] = [:]
+        // Songs the listener took out of a list like this before, or rated
+        // one star, are not offered again; the ones on the current list stay.
+        let inList = Set(current.map { $0.track.persistentId })
+        let unwanted = memory.unwanted(near: lessons)
         func take(_ t: Track) {
             let key = CuratorEngine.fold(t.name) + "|" + CuratorEngine.fold(t.artist)
             guard !seen.contains(key), !t.name.isEmpty else { return }
+            if !inList.contains(t.persistentId), unwanted.contains(t.persistentId) || t.rating == 20 { return }
             if let years = plan.years {
                 // An era was asked for: a song from outside it is out; one
                 // with no year tag, or on a live album, remaster or
@@ -520,8 +622,10 @@ final class CuratorEngine {
             }
             i += 1
         }
-        if plan.years != nil, out.count < cap {
-            for t in undated.prefix(min(cap - out.count, cap / 4)) {
+        // Live albums, reissues and undated songs only when the dated ones
+        // run short: shown at all, the model takes them for "classics".
+        if plan.years != nil, out.count < plan.length * 3 {
+            for t in undated.prefix(min(plan.length * 3 - out.count, cap / 4)) {
                 rank[t.persistentId] = rank.count
                 out.append(t)
             }
@@ -574,7 +678,12 @@ final class CuratorEngine {
 
     private func searchTracks(_ phrase: String, k: Int) -> [Track] {
         guard let q = queryCache[phrase] else { return [] }
-        return index.search(q, k: k).compactMap { byId[$0.id] }
+        // Twice as many by meaning, then the listener's own plays break ties.
+        let hits = index.search(q, k: k * 2).compactMap { h -> (Track, Float)? in
+            guard let t = byId[h.id] else { return nil }
+            return (t, h.score + taste(t))
+        }
+        return hits.sorted { $0.1 > $1.1 }.prefix(k).map { $0.0 }
     }
 
     /// Embeds every phrase of the plan up front, one call.
@@ -596,6 +705,7 @@ final class CuratorEngine {
             s += ")"
             if !t.genre.isEmpty { s += " [\(t.genre)]" }
             if t.rating > 0 { s += " ★\(t.rating / 20)" }
+            if favourite(t) { s += " ♥" }
             if let years = plan.years {
                 if let since = artistSince[CuratorEngine.fold(t.artist)], since < years.lowerBound - 12 {
                     s += " ⚠ artist since \(since)"
@@ -605,6 +715,7 @@ final class CuratorEngine {
             if feedback, inList.contains(t.persistentId) { s += " ✓ in the current playlist" }
             lines.append(s)
         }
+        let learned = memory.summary(of: lessons)
         var eraRule = ""
         if let years = plan.years {
             eraRule = "- The listener wants songs from \(years.lowerBound) to \(years.upperBound). The year shown is the album's release. Skip anything that is really an older song: a live recording, remaster, reissue, or a cover of an old standard. ⚠ marks an artist active since long before then, or a live/reissue album; take those only if you know the song itself is from the era.\n"
@@ -616,11 +727,15 @@ final class CuratorEngine {
         }
         prompt += "The request, restated: \(plan.vibe) (the listener's words above are what counts; do not add a mood, setting or occasion they did not give)"
         if !plan.avoid.isEmpty { prompt += " Avoid: \(plan.avoid.joined(separator: ", "))." }
+        if !learned.isEmpty {
+            prompt += "\n\nWhat this listener did with playlists like this before (learn from it; do not repeat what they took out):\n" + learned
+        }
         prompt += """
 
 
         Below are candidate songs from the library, one per line, as:
           N. artist – title (album year) [genre] ★rating
+        ♥ marks an artist this listener plays a lot: between songs that fit equally, prefer those.
 
         """
         if feedback {
@@ -660,8 +775,9 @@ final class CuratorEngine {
                                           maxTokens: 600 + 60 * (plan.length + max(6, plan.length / 3)), temperature: 0.5)
         let obj = CuratorEngine.parseJSON(r.text)
         if feedback {
-            return applyEdit(obj, text: text, plan: plan, candidates: cands, seconds: r.seconds)
+            return applyEdit(obj, text: text, plan: plan, candidates: cands, prompt: prompt, seconds: r.seconds)
         }
+        firstTurn = (prompt, cands.map { $0.persistentId }, obj["note"] as? String ?? "")
         let items = obj["playlist"] as? [[String: Any]] ?? []
 
         // The model is told the rules and forgets them often enough that
@@ -772,9 +888,12 @@ final class CuratorEngine {
     /// Tops a list up to `length` from the candidates the model passed over,
     /// under the same rules, dated songs first when an era was asked for.
     private func fill(_ picks: inout [CuratorPick], to length: Int, from cands: [Track], perArtist: inout [String: Int],
-                      requestFold: String, allowHoliday: Bool, isHoliday: (String) -> Bool, years: ClosedRange<Int>?) {
+                      requestFold: String, allowHoliday: Bool, isHoliday: (String) -> Bool, years: ClosedRange<Int>?,
+                      exclude: Set<String> = []) {
         guard picks.count < length else { return }
-        let used = Set(picks.map { $0.track.persistentId })
+        // Never the songs an edit just took out: the current list sits at
+        // the head of the candidates, so they would come straight back.
+        let used = Set(picks.map { $0.track.persistentId }).union(exclude)
         // Best retrieval rank first, never alphabetical; with an era asked
         // for, dated studio songs before undated or reissued ones.
         let pool = cands.filter { !used.contains($0.persistentId) }
@@ -801,7 +920,7 @@ final class CuratorEngine {
     /// The edit the model described, applied to the current list: drop what
     /// it named, add what it chose (under the same rules), then take its
     /// order for whatever survives. A number in the feedback sets the length.
-    private func applyEdit(_ obj: [String: Any], text: String, plan: Plan, candidates cands: [Track], seconds: Double) -> Reply {
+    private func applyEdit(_ obj: [String: Any], text: String, plan: Plan, candidates cands: [Track], prompt: String, seconds: Double) -> Reply {
         func number(_ v: Any?) -> Int? {
             if let n = v as? Int { return n }
             if let s = v as? String { return Int(s) }
@@ -859,7 +978,7 @@ final class CuratorEngine {
                 list = Array(list.prefix(n))
             } else if list.count < n {
                 fill(&list, to: n, from: cands, perArtist: &perArtist, requestFold: requestFold,
-                     allowHoliday: wantsHoliday, isHoliday: isHoliday, years: plan.years)
+                     allowHoliday: wantsHoliday, isHoliday: isHoliday, years: plan.years, exclude: removed)
             }
         } else if added > 0 {
             // "Add a couple more" may grow it; a swap, or anything else,
@@ -874,7 +993,7 @@ final class CuratorEngine {
                     list = Array(list.prefix(current.count))
                 } else if list.count < current.count {
                     fill(&list, to: current.count, from: cands, perArtist: &perArtist, requestFold: requestFold,
-                         allowHoliday: wantsHoliday, isHoliday: isHoliday, years: plan.years)
+                         allowHoliday: wantsHoliday, isHoliday: isHoliday, years: plan.years, exclude: removed)
                 }
             }
         }
@@ -883,13 +1002,31 @@ final class CuratorEngine {
         // list that kept seventeen of twenty.
         let before = Set(current.map { $0.track.persistentId })
         let after = Set(list.map { $0.track.persistentId })
-        let out = before.subtracting(after).count, added2 = after.subtracting(before).count
+        let gone = current.filter { !after.contains($0.track.persistentId) }.map { $0.track }
+        let came = list.filter { !before.contains($0.track.persistentId) }
+        let out = gone.count, added2 = came.count
+        memory.noteRemoved(gone)
+        memory.noteAdded(came.map { $0.track })
         var note = obj["note"] as? String ?? ""
         if out == 0 && added2 == 0 {
             note = "Nothing changed; the songs stand as they were."
         } else {
             note += " (\(out) out, \(added2) in.)"
         }
+        // The edit as it was actually applied, kept as a training example
+        // should the listener go on to save the list.
+        let position = Dictionary(cands.enumerated().map { ($1.persistentId, $0 + 1) }, uniquingKeysWith: { a, _ in a })
+        let answer: [String: Any] = [
+            "remove": gone.compactMap { position[$0.persistentId] },
+            "add": came.compactMap { p -> [String: Any]? in
+                guard let n = position[p.track.persistentId] else { return nil }
+                return ["n": n, "why": p.why.isEmpty ? "fits the request" : p.why]
+            },
+            "order": list.compactMap { position[$0.track.persistentId] },
+            "note": obj["note"] as? String ?? "",
+            "name": obj["name"] as? String ?? plan.name,
+        ]
+        editTurns.append((prompt, answer))
         return Reply(picks: list, note: note, name: obj["name"] as? String ?? plan.name, seconds: seconds)
     }
 

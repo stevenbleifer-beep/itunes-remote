@@ -189,6 +189,12 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
             modelPopup.addItem(withTitle: title)
             modelPopup.lastItem?.representedObject = t.model
         }
+        // A model finetune.sh made from this listener's own edits is not a
+        // tier; it is listed as itself.
+        if CuratorModels.tier(for: chosen) == nil {
+            modelPopup.addItem(withTitle: "Trained on your edits — \(chosen)")
+            modelPopup.lastItem?.representedObject = chosen
+        }
         if let i = modelPopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == chosen }) {
             modelPopup.selectItem(at: i)
         }

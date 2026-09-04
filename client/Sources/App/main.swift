@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         main.initialSource = arg("--source")
         main.curateScript = zip(args, args.dropFirst()).filter { $0.0 == "--curate" }.map { $0.1 }
         main.curateSaveName = arg("--curate-save")
+        main.curateApproveName = arg("--curate-approve")
         if args.contains("--mini") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak main] in main?.toggleMiniPlayer(nil) }
         }

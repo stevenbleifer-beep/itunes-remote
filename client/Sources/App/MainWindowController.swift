@@ -145,6 +145,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// `--curate-save NAME`, then snapshots or quits.
     var curateScript: [String] = []
     var curateSaveName: String?
+    var curateApproveName: String?
     private var infoPanel: InfoPanel?          // held while its sheet is up
     private var namePrompt: NamePrompt?        // held while its sheet is up
     private var statusOverride: String?
@@ -1595,10 +1596,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 }
                 print("--")
             }
+            // `--curate-approve NAME` approves the list as if it were saved,
+            // without making a playlist: for testing what the curator learns.
+            if let name = curateApproveName, !curatorPage.picks.isEmpty {
+                curator.approve(curatorPage.picks.map { $0.track }, name: name)
+                print("approved as \(name): \(curator.memory.exampleCount) training example(s) on file")
+            }
             if let name = curateSaveName, let api = controller.api, !curatorPage.picks.isEmpty {
                 do {
                     let playlist = try await api.createPlaylist(name: name, folder: "Curator")
                     let change = try await api.addToPlaylist(playlist.persistentId, ids: curatorPage.picks.map { $0.track.persistentId })
+                    curator.approve(curatorPage.picks.map { $0.track }, name: playlist.name)
                     print("saved \(playlist.name) (\(playlist.persistentId)) parent=\(playlist.parentId ?? "-") added=\(change.changed)")
                     curatorPage.note("Saved as “\(playlist.name)” in the Curator folder, \(change.changed) songs.")
                     if let parent = playlist.parentId { collapsedFolders.remove(parent) }
@@ -1635,6 +1643,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 do {
                     let playlist = try await api.createPlaylist(name: name, folder: "Curator")
                     let change = try await api.addToPlaylist(playlist.persistentId, ids: tracks.map { $0.persistentId })
+                    self?.curator.approve(tracks, name: playlist.name)
                     if let parent = playlist.parentId {
                         self?.collapsedFolders.remove(parent)
                         self?.saveCollapsedFolders()

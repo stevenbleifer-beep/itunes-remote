@@ -47,6 +47,31 @@ and `ITR_NOTARY_PROFILE=<notarytool keychain profile>` on `package.sh`.
   model server for the curator is built in (Ollama, Apple Silicon build);
   an Ollama app already on the Mac is used instead when it is running.
 
+## The curator learns
+
+Three things make it better the more it is used, none of which sends
+anything off the Mac:
+
+- **Your edits.** Every song you delete from a curated list, every piece
+  of feedback, every list you save is kept in
+  `~/Library/Application Support/iTunes Remote/curator/memory.json`. On a
+  request like an old one (found by embedding, so "songs from the
+  nineties" reaches a lesson about "90s anthems") the songs you took out
+  are not offered again, and the model is told what you said last time.
+  A song taken out of any two lists is never offered again.
+- **Your plays.** Play counts and ratings become a per-artist and
+  per-genre profile; search leans a little toward what you actually
+  play, artists you play a lot are marked ♥ for the model, and one-star
+  songs are never candidates.
+- **A fine-tune, when there is enough data.** Saving a list also writes
+  the turns that led to it to `curator/training.jsonl`, in the chat
+  format `mlx-lm` reads. `client/finetune/finetune.sh` trains a LoRA
+  adapter on those, fuses it, imports the result into Ollama as
+  `itunes-curator` and points the app at it. It wants a few hundred saved
+  playlists to be worth running, refuses under 40 without `--force`, takes
+  an hour or two on an M-series Mac, and `--revert` goes back to the
+  stock picker.
+
 ## Built with Claude Code
 
 Every line here was written with [Claude Code](https://claude.com/claude-code),
