@@ -261,6 +261,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         toolbar.addSubview(searchCaption)
         searchField.delegate = self
         searchField.sendsWholeSearchString = false
+        // The field's own cancel button (and Return) send the action, not the
+        // text-changed delegate call, so the filter stayed stuck on the old
+        // text after the field went blank.
+        searchField.target = self
+        searchField.action = #selector(searchFieldAction(_:))
         toolbar.addSubview(searchField)
 
         // Status bar
@@ -2614,6 +2619,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             }
         }
         if text.isEmpty { searchPopup?.hide() }
+    }
+
+    @objc private func searchFieldAction(_ sender: Any?) {
+        searchTimer?.invalidate()
+        let text = searchField.stringValue
+        controller.searchText = text
+        if text.isEmpty { searchPopup?.hide() } else { suggest(text) }
     }
 
     @objc func focusSearch(_ sender: Any?) {
