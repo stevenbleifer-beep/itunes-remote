@@ -54,6 +54,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let connectionBadge = AquaConnectionBadge()
     /// When iTunes last saved its library, beside the badge.
     private let libraryStamp = NSTextField(labelWithString: "")
+    /// Makes the MacBook Pro look at the library file this instant.
+    private let refreshButton = AquaBevelButton(glyph: .refresh)
     private var artworkHeight: NSLayoutConstraint?
     private var devices: [DeviceSource] = []
     private var deviceTimer: Timer?
@@ -337,6 +339,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         libraryStamp.lineBreakMode = .byClipping
         libraryStamp.autoresizingMask = [.minXMargin]
         statusBar.addSubview(libraryStamp)
+        refreshButton.autoresizingMask = [.minXMargin]
+        refreshButton.target = self
+        refreshButton.action = #selector(refreshLibrary(_:))
+        refreshButton.toolTip = "Check the MacBook Pro's library for changes now. Adds and deletes made in iTunes reach the app on their own within a minute or two; this does not wait."
+        statusBar.addSubview(refreshButton)
         layoutStatusRight()
 
         // Main split: [source list over artwork] | right side
@@ -1085,6 +1092,29 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         connectionBadge.frame = NSRect(x: W - 84 - bs.width, y: 4, width: bs.width, height: bs.height)
         let sw = ceil((libraryStamp.stringValue as NSString).size(withAttributes: [.font: Aqua.font(11)]).width) + 4
         libraryStamp.frame = NSRect(x: connectionBadge.frame.minX - 16 - sw, y: 4, width: sw, height: 16)
+        refreshButton.frame = NSRect(x: libraryStamp.frame.minX - 6 - 34, y: 2, width: 34, height: 20)
+    }
+
+    @objc private func refreshLibrary(_ sender: Any?) {
+        guard controller.api != nil else { return }
+        refreshButton.isEnabled = false
+        statusOverride = "Asking the MacBook Pro to re-read its library…"
+        updateStatus()
+        Task { @MainActor in
+            let reloaded = await controller.refreshNow()
+            refreshButton.isEnabled = true
+            statusOverride = nil
+            if reloaded, let info = controller.info {
+                flashStatus("Library re-read: \(info.trackCount.formatted()) songs.")
+            } else if let info = controller.info, let written = MainWindowController.parseISO(info.xmlWrittenAt) {
+                let f = DateFormatter()
+                f.dateStyle = Calendar.current.isDateInToday(written) ? .none : .medium
+                f.timeStyle = .short
+                flashStatus("Nothing new — iTunes last saved its library at \(f.string(from: written)).")
+            }
+            updateLibraryStamp()
+            if curatorOpen { loadCuratorLibrary() }
+        }
     }
 
     private func showConnectionBadge(_ state: AquaConnectionBadge.State, host: String) {
@@ -1447,7 +1477,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     // MARK: Curator
 
     private func wireCurator() {
-        curatorPage.modelLine = "Powered by \(curator.model), running on this Mac through Ollama · library search: \(CuratorEngine.embedModel)"
+        curatorPage.modelLine = "Powered by \(curator.model) on \(OllamaRuntime.shared.description) · library search: \(CuratorEngine.embedModel)"
         curatorPage.onAsk = { [weak self] text in Task { @MainActor in await self?.askCurator(text) } }
         curatorPage.onPlay = { [weak self] tracks, i in
             guard let self = self, i < tracks.count else { return }
@@ -1473,6 +1503,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func openCuratorPage() {
         closeDevicePage()
         curatorOpen = true
+        Task { @MainActor in
+            _ = await OllamaRuntime.shared.ensureRunning()
+            curatorPage.modelLine = "Powered by \(curator.model) on \(OllamaRuntime.shared.description) · library search: \(CuratorEngine.embedModel)"
+        }
         rightSplit.isHidden = true
         curatorPage.isHidden = false
         curatorPage.focusField()

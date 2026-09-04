@@ -45,13 +45,31 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+# The bundled Ollama, when fetch-ollama.sh has been run. Without it the app
+# still works with an Ollama app installed separately.
+rm -rf "$APP/Contents/Helpers"
+if [ -x Vendor/ollama/ollama ]; then
+    # Only executables under Helpers: codesign treats anything else there
+    # as unsigned nested code and refuses to sign the app.
+    mkdir -p "$APP/Contents/Helpers/ollama"
+    cp Vendor/ollama/ollama Vendor/ollama/llama-server "$APP/Contents/Helpers/ollama/"
+    cp Vendor/ollama/LICENSE "$APP/Contents/Resources/Ollama-LICENSE.txt" 2>/dev/null || true
+    cp Vendor/ollama/VERSION "$APP/Contents/Resources/Ollama-VERSION.txt" 2>/dev/null || true
+fi
 # Ad-hoc for development. With ITR_SIGN_IDENTITY set to a "Developer ID
 # Application: …" identity, a real signature with the hardened runtime, which
 # is what notarization needs; package.sh does the notarizing.
 if [ -n "${ITR_SIGN_IDENTITY:-}" ]; then
+    # Nested executables first, each with the hardened runtime, then the app.
+    for h in "$APP"/Contents/Helpers/ollama/ollama "$APP"/Contents/Helpers/ollama/llama-server; do
+        [ -f "$h" ] && codesign --force --options runtime --timestamp -s "$ITR_SIGN_IDENTITY" "$h"
+    done
     codesign --force --options runtime --timestamp -s "$ITR_SIGN_IDENTITY" "$APP"
     echo "signed as $ITR_SIGN_IDENTITY"
 else
+    for h in "$APP"/Contents/Helpers/ollama/ollama "$APP"/Contents/Helpers/ollama/llama-server; do
+        [ -f "$h" ] && codesign --force -s - "$h" >/dev/null 2>&1
+    done
     codesign --force -s - "$APP" >/dev/null 2>&1
 fi
 echo "built $APP"

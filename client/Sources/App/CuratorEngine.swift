@@ -140,7 +140,8 @@ final class CuratorEngine {
         let seconds: Double
     }
 
-    let ollama: OllamaClient
+    /// Whichever server the runtime has up: the Ollama app, or the bundled one.
+    var ollama: OllamaClient { OllamaClient(baseURL: OllamaRuntime.shared.currentURL ?? OllamaRuntime.shared.systemURL) }
     let index = CuratorIndex()
     var model: String
     var onStatus: (String) -> Void = { _ in }
@@ -164,9 +165,7 @@ final class CuratorEngine {
     private var asking = false
 
     init() {
-        let d = UserDefaults.standard
-        ollama = OllamaClient(baseURL: URL(string: d.string(forKey: "ollamaURL") ?? "http://127.0.0.1:11434")!)
-        model = d.string(forKey: "curatorModel") ?? CuratorEngine.defaultModel
+        model = UserDefaults.standard.string(forKey: "curatorModel") ?? CuratorEngine.defaultModel
     }
 
     // MARK: Library and index
@@ -201,8 +200,12 @@ final class CuratorEngine {
         let missing = library.filter { !index.contains($0.persistentId) }
         onIndexProgress(index.count, library.count)
         guard !missing.isEmpty else { return }
-        guard await ollama.isUp() else {
-            onStatus("Ollama is not running, so the library cannot be indexed.")
+        guard await OllamaRuntime.shared.ensureRunning() != nil else {
+            onStatus("No model server: the library cannot be indexed.")
+            return
+        }
+        guard await hasModel(CuratorEngine.embedModel) else {
+            onStatus("The search model is not downloaded yet — File ▸ Set Up iTunes Remote… fetches it.")
             return
         }
         var done = 0
@@ -232,12 +235,23 @@ final class CuratorEngine {
         onIndexProgress(index.count, library.count)
     }
 
+    /// Whether the server has a model, by name with or without a tag.
+    func hasModel(_ name: String) async -> Bool {
+        let have = (try? await ollama.models()) ?? []
+        return have.contains { $0 == name || $0.hasPrefix(name + ":") || name.hasPrefix($0 + ":") }
+    }
+
     /// What a song looks like to the embedding model.
     static func text(_ t: Track) -> String {
         var s = "\(t.name) — \(t.artist)"
         if !t.album.isEmpty { s += " (\(t.album)" + (t.year.map { ", \($0)" } ?? "") + ")" }
         if !t.genre.isEmpty { s += " · \(t.genre)" }
         return s
+    }
+
+    /// One song on two albums, or a remaster beside the original.
+    static func sameSong(_ a: Track, _ b: Track) -> Bool {
+        fold(a.artist) == fold(b.artist) && fold(a.name) == fold(b.name)
     }
 
     static func fold(_ s: String) -> String {
@@ -270,6 +284,24 @@ final class CuratorEngine {
         var fresh = false
         /// Years the songs must come from, when the request names an era.
         var years: ClosedRange<Int>?
+    }
+
+    /// "three songs", "20 song playlist", "about fifty": the count a request
+    /// asks for, read from the words rather than trusted to the model.
+    static func requestedCount(in text: String) -> Int? {
+        let t = text.lowercased()
+        let words = ["one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+                     "ten": 10, "twelve": 12, "fifteen": 15, "twenty": 20, "twenty-five": 25, "twenty five": 25,
+                     "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "a dozen": 12]
+        let span = NSRange(t.startIndex..., in: t)
+        if let m = try? NSRegularExpression(pattern: "\\b([1-9][0-9]?)\\s*(?:-|\\s)?(?:song|track|tune)s?\\b").firstMatch(in: t, range: span),
+           let r = Range(m.range(at: 1), in: t), let n = Int(t[r]) { return n }
+        if let m = try? NSRegularExpression(pattern: "\\b(?:about|around|roughly|make it|keep it to|just)\\s+([1-9][0-9]?)\\b").firstMatch(in: t, range: span),
+           let r = Range(m.range(at: 1), in: t), let n = Int(t[r]) { return n }
+        for (w, n) in words.sorted(by: { $0.key.count > $1.key.count }) {
+            if let _ = try? NSRegularExpression(pattern: "\\b\(NSRegularExpression.escapedPattern(for: w))\\s+(?:upbeat |slow |great |good |more )?(?:song|track|tune)s?\\b").firstMatch(in: t, range: span) { return n }
+        }
+        return nil
     }
 
     /// "90s", "1970s", "the eighties", "1994 to 1998": the years a request
@@ -305,8 +337,11 @@ final class CuratorEngine {
     /// A request, or feedback on the current list. Returns the new list.
     func ask(_ text: String) async throws -> Reply {
         guard libraryLoaded else { throw CuratorError("The library has not loaded yet.") }
-        guard await ollama.isUp() else {
-            throw CuratorError("Ollama is not running. Open the Ollama app and try again.")
+        guard await OllamaRuntime.shared.ensureRunning() != nil else {
+            throw CuratorError("No model server could be started. Check ~/Library/Logs/iTunesRemote/ollama.log.")
+        }
+        guard await hasModel(model) else {
+            throw CuratorError("The model \(model) is not downloaded yet. File ▸ Set Up iTunes Remote… fetches it (about 3.5 GB).")
         }
         asking = true
         defer { asking = false }
@@ -380,6 +415,7 @@ final class CuratorEngine {
             p.years = a...b
         }
         if let spoken = CuratorEngine.yearRange(in: (feedback ? request + " " : "") + text) { p.years = spoken }
+        if !feedback, let n = CuratorEngine.requestedCount(in: text) { p.length = max(1, min(100, n)) }
         if p.queries.isEmpty { p.queries = [text] }
         return p
     }
@@ -596,6 +632,7 @@ final class CuratorEngine {
         let requestFold = CuratorEngine.fold(request + " " + text)
         var picks: [CuratorPick] = []
         var used = Set<String>()
+        var titles = Set<String>()
         var perArtist: [String: Int] = [:]
         for item in items {
             var n = item["n"] as? Int
@@ -603,11 +640,15 @@ final class CuratorEngine {
             guard let k = n, k >= 1, k <= cands.count else { continue }
             let t = cands[k - 1]
             guard !used.contains(t.persistentId) else { continue }
+            // The same song off two albums is one song.
+            let title = CuratorEngine.fold(t.artist) + "|" + CuratorEngine.fold(t.name)
+            guard !titles.contains(title) else { continue }
             let a = CuratorEngine.fold(t.artist)
             let aboutArtist = a.count >= 3 && requestFold.contains(a)
             if perArtist[a, default: 0] >= 2 && !aboutArtist { continue }
             if !wantsHoliday && (isHoliday(t.name) || isHoliday(t.album)) { continue }
             used.insert(t.persistentId)
+            titles.insert(title)
             perArtist[a, default: 0] += 1
             picks.append(CuratorPick(track: t, why: item["why"] as? String ?? ""))
             if picks.count >= plan.length { break }
@@ -675,6 +716,7 @@ final class CuratorEngine {
             let t = cands[k - 1]
             guard !used.contains(t.persistentId) else { continue }
             let a = CuratorEngine.fold(t.artist)
+            if out.contains(where: { CuratorEngine.sameSong($0.track, t) }) || current.contains(where: { CuratorEngine.sameSong($0.track, t) }) { continue }
             if perArtist[a, default: 0] >= 2 && !(a.count >= 3 && requestFold.contains(a)) { continue }
             if !allowHoliday && (isHoliday(t.name) || isHoliday(t.album)) { continue }
             if let years = plan.years, let y = t.year, !years.contains(y) { continue }
@@ -705,6 +747,7 @@ final class CuratorEngine {
         let ordered = years == nil ? pool : pool.filter { !doubtful($0) } + pool.filter { doubtful($0) }
         for t in ordered where picks.count < length {
             if let years = years, let y = t.year, !years.contains(y) { continue }
+            if picks.contains(where: { CuratorEngine.sameSong($0.track, t) }) { continue }
             let a = CuratorEngine.fold(t.artist)
             let aboutArtist = a.count >= 3 && requestFold.contains(a)
             if perArtist[a, default: 0] >= 2 && !aboutArtist { continue }

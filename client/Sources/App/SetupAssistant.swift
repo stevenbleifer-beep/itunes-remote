@@ -202,7 +202,9 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
             placeButtons()
         case .curator:
             titleLabel.stringValue = "Playlist Curator (optional)"
-            bodyLabel.stringValue = "The curator builds playlists from your library with a small language model that runs on this Mac through Ollama, so nothing leaves the house. It needs Ollama and two models, about 4 GB in all. Skip this and everything else still works."
+            bodyLabel.stringValue = OllamaRuntime.shared.hasEmbedded
+                ? "The curator builds playlists from your library with a small language model that runs on this Mac, so nothing leaves the house. The model server is built in; it needs two models, about 4 GB, downloaded once. Skip this and everything else still works."
+                : "The curator builds playlists from your library with a small language model that runs on this Mac through Ollama, so nothing leaves the house. It needs Ollama and two models, about 4 GB in all. Skip this and everything else still works."
             Task { await checkOllama() }
         case .done:
             titleLabel.stringValue = "All set"
@@ -346,33 +348,38 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
     // MARK: Curator
 
     private func checkOllama() async {
-        let ollama = OllamaClient(baseURL: URL(string: UserDefaults.standard.string(forKey: "ollamaURL") ?? "http://127.0.0.1:11434")!)
         actionButton.isHidden = false
         secondButton.isHidden = true
         progress.isHidden = true
-        guard await ollama.isUp() else {
-            statusLabel.stringValue = "Ollama is not running on this Mac. Install it, open it once (it stays in the menu bar), then check again."
+        statusLabel.stringValue = "Starting the model server…"
+        guard let url = await OllamaRuntime.shared.ensureRunning() else {
+            statusLabel.stringValue = OllamaRuntime.shared.hasEmbedded
+                ? "The built-in model server did not start; see ~/Library/Logs/iTunesRemote/ollama.log. An Ollama app on this Mac would be used instead."
+                : "Ollama is not running on this Mac. Install it, open it once (it stays in the menu bar), then check again."
             actionButton.title = "Get Ollama"
             secondButton.title = "Check Again"
             secondButton.isHidden = false
             placeButtons()
             return
         }
+        let ollama = OllamaClient(baseURL: url)
         let have = (try? await ollama.models()) ?? []
         let missing = SetupAssistant.curatorModels.filter { m in !have.contains(where: { $0 == m || $0.hasPrefix(m + ":") }) }
+        let server = OllamaRuntime.shared.description
         if missing.isEmpty {
             pulled = true
-            statusLabel.stringValue = "Ollama is running and both models are here. The curator is ready; it indexes the library the first time its page opens."
+            statusLabel.stringValue = "Using \(server); both models are here. The curator is ready; it indexes the library the first time its page opens."
             actionButton.isHidden = true
         } else {
-            statusLabel.stringValue = "Ollama is running. Still to download: \(missing.joined(separator: ", ")) (about \(missing.count == 2 ? "4 GB" : "3 GB"))."
+            statusLabel.stringValue = "Using \(server). Still to download: \(missing.joined(separator: ", ")) (about \(missing.count == 2 ? "4 GB" : "3 GB"))."
             actionButton.title = "Download Models"
         }
         placeButtons()
     }
 
     private func pullModels() async {
-        let ollama = OllamaClient(baseURL: URL(string: UserDefaults.standard.string(forKey: "ollamaURL") ?? "http://127.0.0.1:11434")!)
+        guard let url = await OllamaRuntime.shared.ensureRunning() else { return }
+        let ollama = OllamaClient(baseURL: url)
         let have = (try? await ollama.models()) ?? []
         let missing = SetupAssistant.curatorModels.filter { m in !have.contains(where: { $0 == m || $0.hasPrefix(m + ":") }) }
         setBusy(true, "Downloading…")

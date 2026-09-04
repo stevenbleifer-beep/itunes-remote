@@ -406,6 +406,13 @@ final class APIClient {
         try await get("/api/library")
     }
 
+    /// Asks the daemon to re-read the XML this instant. True when it did.
+    func refreshLibrary() async throws -> Bool {
+        let data = try await request("POST", "/api/library/refresh", timeout: 120)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return obj?["reloaded"] as? Bool ?? false
+    }
+
     /// One track's full record, for reading a value back after a write.
     func track(_ persistentId: String) async throws -> Track {
         let data = try await request("GET", "/api/tracks/\(persistentId)")

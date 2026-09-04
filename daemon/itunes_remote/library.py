@@ -659,6 +659,7 @@ class LibraryStore(object):
         self.path = path
         self.poll_interval = poll_interval
         self._lock = threading.Lock()
+        self._reload_lock = threading.Lock()   # one reparse at a time
         self._lib = None
         self._journal = []  # (timestamp, persistent_id, fields)
         self._playlist_journal = []  # (timestamp, op, playlist_id, track_ids, name, extra)
@@ -705,8 +706,31 @@ class LibraryStore(object):
             if pending_mtime != st.st_mtime or pending_size != st.st_size:
                 pending_mtime, pending_size = st.st_mtime, st.st_size
                 continue
-            self._reload()
+            if self._reload_lock.acquire(blocking=False):
+                try:
+                    self._reload()
+                finally:
+                    self._reload_lock.release()
             pending_mtime = None
+
+    def check_now(self):
+        """The Refresh button: look at the XML this instant and reparse if it
+        differs from what was read, without the watcher's wait for it to sit
+        still. Returns True when a reload happened."""
+        try:
+            st = os.stat(self.path)
+        except OSError as e:
+            self.last_error = str(e)
+            return False
+        if st.st_mtime == self._lib.mtime and st.st_size == self._lib.file_size:
+            return False
+        if not self._reload_lock.acquire(blocking=False):
+            return False   # the watcher is already on it
+        try:
+            self._reload()
+        finally:
+            self._reload_lock.release()
+        return True
 
     def _reload(self):
         self._reloading = True

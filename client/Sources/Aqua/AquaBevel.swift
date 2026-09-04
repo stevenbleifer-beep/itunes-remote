@@ -1,7 +1,7 @@
 import Cocoa
 
 enum BevelGlyph {
-    case plus, shuffle, repeatAll, repeatOne, artwork, eject, sync, reconnect, upNext
+    case plus, shuffle, repeatAll, repeatOne, artwork, eject, sync, reconnect, upNext, refresh
 }
 
 /// The small square buttons along the bottom bar of iTunes 10: a light
@@ -128,6 +128,22 @@ final class AquaBevelButton: NSView {
             t.move(to: NSPoint(x: cx - 6, y: cy - 1)); t.line(to: NSPoint(x: cx + 6, y: cy - 1)); t.line(to: NSPoint(x: cx, y: cy + 5))
             t.close(); t.fill()
             NSRect(x: cx - 6, y: cy - 5, width: 12, height: 2).fill()
+        case .refresh:
+            // A reload arrow: most of a ring, with a head where it ends.
+            let ring = NSBezierPath()
+            ring.lineWidth = 1.7
+            ring.lineCapStyle = .round
+            ring.appendArc(withCenter: NSPoint(x: cx, y: cy), radius: 4.6, startAngle: 40, endAngle: 330)
+            ring.stroke()
+            let tip = NSPoint(x: cx + 4.6 * cos(40 * CGFloat.pi / 180), y: cy + 4.6 * sin(40 * CGFloat.pi / 180))
+            let head = NSBezierPath()
+            head.move(to: NSPoint(x: tip.x + 2.6, y: tip.y + 1.2))
+            head.line(to: tip)
+            head.line(to: NSPoint(x: tip.x - 0.4, y: tip.y + 3.2))
+            head.lineWidth = 1.7
+            head.lineCapStyle = .round
+            head.lineJoinStyle = .round
+            head.stroke()
         case .reconnect:
             // The restart mark: a ring broken at the top with a bar through
             // the gap. Two half-rings read as "oo" at this size.

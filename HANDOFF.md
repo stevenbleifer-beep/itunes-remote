@@ -590,3 +590,31 @@ the LAN the token rides inside WPA, over Tailscale inside WireGuard. The
 token on the Air lives in UserDefaults (a 0600 plist), not the Keychain —
 an ad-hoc-signed app has no stable identity for a Keychain item, so it would
 prompt on every rebuild; revisit once the Developer ID signature is in use.
+
+## Embedded Ollama (2026-09-04, late afternoon)
+
+The app carries Ollama 0.33.2 for Apple Silicon in
+`Contents/Helpers/ollama/` — just `ollama` and `llama-server`, arm64 slices,
+45 MB. The tarball's dylibs are x86-only and its `mlx_metal_*` folders
+(180 MB each) are for MLX models; the GGUF models the curator uses run on
+the Metal backend built into the binary. Verified: Metal on the M5,
+embeddings and chat with the real models. `client/fetch-ollama.sh` fetches
+the pinned release (sha256 checked) into `client/Vendor/ollama/`, which is
+gitignored; build.sh copies it in when present and signs the two binaries
+before the app.
+
+`OllamaRuntime.swift`: if an Ollama app answers on 11434 it is used as is
+(so Steven's own install and models keep working); otherwise the bundled
+copy is started on **127.0.0.1:11435** with `OLLAMA_MODELS` at
+`~/Library/Application Support/iTunes Remote/ollama/models`, logging to
+`~/Library/Logs/iTunesRemote/ollama.log`. It runs under a `/bin/sh`
+watchdog that kills the server when the app's pid vanishes, because
+`exit(0)` in the snapshot paths skipped `applicationWillTerminate` and left
+a server listening once. `--embedded-ollama` forces the bundled copy for
+testing. To test without a 4 GB download, `scratchpad/seed-models.sh
+<dir> qwen3.5:4b embeddinggemma:300m` hard-links the blobs from
+`~/.ollama/models` (done for the app's embedded dir on the Air).
+
+**Signing:** identity `Developer ID Application: <your name>
+(<team-id>)`, notarytool profile `itunes-remote`. See memory
+`apple-developer-signing`.

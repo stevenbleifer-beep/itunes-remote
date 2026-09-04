@@ -31,6 +31,7 @@ works inside: https://www.stevenbleifer.com/itunes-remote-internals.html
 
     cd client && ./build.sh            # build/iTunes Remote.app, ad-hoc signed
     ./build.sh --install               # replace the copy in /Applications
+    ./fetch-ollama.sh                  # once: the bundled model server into Vendor/
     ./package.sh                       # the disk image, in build/dist
 
 Signing and notarizing: `ITR_SIGN_IDENTITY="Developer ID Application: …"`
@@ -42,7 +43,9 @@ and `ITR_NOTARY_PROFILE=<notarytool keychain profile>` on `package.sh`.
   Python 3.9+, and "Share iTunes Library XML with other applications" on.
   The Music app on Catalina and later is not supported: it does not write
   the XML the daemon reads.
-- Remote Mac: macOS 13 or later. Tailscale and Ollama optional.
+- Remote Mac: Apple Silicon, macOS 13 or later. Tailscale optional. The
+  model server for the curator is built in (Ollama, Apple Silicon build);
+  an Ollama app already on the Mac is used instead when it is running.
 
 `HANDOFF.md` and `SPEC.md` hold the working notes, measured behaviour of
 iTunes, and the traps found along the way.

@@ -199,6 +199,7 @@ class Api(object):
             ("GET", r"/api/hello", self.get_hello),
             ("POST", r"/api/pair", self.post_pair),
             ("GET", r"/api/library", self.get_library),
+            ("POST", r"/api/library/refresh", self.post_library_refresh),
             ("GET", r"/api/tracks", self.get_tracks),
             ("GET", r"/api/tracks/" + pid, self.get_track),
             ("GET", r"/api/tracks/" + pid + r"/artwork", self.get_artwork),
@@ -346,6 +347,14 @@ class Api(object):
         info["itunesVersion"] = self.itunes_version() or info.get("applicationVersion", "")
         info["name"] = computer_name()
         info["tailscaleName"] = tailscale_name()
+        return info
+
+    def post_library_refresh(self, params, query, body):
+        """Re-reads the XML now if iTunes has rewritten it. Blocks for the
+        parse (about 25 s on the Pro) so the caller can act on the result."""
+        reloaded = self.store.check_now()
+        info = self.get_library(params, query, body)
+        info["reloaded"] = reloaded
         return info
 
     # -- pairing: the only two calls that need no token -------------------

@@ -147,6 +147,16 @@ final class LibraryController {
         }
     }
 
+    /// The Refresh button: the daemon looks at the XML now, then whatever
+    /// changed is taken the way the version poll would have taken it.
+    func refreshNow() async -> Bool {
+        guard let api = api else { return false }
+        let reloaded = (try? await api.refreshLibrary()) ?? false
+        if reloaded { api.dropCache() }
+        await checkVersion()
+        return reloaded
+    }
+
     private func checkVersion() async {
         guard let api = api, let known = info, !loading, let fresh = try? await api.libraryInfo() else { return }
         guard fresh.version != known.version else { return }

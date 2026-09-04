@@ -104,6 +104,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        OllamaRuntime.shared.stop()
+    }
+
     private func buildMenu() {
         let mainMenu = NSMenu()
 
