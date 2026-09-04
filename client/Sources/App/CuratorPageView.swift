@@ -201,13 +201,24 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
     /// A first run starts with a third of the width for the conversation;
     /// after that the split view remembers where the divider was dragged.
     private var dividerPlaced = false
+    private var placementTries = 0
     override func layout() {
         super.layout()
         guard !dividerPlaced, bounds.width > 700 else { return }
-        dividerPlaced = true
-        if UserDefaults.standard.object(forKey: "NSSplitView Subview Frames curatorSplit") == nil {
-            split.setPosition(max(340, round(bounds.width * 0.3)), ofDividerAt: 0)
+        if UserDefaults.standard.object(forKey: "NSSplitView Subview Frames curatorSplit") != nil {
+            dividerPlaced = true
+            return
         }
+        // The split view redistributes on its own first passes, so the
+        // position is set and then checked until it has stuck.
+        let target = max(340, round(bounds.width * 0.3))
+        if abs(leftPane.frame.width - target) < 20 || placementTries > 6 {
+            dividerPlaced = true
+            return
+        }
+        placementTries += 1
+        split.setPosition(target, ofDividerAt: 0)
+        DispatchQueue.main.async { [weak self] in self?.needsLayout = true }
     }
 
     required init?(coder: NSCoder) { fatalError() }

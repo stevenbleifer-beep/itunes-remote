@@ -47,5 +47,25 @@ and `ITR_NOTARY_PROFILE=<notarytool keychain profile>` on `package.sh`.
   model server for the curator is built in (Ollama, Apple Silicon build);
   an Ollama app already on the Mac is used instead when it is running.
 
+## Built with Claude Code
+
+Every line here was written with [Claude Code](https://claude.com/claude-code),
+Anthropic's terminal agent, working against the real library on the real
+machines. Models used, in order of how much of the work they did:
+
+| Model | Role |
+|---|---|
+| Claude Opus 5 | the daemon, the AppKit client, iPod sync, Cover Flow, most of milestones 1–9 (2–3 September 2026) |
+| Claude Fable 5.1 | Grid view, mini player, Up Next, search, remote access, album art, the Playlist Curator, setup assistant, embedded Ollama, signing (3–4 September 2026) |
+| Claude Opus 4.8 | early client work and screenshots |
+| Claude Opus 4.7 | the first spec pass |
+
+Through 3 September that was 425 million tokens across 1,079 responses for
+13,781 lines that survived; the write-up at
+https://www.stevenbleifer.com/itunes-remote-internals.html has the table
+and the story behind the number. The curator itself runs on open models
+through Ollama: `qwen3.5:4b` (or `gemma4:12b` / `gemma4:26b` by choice)
+picks the songs, `embeddinggemma:300m` indexes the library for search.
+
 `HANDOFF.md` and `SPEC.md` hold the working notes, measured behaviour of
 iTunes, and the traps found along the way.
