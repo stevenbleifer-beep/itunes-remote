@@ -201,6 +201,13 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
     private var placementTries = 0
     override func layout() {
         super.layout()
+        // Frames restored from the autosave keep the width of the display
+        // they were saved on until something resizes the split; on a smaller
+        // screen the right pane then runs past the window edge. Refit them.
+        let span = leftPane.frame.width + split.dividerThickness + rightPane.frame.width
+        if abs(span - split.bounds.width) > 1 || abs(leftPane.frame.height - split.bounds.height) > 1 {
+            split.adjustSubviews()
+        }
         guard !dividerPlaced, bounds.width > 700 else { return }
         if UserDefaults.standard.object(forKey: "NSSplitView Subview Frames curatorSplit") != nil {
             dividerPlaced = true
