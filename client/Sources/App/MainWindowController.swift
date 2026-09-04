@@ -1537,6 +1537,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         reloadSourceList()
     }
 
+    /// Controls ▸ Train Curator on My Edits…: one window, kept, so a run
+    /// in progress is found again where it was left.
+    private var trainingWindow: TrainingWindow?
+    @objc func showTraining(_ sender: Any?) {
+        if trainingWindow == nil { trainingWindow = TrainingWindow() }
+        trainingWindow?.run()
+    }
+
     @objc func showCurator(_ sender: Any?) {
         if MainWindowController.curatorHidden {
             MainWindowController.curatorHidden = false

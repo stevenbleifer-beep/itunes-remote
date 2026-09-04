@@ -239,7 +239,8 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         transcript.string = ""
         append("Ask for a playlist and it will build one from your own library — nothing it names is a song you do not have.\n\n", color: NSColor(white: 0.35, alpha: 1), italic: false)
         append("Try: “make a playlist for date night”, “upbeat 80s for a road trip”, “something like Bill Evans for a rainy Sunday”.\n\n", color: NSColor(white: 0.45, alpha: 1), italic: true)
-        append("Then say what to change: “less jazz, add a couple of slow indie rock songs, keep it to 20”.\n", color: NSColor(white: 0.45, alpha: 1), italic: true)
+        append("Then say what to change: “less jazz, add a couple of slow indie rock songs, keep it to 20”.\n\n", color: NSColor(white: 0.45, alpha: 1), italic: true)
+        append("It learns from every song you delete and every list you save; Controls ▸ Train Curator on My Edits… goes further once enough are saved.\n", color: NSColor(white: 0.5, alpha: 1), italic: false)
     }
 
     private func append(_ text: String, color: NSColor, italic: Bool = false, bold: Bool = false) {

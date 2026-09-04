@@ -68,11 +68,13 @@ anything off the Mac:
   format `mlx-lm` reads. `client/finetune/finetune.sh` trains a LoRA
   adapter on those (base: Qwen 2.5 7B Instruct, which both trains at
   full length in 24 GB and imports into Ollama), fuses it, imports it as
-  `itunes-curator` and points the app at it. It wants a few hundred saved
-  playlists to be worth running, refuses under 40 without `--force`, takes
-  several hours on an M-series Mac, needs Python 3.10+ (it fetches one
-  with `uv` if there is none), and `--revert` goes back to the stock
-  picker.
+  `itunes-curator` and points the app at it. **Controls ▸ Train Curator on
+  My Edits…** runs the same script from inside the app: it shows how many
+  turns are on file, asks before fetching anything (Python 3.12 and the
+  training library via `uv`, then the base model), shows progress, and
+  can stop the run or go back to the stock picker. It wants a few hundred
+  saved playlists to be worth running and takes several hours on an
+  M-series Mac; under 40 it offers to train anyway, for trying it out.
 
 ## Built with Claude Code
 

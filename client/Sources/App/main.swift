@@ -106,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_ notification: Notification) {
+        CuratorTrainer.shared.cancel()
         OllamaRuntime.shared.stop()
     }
 
@@ -198,6 +199,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let curatorItem = controlsMenu.addItem(withTitle: "Playlist Curator",
                                                action: #selector(MainWindowController.showCurator(_:)), keyEquivalent: "k")
         curatorItem.keyEquivalentModifierMask = [.command, .shift]
+        controlsMenu.addItem(withTitle: "Train Curator on My Edits…",
+                             action: #selector(MainWindowController.showTraining(_:)), keyEquivalent: "")
         controlsMenu.addItem(.separator())
         controlsMenu.addItem(withTitle: "Restart iTunes on the MacBook Pro…",
                              action: #selector(MainWindowController.restartITunes(_:)), keyEquivalent: "")

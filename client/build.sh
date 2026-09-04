@@ -45,6 +45,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+# The fine-tune script, run by Controls ▸ Train Curator on My Edits…
+cp finetune/finetune.sh "$APP/Contents/Resources/finetune.sh"
+chmod 755 "$APP/Contents/Resources/finetune.sh"
 # The bundled Ollama, when fetch-ollama.sh has been run. Without it the app
 # still works with an Ollama app installed separately.
 rm -rf "$APP/Contents/Helpers"

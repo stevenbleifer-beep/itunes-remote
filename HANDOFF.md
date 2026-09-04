@@ -715,3 +715,37 @@ now takes `exclude:` and `applyEdit` passes the removed ids.
 kept their 1279-pt total on the 1470-pt built-in screen, so the right
 pane ran past the window edge; `layout()` now calls `adjustSubviews()`
 whenever the panes do not span the split.
+
+**In-app training (2026-09-04, late).** `Controls ▸ Train Curator on My
+Edits…` opens `TrainingWindow.swift` (a ChromeView window like the setup
+assistant, 560×430). `CuratorTrainer.swift` (singleton, outlives the
+window) runs `Contents/Resources/finetune.sh` — build.sh copies it from
+`client/finetune/` — under `/bin/bash` with `ITR_PROGRESS=1`,
+`ITR_NO_SWITCH=1` (the app writes `curatorModel` itself on exit 0), a PATH
+that reaches `~/.local/bin`, `/usr/local/bin` and Homebrew, and, when the
+embedded Ollama is the one in use, `ITR_OLLAMA` + `OLLAMA_HOST` +
+`OLLAMA_MODELS` so the import lands in the app's own store. The script
+gained `--check` (examples, minimum, python, tuned, stock — what the
+window shows), `--fetch-python` (uv from astral.sh into `~/.local/bin`,
+then `uv python install 3.12`; ~100 MB, no admin), `@@stage …` /
+`@@iters N` progress lines, and a TERM trap: every long step runs via
+`step` (child + wait) so Stop, or the app quitting
+(`applicationWillTerminate` → `cancel()`), reaches mlx-lm rather than
+leaving it on the GPU. The window parses mlx-lm's `Iter N:` lines for the
+bar. Flow: Train → under the minimum, "Train Anyway"/Cancel → one consent
+alert naming what is fetched (Python + library if missing, base model
+first time) → `ensureRunning()` for Ollama → `--fetch-python` first if
+needed, then the training run. Exit 0 sets `curatorModel` (to
+`ITR_TUNED_NAME` if that is in the app's environment, for tests) and
+plays Glass; 130/143 is "Stopped". "Use Stock Picker" and "Delete
+Training Data" (removes training.jsonl only) sit on the left.
+
+Testing it: launch the built app with `ITR_ITERS=10 ITR_MIN_EXAMPLES=1
+ITR_TUNED_NAME=itunes-curator-smoke` in the environment (the child
+inherits it), open the window from the menu, press Train. With two
+instances running, target System Events by pid (`first process whose
+unix id is N`) — the installed app has the same name. `build/windowid`
+does not find this window; capture the screen with `screencapture -x -m`
+instead. Verified 2026-09-04: the run streamed into the window, imported
+`itunes-curator-smoke`, and the app switched to it; then reverted and the
+smoke model removed.
