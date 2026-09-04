@@ -326,9 +326,34 @@ class Api(object):
         f = self._filters(query)
         recent = self._int(query, "recent", 0, 0, 20000)
         try:
-            return {"albums": self.store.lib.albums(recent=recent, **f)}
+            albums = self.store.lib.albums(recent=recent, **f)
         except KeyError:
             raise ApiError(404, "no such playlist")
+        self._reconcile_artwork_flags(albums)
+        return {"albums": albums}
+
+    def _reconcile_artwork_flags(self, albums):
+        """The XML's Artwork Count is a reliable yes but not a reliable no:
+        iTunes leaves it out for tracks whose picture lives in the file
+        itself (or only in its own artwork store). Twenty-nine of forty
+        sampled "no-art" albums had covers; the client never asked for them
+        because this flag said not to. Where the caches have an answer, use
+        it; where they have none, say maybe — the quick path answers from
+        the file in milliseconds and queues the rest for the warmer."""
+        lib = self.store.lib
+        for a in albums:
+            if a.get("hasArtwork"):
+                continue
+            pid = a.get("coverTrackId")
+            t = lib.tracks.get(pid) if pid else None
+            if t is None:
+                continue
+            with self.artwork_lock:
+                if pid in self.artwork_cache:
+                    a["hasArtwork"] = self.artwork_cache[pid] is not None
+                    continue
+            cached = self.artwork_disk.get(pid, not_before=_epoch(t.date_modified))
+            a["hasArtwork"] = True if cached is None else cached is not artwork_mod.MISS
 
     def get_playlists(self, params, query, body):
         return {"playlists": self.store.lib.playlist_summaries()}
@@ -371,10 +396,10 @@ class Api(object):
             result = artwork_mod.read_embedded(t.location)
         embedded = result is not None
         if result is None and quick:
-            # iTunes does not know about tracks with no artwork at all until
-            # asked; but if it already says there is none, say so now.
-            if not t.artwork_count:
-                return None
+            # Ask iTunes once, through the warmer, whatever the XML says: an
+            # Artwork Count of zero is not proof of anything. The answer —
+            # cover or miss — is written to disk, so this costs one export
+            # per track, ever.
             self._want_cover(pid)
             raise ApiError(202, "artwork pending")
         asked_itunes = False

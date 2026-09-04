@@ -432,3 +432,23 @@ are never slowed. The flash says "Home — …" / "Away — …" on each switch.
 Testing tip: `defaults write … serverLANHost nowhere-invalid.local` forces
 away; `lsof` on the Air does not show the tunnel sockets — check
 `netstat -an | grep 8765` on the Pro for <air-tailscale-ip> instead.
+
+## "No artwork" that was there all along (2026-09-03, late)
+
+The XML's `Artwork Count` is a reliable yes, not a reliable no: iTunes omits
+it for tracks whose picture is embedded in the file (or only in its own
+artwork store). 29 of 40 sampled "no-art" albums had covers the daemon
+could read in milliseconds; the client never asked because `hasArtwork`
+said not to. `get_album_list` now runs `_reconcile_artwork_flags`: memory
+or disk cache wins where it has spoken, otherwise the flag is True ("maybe")
+so the client asks; and `_artwork(quick=True)` no longer refuses
+count-zero tracks — it queues them for the warmer, and the export's answer
+(cover or MISS) is cached on disk, so each track costs one export ever.
+Note the warmer's background sweep yields whenever a request arrived in the
+last 20 s, i.e. never while the app is open; the priority queue (202s) is
+what fills the cache in practice.
+
+Catalog covers for the genuinely artless: `scratchpad/art/{match,apply}.py`
+on the Air — exact artist+title match against the iTunes Search API,
+`set_art.applescript` sets on tracks with zero artworks. Apple rate-limits
+the search hard (~50 albums in 10 min); run it on the residue only.
