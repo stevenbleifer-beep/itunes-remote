@@ -618,3 +618,11 @@ testing. To test without a 4 GB download, `scratchpad/seed-models.sh
 **Signing:** identity `Developer ID Application: <your name>
 (<team-id>)`, notarytool profile `itunes-remote`. See memory
 `apple-developer-signing`.
+
+**Refresh button (status bar, left of the library stamp):** `POST
+/api/library/refresh` makes the daemon stat the XML this instant and
+reparse if it differs from what it read, skipping the watcher's
+sit-still wait (`LibraryStore.check_now()`, guarded by `_reload_lock` so it
+never races the watcher). Blocks for the parse (~25 s on the Pro). The
+client then runs its normal version check. It cannot make iTunes *write*
+the XML — nothing can — so "Nothing new" means iTunes has not saved yet.
