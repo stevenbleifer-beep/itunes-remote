@@ -1478,7 +1478,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     // MARK: Curator
 
     private func wireCurator() {
-        curatorPage.modelLine = "Powered by \(curator.model) on \(OllamaRuntime.shared.description) · library search: \(CuratorEngine.embedModel)"
+        curatorPage.modelLine = "Picker: \(curator.model) · \(OllamaRuntime.shared.description) · search: \(CuratorEngine.embedModel)"
         curatorPage.onAsk = { [weak self] text in Task { @MainActor in await self?.askCurator(text) } }
         curatorPage.onPlay = { [weak self] tracks, i in
             guard let self = self, i < tracks.count else { return }
@@ -1506,7 +1506,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         curatorOpen = true
         Task { @MainActor in
             _ = await OllamaRuntime.shared.ensureRunning()
-            curatorPage.modelLine = "Powered by \(curator.model) on \(OllamaRuntime.shared.description) · library search: \(CuratorEngine.embedModel)"
+            curatorPage.modelLine = "Picker: \(curator.model) · \(OllamaRuntime.shared.description) · search: \(CuratorEngine.embedModel)"
         }
         rightSplit.isHidden = true
         curatorPage.isHidden = false

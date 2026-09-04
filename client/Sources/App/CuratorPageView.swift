@@ -191,6 +191,15 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         heading.setContentHuggingPriority(.defaultLow, for: .horizontal)
         heading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         indexLabel.setContentHuggingPriority(.required, for: .horizontal)
+        // The bottom row: the model line gives way (it truncates) before
+        // the buttons do; left equal, a narrow pane squeezed the buttons
+        // into each other and left the text whole.
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        for b in [newButton, playButton, saveButton] {
+            b.setContentCompressionResistancePriority(.required, for: .horizontal)
+            b.setContentHuggingPriority(.required, for: .horizontal)
+        }
         welcome()
         updateButtons()
     }

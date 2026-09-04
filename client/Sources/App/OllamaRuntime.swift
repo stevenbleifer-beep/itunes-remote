@@ -152,9 +152,9 @@ final class OllamaRuntime {
     /// One line for the page: which server, and where.
     var description: String {
         switch source {
-        case .system: return "the Ollama app on this Mac"
-        case .embedded: return "Ollama built into this app"
-        case .none: return hasEmbedded ? "Ollama built into this app" : "Ollama (not found)"
+        case .system: return "Ollama app"
+        case .embedded: return "built-in Ollama"
+        case .none: return hasEmbedded ? "built-in Ollama" : "Ollama not found"
         }
     }
 }
