@@ -962,7 +962,50 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         updateStatus()
     }
 
+    // MARK: Home or away
+
+    /// Polling cadence. Away, every request crosses the tunnel, so the
+    /// background readers slow down; the things you click stay immediate.
+    private var deviceInterval: TimeInterval = 30
+    private var alertInterval: TimeInterval = 5
+    private(set) var away = false
+    private var connectionMonitor: ConnectionMonitor?
+    /// Where the API was pointed when it connected: the tunnel name.
+    private var awayURL: URL?
+
+    /// Probes the LAN name and switches the API between it and the tunnel
+    /// name as the answer changes, so the app is on the fast path at home
+    /// and still works everywhere else without touching a setting.
+    func startConnectionMonitor(lanURL: URL, token: String) {
+        let m = ConnectionMonitor(lanURL: lanURL, token: token)
+        m.onChange = { [weak self] mode in self?.applyConnection(mode) }
+        connectionMonitor = m
+        m.start()
+    }
+
+    private func applyConnection(_ mode: ConnectionMonitor.Mode) {
+        guard let api = controller.api, let monitor = connectionMonitor else { return }
+        let isAway = mode == .away
+        api.baseURL = isAway ? (awayURL ?? api.baseURL) : monitor.lanURL
+        away = isAway
+        player.away = isAway
+        controller.versionInterval = isAway ? 60 : 15
+        deviceInterval = isAway ? 90 : 30
+        alertInterval = isAway ? 15 : 5
+        deviceTimer?.invalidate()
+        deviceTimer = Timer.scheduledTimer(withTimeInterval: deviceInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.loadDevices() }
+        }
+        startAlertPolling()
+        flashStatus(isAway ? "Away — connected through Tailscale."
+                           : "Home — connected on the local network.")
+        // If the first load failed before the right host was known (Tailscale
+        // off at home, say), ask again now that it is.
+        if controller.info == nil { controller.connect(api) }
+    }
+
     func connect(_ api: APIClient) {
+        awayURL = api.baseURL
         controller.connect(api)
         player.api = api
         artworkCache.api = api
@@ -971,7 +1014,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         loadDevices()
         startAlertPolling()
         deviceTimer?.invalidate()
-        deviceTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        deviceTimer = Timer.scheduledTimer(withTimeInterval: deviceInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.loadDevices() }
         }
     }
@@ -988,7 +1031,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func startAlertPolling() {
         alertTimer?.invalidate()
-        alertTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        alertTimer = Timer.scheduledTimer(withTimeInterval: alertInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.pollAlert() }
         }
     }
@@ -1281,7 +1324,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             }
         }
         if deviceTimer == nil {
-            deviceTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            deviceTimer = Timer.scheduledTimer(withTimeInterval: deviceInterval, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.loadDevices() }
             }
         }

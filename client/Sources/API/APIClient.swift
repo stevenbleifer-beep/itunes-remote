@@ -487,10 +487,14 @@ final class APIClient {
 /// Where the daemon is. Stored in UserDefaults; edited from the connect panel.
 struct ServerSettings {
     static let hostKey = "serverHost"
+    static let lanHostKey = "serverLANHost"
     static let portKey = "serverPort"
     static let tokenKey = "serverToken"
 
+    /// The host used when the LAN one does not answer — the Tailscale name.
     var host: String
+    /// The host on the home network, probed first; used whenever it answers.
+    var lanHost: String
     var port: Int
     var token: String
 
@@ -498,6 +502,7 @@ struct ServerSettings {
         let d = UserDefaults.standard
         return ServerSettings(
             host: d.string(forKey: hostKey) ?? "Stevens-MacBook-Pro.local",
+            lanHost: d.string(forKey: lanHostKey) ?? "Stevens-MacBook-Pro.local",
             port: d.integer(forKey: portKey) == 0 ? 8765 : d.integer(forKey: portKey),
             token: d.string(forKey: tokenKey) ?? ""
         )
@@ -506,11 +511,16 @@ struct ServerSettings {
     func save() {
         let d = UserDefaults.standard
         d.set(host, forKey: Self.hostKey)
+        d.set(lanHost, forKey: Self.lanHostKey)
         d.set(port, forKey: Self.portKey)
         d.set(token, forKey: Self.tokenKey)
     }
 
     var baseURL: URL? {
         URL(string: "http://\(host):\(port)")
+    }
+
+    var lanURL: URL? {
+        URL(string: "http://\(lanHost):\(port)")
     }
 }

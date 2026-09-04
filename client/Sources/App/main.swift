@@ -57,6 +57,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func connect(with settings: ServerSettings) {
         guard let url = settings.baseURL else { return }
         main.connect(APIClient(baseURL: url, token: settings.token))
+        if let lan = settings.lanURL, lan != url {
+            main.startConnectionMonitor(lanURL: lan, token: settings.token)
+        }
     }
 
     @objc func showConnectPanel(_ sender: Any?) {

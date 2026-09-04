@@ -135,9 +135,14 @@ final class LibraryController {
     /// also refreshes what is on screen.
     private var versionTimer: Timer?
 
+    /// How often the library version is checked; longer when away.
+    var versionInterval: TimeInterval = 15 {
+        didSet { if versionTimer != nil, versionInterval != oldValue { startVersionPolling() } }
+    }
+
     private func startVersionPolling() {
         versionTimer?.invalidate()
-        versionTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+        versionTimer = Timer.scheduledTimer(withTimeInterval: versionInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.checkVersion() }
         }
     }

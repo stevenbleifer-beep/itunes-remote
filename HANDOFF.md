@@ -419,3 +419,16 @@ v1.76.3 build from stanwu/tailscale-macos-mojave as a LaunchDaemon, socket
 `serverHost` default is `<pro-name>.<tailnet>.ts.net`; the daemon
 already listened on all interfaces. Nothing in the daemon changed. Over the
 tunnel from home: player 0.43 s, cover 0.08 s, audio 2.9 MB/s.
+
+## Home or away (2026-09-03, late)
+
+`ConnectionMonitor` probes the LAN name (`serverLANHost`, default
+`Stevens-MacBook-Pro.local`, which at home resolves to the Thunderbolt
+bridge <bridge-ip>) on start, on every NWPathMonitor change and every 45 s
+with a 2 s timeout. Answer → `api.baseURL` = LAN and normal cadence; no
+answer → the tunnel name (`serverHost`) and away cadence: player every 3 s,
+library version every 60 s, devices every 90 s, alerts every 15 s. Clicks
+are never slowed. The flash says "Home — …" / "Away — …" on each switch.
+Testing tip: `defaults write … serverLANHost nowhere-invalid.local` forces
+away; `lsof` on the Air does not show the tunnel sockets — check
+`netstat -an | grep 8765` on the Pro for <air-tailscale-ip> instead.

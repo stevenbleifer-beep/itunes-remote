@@ -7,8 +7,11 @@ final class ConnectPanel: NSObject {
     private let port = NSTextField(string: "")
     private let token = NSTextField(string: "")
     private var result: ServerSettings?
+    /// The LAN host is not on the panel; it rides through unchanged.
+    private let lanHost: String
 
     init(settings: ServerSettings) {
+        lanHost = settings.lanHost
         let content = ChromeView(frame: NSRect(x: 0, y: 0, width: 380, height: 190))
         panel = NSPanel(contentRect: content.frame, styleMask: [.titled], backing: .buffered, defer: false)
         panel.title = "Connect to iTunes"
@@ -55,6 +58,7 @@ final class ConnectPanel: NSObject {
 
     @objc private func connectPressed() {
         result = ServerSettings(host: host.stringValue.trimmingCharacters(in: .whitespaces),
+                                lanHost: lanHost,
                                 port: Int(port.stringValue) ?? 8765,
                                 token: token.stringValue.trimmingCharacters(in: .whitespaces))
         NSApp.stopModal()

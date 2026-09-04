@@ -107,10 +107,19 @@ final class PlayerController {
 
     private var tickCount = 0
 
+    /// Away from the LAN every poll crosses the tunnel, so the player is
+    /// read every three seconds instead of every one. The display clock
+    /// still advances between polls.
+    var away = false
+
     private func tick() {
         tickCount += 1
         if watchingSync || tickCount % 10 == 0 {
             Task { await pollSyncProgress() }
+        }
+        if away && mode == .remote && tickCount % 3 != 0 {
+            onChange()
+            return
         }
         if mode == .local {
             // No HTTP poll needed; AVFoundation reports its own time.
