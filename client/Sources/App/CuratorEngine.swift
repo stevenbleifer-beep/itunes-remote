@@ -220,6 +220,32 @@ final class CuratorEngine {
         var name = ""
         /// The listener asked for a different playlist, not a change to this one.
         var fresh = false
+        /// Years the songs must come from, when the request names an era.
+        var years: ClosedRange<Int>?
+    }
+
+    /// "90s", "1970s", "the eighties", "1994 to 1998": the years a request
+    /// names, read from the words rather than trusted to the model.
+    static func yearRange(in text: String) -> ClosedRange<Int>? {
+        let t = text.lowercased()
+        let words = ["fifties": 1950, "sixties": 1960, "seventies": 1970, "eighties": 1980, "nineties": 1990,
+                     "noughties": 2000, "aughts": 2000, "twenties": 2020]
+        for (w, y) in words where t.contains(w) { return y...(y + 9) }
+        let span = NSRange(t.startIndex..., in: t)
+        if let m = try? NSRegularExpression(pattern: "\\b(19\\d\\d|20\\d\\d)\\s*(?:-|–|to|through)\\s*(19\\d\\d|20\\d\\d)\\b").firstMatch(in: t, range: span),
+           let a = Range(m.range(at: 1), in: t), let b = Range(m.range(at: 2), in: t),
+           let from = Int(t[a]), let to = Int(t[b]), from <= to {
+            return from...to
+        }
+        if let m = try? NSRegularExpression(pattern: "\\b(?:(19|20)|')?(\\d)0'?s\\b").firstMatch(in: t, range: span),
+           let d = Range(m.range(at: 2), in: t), let tens = Int(t[d]) {
+            var century = 1900
+            if let c = Range(m.range(at: 1), in: t), let cc = Int(t[c]) { century = cc * 100 }
+            else if tens <= 2 { century = 2000 }
+            let y = century + tens * 10
+            return y...(y + 9)
+        }
+        return nil
     }
 
     private static let system = """
@@ -286,7 +312,8 @@ final class CuratorEngine {
           "avoid": ["things to steer clear of: genres, moods, artists"],
           "length": how many songs the playlist should have (20 unless the listener said),
           "name": "a short playlist name, two or three words",
-          "fresh": true only if this is a request for a different playlist rather than a change to the current one
+          "fresh": true only if this is a request for a different playlist rather than a change to the current one,
+          "years": [first year, last year] when the request names an era or years, otherwise null
         }
         """
         let r = try await ollama.chatJSON(model: model, system: CuratorEngine.system, prompt: prompt, maxTokens: 700, temperature: 0.6)
@@ -300,6 +327,11 @@ final class CuratorEngine {
         else if let s = obj["length"] as? String, let n = Int(s) { p.length = max(3, min(60, n)) }
         p.name = obj["name"] as? String ?? ""
         p.fresh = (obj["fresh"] as? Bool) ?? false
+        if let ys = obj["years"] as? [Any], ys.count == 2,
+           let a = ys[0] as? Int, let b = ys[1] as? Int, a >= 1900, b <= 2100, a <= b {
+            p.years = a...b
+        }
+        if let spoken = CuratorEngine.yearRange(in: (feedback ? request + " " : "") + text) { p.years = spoken }
         if p.queries.isEmpty { p.queries = [text] }
         return p
     }
@@ -313,9 +345,16 @@ final class CuratorEngine {
         }
         var seen = Set<String>()
         var out: [Track] = []
+        var undated: [Track] = []
         func take(_ t: Track) {
             let key = CuratorEngine.fold(t.name) + "|" + CuratorEngine.fold(t.artist)
             guard !seen.contains(key), !t.name.isEmpty else { return }
+            if let years = plan.years {
+                // An era was asked for: a song from outside it is out, and
+                // one with no year tag waits behind the dated ones.
+                guard let y = t.year else { seen.insert(key); undated.append(t); return }
+                guard years.contains(y) else { return }
+            }
             seen.insert(key)
             out.append(t)
         }
@@ -349,6 +388,9 @@ final class CuratorEngine {
                 if !avoided(list[i]) { take(list[i]) }
             }
             i += 1
+        }
+        if plan.years != nil, out.count < cap {
+            out += undated.prefix(min(cap - out.count, cap / 4))
         }
         // Grouped by artist so the model reads it like a record shelf.
         let head = feedback ? current.count : 0
@@ -444,7 +486,7 @@ final class CuratorEngine {
             """
         } else {
             prompt += """
-            Choose \(plan.length + 2) songs for the playlist. Rules:
+            Choose \(plan.length + 6) songs for the playlist. Rules:
             - Use ONLY the numbers listed. Never invent a song.
             - Sequence them like a real playlist: an opener, a flow, an ender.
             - Vary artists; at most 2 songs by the same artist unless the request is about one artist.
@@ -490,8 +532,30 @@ final class CuratorEngine {
             if picks.count >= plan.length { break }
         }
         guard !picks.isEmpty else { throw CuratorError("The model did not pick any songs. Try again, or say it differently.") }
+        // The rules above cost a few picks; twenty asked for is twenty given.
+        fill(&picks, to: plan.length, from: cands, perArtist: &perArtist, requestFold: requestFold,
+             allowHoliday: wantsHoliday, isHoliday: isHoliday, years: plan.years)
         return Reply(picks: picks, note: obj["note"] as? String ?? "", name: obj["name"] as? String ?? plan.name,
                      seconds: r.seconds)
+    }
+
+    /// Tops a list up to `length` from the candidates the model passed over,
+    /// under the same rules, dated songs first when an era was asked for.
+    private func fill(_ picks: inout [CuratorPick], to length: Int, from cands: [Track], perArtist: inout [String: Int],
+                      requestFold: String, allowHoliday: Bool, isHoliday: (String) -> Bool, years: ClosedRange<Int>?) {
+        guard picks.count < length else { return }
+        let used = Set(picks.map { $0.track.persistentId })
+        let pool = cands.filter { !used.contains($0.persistentId) }
+        let ordered = years == nil ? pool : pool.filter { $0.year != nil } + pool.filter { $0.year == nil }
+        for t in ordered where picks.count < length {
+            if let years = years, let y = t.year, !years.contains(y) { continue }
+            let a = CuratorEngine.fold(t.artist)
+            let aboutArtist = a.count >= 3 && requestFold.contains(a)
+            if perArtist[a, default: 0] >= 2 && !aboutArtist { continue }
+            if !allowHoliday && (isHoliday(t.name) || isHoliday(t.album)) { continue }
+            perArtist[a, default: 0] += 1
+            picks.append(CuratorPick(track: t, why: "rounds out the list"))
+        }
     }
 
     /// The edit the model described, applied to the current list: drop what
@@ -522,6 +586,7 @@ final class CuratorEngine {
         for item in (obj["add"] as? [[String: Any]]) ?? [] {
             guard let n = number(item["n"]), let t = track(n) else { continue }
             guard !list.contains(where: { $0.track.persistentId == t.persistentId }) else { continue }
+            if let years = plan.years, let y = t.year, !years.contains(y) { continue }
             let a = CuratorEngine.fold(t.artist)
             let aboutArtist = a.count >= 3 && requestFold.contains(a)
             if perArtist[a, default: 0] >= 2 && !aboutArtist { continue }
@@ -542,10 +607,35 @@ final class CuratorEngine {
             ordered += list.filter { p in !ordered.contains(where: { $0.track.persistentId == p.track.persistentId }) }
             list = ordered
         }
-        // "keep it to 20": a number in the feedback is a length.
+        // "keep it to 20": a number in the feedback is a length, cut or filled.
+        // Without one, a swap keeps the length it had: the model removes
+        // four and adds three, and the listener did not ask for nineteen.
+        // Removals with nothing added are taken as removals, and stay.
+        let added = list.count - (current.count - removed.count)
         if let m = try? NSRegularExpression(pattern: "\\b([1-9][0-9]?)\\b").firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-           let r = Range(m.range(at: 1), in: text), let n = Int(text[r]), n >= 3, list.count > n {
-            list = Array(list.prefix(n))
+           let r = Range(m.range(at: 1), in: text), let n = Int(text[r]), n >= 3 {
+            if list.count > n {
+                list = Array(list.prefix(n))
+            } else if list.count < n {
+                fill(&list, to: n, from: cands, perArtist: &perArtist, requestFold: requestFold,
+                     allowHoliday: wantsHoliday, isHoliday: isHoliday, years: plan.years)
+            }
+        } else if added > 0 {
+            // "Add a couple more" may grow it; a swap, or anything else,
+            // keeps the length it had.
+            let span = NSRange(text.startIndex..., in: text)
+            let grows = (try? NSRegularExpression(pattern: "\\b(add|more|extra|another|include|longer)\\b", options: .caseInsensitive))?
+                .firstMatch(in: text, range: span) != nil
+            let swaps = (try? NSRegularExpression(pattern: "\\b(swap|replace|instead|trade|switch|change)\\b", options: .caseInsensitive))?
+                .firstMatch(in: text, range: span) != nil
+            if swaps || !grows {
+                if list.count > current.count {
+                    list = Array(list.prefix(current.count))
+                } else if list.count < current.count {
+                    fill(&list, to: current.count, from: cands, perArtist: &perArtist, requestFold: requestFold,
+                         allowHoliday: wantsHoliday, isHoliday: isHoliday, years: plan.years)
+                }
+            }
         }
         return Reply(picks: list, note: obj["note"] as? String ?? "", name: obj["name"] as? String ?? plan.name, seconds: seconds)
     }

@@ -477,8 +477,17 @@ code applies it to the current list — asked for a whole new list it rewrote
 most of it, and asked for removals it named fifteen of twenty for "less
 jazz", so removals are capped at a third of the list unless the feedback
 says all/most/replace/start over. A number in the feedback ("keep it to
-20") sets the length. The plan step also flags `fresh: true` when a message
-is a new request rather than feedback, which resets the conversation.
+20") sets the length; without one, a swap keeps the length it had and
+"add a couple more" may grow it. The plan step also flags `fresh: true`
+when a message is a new request rather than feedback, which resets the
+conversation. **Eras are enforced in code**: `yearRange(in:)` reads "90s",
+"the eighties", "1994 to 1998" from the words (the model's `years` is only
+a fallback); songs tagged outside the range never reach the candidate list,
+songs with no year tag fill in behind the dated ones. **The count is exact**:
+the rules cost the model a few picks, so the list is topped up from the
+candidates it passed over ("rounds out the list" as the reason). Steven's
+first try, "20 song playlist for a 90s road trip", came back with 17 songs
+and a 2009 Wolfmother track before these two fixes.
 
 **Models** (Ollama, on the Air, `http://127.0.0.1:11434`): picker
 `qwen3.5:4b` (defaults key `curatorModel`), embeddings `embeddinggemma:300m`.
