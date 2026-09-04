@@ -913,7 +913,8 @@ final class CuratorEngine {
             if perArtist[a, default: 0] >= 2 && !aboutArtist { continue }
             if !allowHoliday && (isHoliday(t.name) || isHoliday(t.album)) { continue }
             perArtist[a, default: 0] += 1
-            picks.append(CuratorPick(track: t, why: ""))
+            // Not the model's pick, and said so: the search put it forward.
+            picks.append(CuratorPick(track: t, why: "close match in the library search"))
         }
     }
 
@@ -971,6 +972,11 @@ final class CuratorEngine {
         // four and adds three, and the listener did not ask for nineteen.
         // Removals with nothing added are taken as removals, and stay.
         let added = list.count - (current.count - removed.count)
+        let span = NSRange(text.startIndex..., in: text)
+        let grows = (try? NSRegularExpression(pattern: "\\b(add|more|extra|another|include|longer)\\b", options: .caseInsensitive))?
+            .firstMatch(in: text, range: span) != nil
+        let swaps = (try? NSRegularExpression(pattern: "\\b(swap|replace|instead|trade|switch|change)\\b", options: .caseInsensitive))?
+            .firstMatch(in: text, range: span) != nil
         // A count only when it reads as one — "keep it to 20", "30 songs" —
         // not any digit: "maroon 5 isn't indie" once cut a list to five.
         if let n = CuratorEngine.requestedCount(in: text), n >= 1 {
@@ -980,21 +986,16 @@ final class CuratorEngine {
                 fill(&list, to: n, from: cands, perArtist: &perArtist, requestFold: requestFold,
                      allowHoliday: wantsHoliday, isHoliday: isHoliday, years: plan.years, exclude: removed)
             }
-        } else if added > 0 {
-            // "Add a couple more" may grow it; a swap, or anything else,
-            // keeps the length it had.
-            let span = NSRange(text.startIndex..., in: text)
-            let grows = (try? NSRegularExpression(pattern: "\\b(add|more|extra|another|include|longer)\\b", options: .caseInsensitive))?
-                .firstMatch(in: text, range: span) != nil
-            let swaps = (try? NSRegularExpression(pattern: "\\b(swap|replace|instead|trade|switch|change)\\b", options: .caseInsensitive))?
-                .firstMatch(in: text, range: span) != nil
-            if swaps || !grows {
-                if list.count > current.count {
-                    list = Array(list.prefix(current.count))
-                } else if list.count < current.count {
-                    fill(&list, to: current.count, from: cands, perArtist: &perArtist, requestFold: requestFold,
-                         allowHoliday: wantsHoliday, isHoliday: isHoliday, years: plan.years, exclude: removed)
-                }
+        } else if swaps || (added > 0 && !grows) {
+            // A swap keeps the length it had even when the model's
+            // additions all failed the rules: "swap the slow ones" once took
+            // thirteen out and put nothing back. "Add a couple more" may
+            // grow it; plain removals stay removals.
+            if list.count > current.count {
+                list = Array(list.prefix(current.count))
+            } else if list.count < current.count {
+                fill(&list, to: current.count, from: cands, perArtist: &perArtist, requestFold: requestFold,
+                     allowHoliday: wantsHoliday, isHoliday: isHoliday, years: plan.years, exclude: removed)
             }
         }
         // The note says what the model meant to do; the tally says what was

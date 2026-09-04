@@ -6,6 +6,8 @@ import Cocoa
 //   --snapshot-device NAME        open that device's Music pane first, so the pane can be checked
 //   --snapshot-lcd player|sync    with --snapshot-device: force the display's view before capturing
 //   --source recent|curator|device:NAME  open that source at launch (device: with no name takes the first)
+//   --view list|coverflow|albumlist|grid  start in that view (saved, like clicking the switcher)
+//   --select-album "Artist|Album"        select that album in the grid or Cover Flow once albums load
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -29,12 +31,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return args[i + 1]
         }
 
+        // `--view list|coverflow|albumlist|grid` sets the view before the
+        // window is built; it is saved like a click on the switcher would be.
+        if let v = arg("--view"), let mode = ["list": 0, "coverflow": 1, "albumlist": 2, "grid": 3][v.lowercased()] {
+            UserDefaults.standard.set(mode, forKey: "viewMode")
+        }
         main = MainWindowController()
         main.snapshotPath = arg("--snapshot")
         main.snapshotDevice = arg("--snapshot-device")
         main.snapshotLCD = arg("--snapshot-lcd")
         main.initialFlowIndex = arg("--flow-index").flatMap { Int($0) }
         main.initialSource = arg("--source")
+        main.initialAlbum = arg("--select-album")
         main.curateScript = zip(args, args.dropFirst()).filter { $0.0 == "--curate" }.map { $0.1 }
         main.curateSaveName = arg("--curate-save")
         main.curateApproveName = arg("--curate-approve")

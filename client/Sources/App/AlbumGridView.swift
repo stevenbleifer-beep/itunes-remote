@@ -210,6 +210,16 @@ final class AlbumGridView: NSView, NSDraggingSource {
         dragStart = hit.map { ($0, p) }
     }
 
+    /// Selects an album as a click would, and scrolls it into view.
+    func select(_ index: Int) {
+        guard albums.indices.contains(index) else { return }
+        selectedIndex = index
+        onSelect(index)
+        // Its row at the top of the view, where a person would scroll to.
+        let r = rect(for: index)
+        scroll(NSPoint(x: 0, y: max(0, r.minY - 8)))
+    }
+
     private func dragImage(for index: Int) -> NSImage? { images[index] }
 
     // MARK: Drag out

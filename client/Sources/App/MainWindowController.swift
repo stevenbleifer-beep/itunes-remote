@@ -138,6 +138,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private var albumGeneration = 0
     /// Development only: `--flow-index N` selects album N once the list loads.
     var initialFlowIndex: Int?
+    /// Development only: `--select-album "Artist|Album"` selects that album
+    /// in the grid or Cover Flow once the albums load, for screenshots.
+    var initialAlbum: String?
     /// Development only: `--source recent` starts on Recently Added.
     var initialSource: String?
     /// Development only: `--curate TEXT` (repeatable) runs the curator on
@@ -550,6 +553,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 } else if let i = initialFlowIndex {
                     initialFlowIndex = nil
                     coverFlow.select(i, animated: false)
+                }
+                if let want = initialAlbum {
+                    let parts = want.split(separator: "|", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                    if let i = list.firstIndex(where: { a in
+                        parts.count == 2 ? (a.artist.lowercased() == parts[0] && a.album.lowercased() == parts[1]) : a.album.lowercased() == parts[0]
+                    }) {
+                        initialAlbum = nil
+                        switch viewMode {
+                        case .coverFlow: coverFlow.select(i, animated: false)
+                        case .grid: grid.select(i)
+                        default: break
+                        }
+                    }
                 }
                 refreshRows()
             } catch {

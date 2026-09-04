@@ -56,7 +56,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         // once, where the autolayout flavour kept redistributing to halves.
         split.isVertical = true
         split.dividerStyle = .thin
-        split.autosaveName = "curatorSplit"
+        split.autosaveName = "curatorSplit2"   // renamed once: the first default was too wide
         split.frame = bounds
         split.autoresizingMask = [.width, .height]
         addSubview(split)
@@ -204,35 +204,32 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         updateButtons()
     }
 
-    /// A first run starts with a third of the width for the conversation;
-    /// after that the split view remembers where the divider was dragged.
+    /// A first run gives the conversation a slim column, 340 points: the
+    /// playlist is the thing to look at. After that the split view
+    /// remembers where the divider was dragged, and the column keeps its
+    /// width when the window is resized; the playlist takes the rest.
     private var dividerPlaced = false
-    private var placementTries = 0
     override func layout() {
         super.layout()
-        // Frames restored from the autosave keep the width of the display
-        // they were saved on until something resizes the split; on a smaller
-        // screen the right pane then runs past the window edge. Refit them.
-        let span = leftPane.frame.width + split.dividerThickness + rightPane.frame.width
-        if abs(span - split.bounds.width) > 1 || abs(leftPane.frame.height - split.bounds.height) > 1 {
-            split.adjustSubviews()
-        }
-        guard !dividerPlaced, bounds.width > 700 else { return }
-        if UserDefaults.standard.object(forKey: "NSSplitView Subview Frames curatorSplit") != nil {
+        guard !dividerPlaced else { return }
+        if UserDefaults.standard.object(forKey: "NSSplitView Subview Frames curatorSplit2") != nil {
             dividerPlaced = true
             return
         }
-        // The split view redistributes on its own first passes, so the
-        // position is set and then checked until it has stuck.
-        let target = max(340, round(bounds.width * 0.3))
-        if abs(leftPane.frame.width - target) < 20 || placementTries > 6 {
-            dividerPlaced = true
-            return
-        }
-        placementTries += 1
-        split.setPosition(target, ofDividerAt: 0)
+        // The panes start at whatever init gave them; the first pass
+        // through resizeSubviews puts the divider where it belongs.
+        if abs(leftPane.frame.width - CuratorPageView.firstColumn) < 1 { dividerPlaced = true; return }
         split.adjustSubviews()
-        DispatchQueue.main.async { [weak self] in self?.needsLayout = true }
+        if abs(leftPane.frame.width - CuratorPageView.firstColumn) < 1 { dividerPlaced = true }
+    }
+    private static let firstColumn: CGFloat = 340
+
+    func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
+        let w = splitView.bounds.width, h = splitView.bounds.height, d = splitView.dividerThickness
+        var left = dividerPlaced ? leftPane.frame.width : CuratorPageView.firstColumn
+        left = min(max(280, left), max(280, w - 480 - d))
+        leftPane.frame = NSRect(x: 0, y: 0, width: left, height: h)
+        rightPane.frame = NSRect(x: left + d, y: 0, width: max(0, w - left - d), height: h)
     }
 
     required init?(coder: NSCoder) { fatalError() }
