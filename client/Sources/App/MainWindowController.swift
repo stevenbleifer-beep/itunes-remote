@@ -24,6 +24,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         case recentlyAdded
         case playlist(Playlist)
         case device(DeviceSource)
+        case curator
     }
 
     private var sourceRows: [SourceRow] = [.header("LIBRARY"), .library, .header("PLAYLISTS")]
@@ -60,6 +61,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// Holds the browser-and-tracks split and the device page, one at a time.
     private let rightContainer = NSView()
     private let devicePage = DevicePageView()
+    /// The curator's page, shown in place of the browser and track table.
+    private let curatorPage = CuratorPageView()
+    private let curator = CuratorEngine()
+    private var curatorOpen = false
+    private var curatorLibraryVersion: String?
+    /// How deep each playlist sits in the folder tree, for the sidebar's indent.
+    private var playlistDepth: [String: Int] = [:]
+    private var collapsedFolders: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "collapsedFolders") ?? [])
     /// The device whose page is showing, if any.
     private var openDevice: String?
     private var devicePageTimer: Timer?
@@ -125,6 +134,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     var initialFlowIndex: Int?
     /// Development only: `--source recent` starts on Recently Added.
     var initialSource: String?
+    /// Development only: `--curate TEXT` (repeatable) runs the curator on
+    /// those turns in order, prints each list, optionally saves the last as
+    /// `--curate-save NAME`, then snapshots or quits.
+    var curateScript: [String] = []
+    var curateSaveName: String?
     private var infoPanel: InfoPanel?          // held while its sheet is up
     private var namePrompt: NamePrompt?        // held while its sheet is up
     private var statusOverride: String?
@@ -349,6 +363,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         rightSplit.dividerStyle = .thin
         rightSplit.delegate = self
         rightContainer.addSubview(rightSplit)
+        curatorPage.frame = rightContainer.bounds
+        curatorPage.autoresizingMask = [.width, .height]
+        curatorPage.isHidden = true
+        rightContainer.addSubview(curatorPage)
+        wireCurator()
         devicePage.frame = mainSplit.frame
         devicePage.autoresizingMask = [.width, .height]
         devicePage.isHidden = true
@@ -662,7 +681,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
               info.draggingPasteboard.canReadItem(withDataConformingToTypes: [MainWindowController.trackDragType.rawValue]),
               row >= 0, row < sourceRows.count else { return [] }
         switch sourceRows[row] {
-        case .playlist(let p) where !p.smart:
+        case .playlist(let p) where !p.smart && !p.folder:
             tableView.setDropRow(row, dropOperation: .on)
             return .copy
         case .device:
@@ -1380,6 +1399,171 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
+    // MARK: Curator
+
+    private func wireCurator() {
+        curatorPage.onAsk = { [weak self] text in Task { @MainActor in await self?.askCurator(text) } }
+        curatorPage.onPlay = { [weak self] tracks, i in
+            guard let self = self, i < tracks.count else { return }
+            self.startPlayback(tracks[i], playlist: nil, context: tracks)
+            self.playContextName = "Curator"
+        }
+        curatorPage.onSave = { [weak self] tracks, name in self?.saveCurated(tracks, suggestedName: name) }
+        curatorPage.onNew = { [weak self] in self?.curator.reset() }
+        curatorPage.onEdited = { [weak self] picks in self?.curator.setCurrent(picks) }
+        curator.onStatus = { [weak self] s in self?.curatorPage.setStatus(s) }
+        curator.onIndexProgress = { [weak self] done, total in
+            guard let self = self else { return }
+            if done < total {
+                self.curatorPage.setIndexing("Indexing for search: \(done.formatted()) of \(total.formatted()) songs")
+            } else {
+                self.curatorPage.setIndexing(nil)
+            }
+        }
+    }
+
+    /// Selecting the curator in the sidebar swaps the browser and track
+    /// table for its page; the sidebar and the player stay.
+    private func openCuratorPage() {
+        closeDevicePage()
+        curatorOpen = true
+        rightSplit.isHidden = true
+        curatorPage.isHidden = false
+        curatorPage.focusField()
+        loadCuratorLibrary()
+    }
+
+    private func closeCuratorPage() {
+        guard curatorOpen else { return }
+        curatorOpen = false
+        curatorPage.isHidden = true
+        rightSplit.isHidden = false
+    }
+
+    @objc func showCurator(_ sender: Any?) {
+        guard let i = sourceRows.firstIndex(where: { if case .curator = $0 { return true }; return false }) else { return }
+        sourceList.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// The whole library, once per version of it, for the artist table and
+    /// the search index. The read is cached, so after the Music list has
+    /// loaded it costs nothing.
+    private func loadCuratorLibrary() {
+        guard let api = controller.api else { return }
+        Task { @MainActor in
+            do {
+                let info = try await api.libraryInfo()
+                guard info.contentVersion != curatorLibraryVersion else { return }
+                let page = try await api.tracks(filter: TrackFilter())
+                curatorLibraryVersion = info.contentVersion
+                curator.setLibrary(page.tracks)
+            } catch {
+                curatorPage.note("Could not read the library: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func askCurator(_ text: String) async {
+        curatorPage.setBusy(true)
+        curatorPage.say(listener: text)
+        do {
+            let reply = try await curator.ask(text)
+            curatorPage.show(reply)
+        } catch {
+            curatorPage.note("Sorry — \(error.localizedDescription)")
+        }
+        curatorPage.setBusy(false)
+    }
+
+    /// The headless run behind `--curate`, for testing the curator and for
+    /// screenshots with a real list on the page.
+    private func runCurateScript() {
+        window?.makeKeyAndOrderFront(nil)
+        showCurator(nil)
+        Task { @MainActor in
+            var waited = 0
+            while !curator.libraryLoaded && waited < 240 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                waited += 1
+            }
+            for text in curateScript {
+                print("> \(text)")
+                await askCurator(text)
+                for (i, p) in curatorPage.picks.enumerated() {
+                    print("\(i + 1). \(p.track.artist) – \(p.track.name) (\(p.track.album)) [\(p.why)]")
+                }
+                print("--")
+            }
+            if let name = curateSaveName, let api = controller.api, !curatorPage.picks.isEmpty {
+                do {
+                    let playlist = try await api.createPlaylist(name: name, folder: "Curator")
+                    let change = try await api.addToPlaylist(playlist.persistentId, ids: curatorPage.picks.map { $0.track.persistentId })
+                    print("saved \(playlist.name) (\(playlist.persistentId)) parent=\(playlist.parentId ?? "-") added=\(change.changed)")
+                    curatorPage.note("Saved as “\(playlist.name)” in the Curator folder, \(change.changed) songs.")
+                    if let parent = playlist.parentId { collapsedFolders.remove(parent) }
+                    await reloadPlaylists()
+                } catch {
+                    print("save failed: \(error)")
+                }
+            }
+            // `--stay` leaves the window up and prints its number, so a real
+            // screen capture can be taken of it: the offscreen snapshot
+            // misses the text in layer-backed AppKit views on this page.
+            if CommandLine.arguments.contains("--stay"), let w = window {
+                print("window \(w.windowNumber)")
+                fflush(stdout)
+                return
+            }
+            if let path = snapshotPath, let content = window?.contentView {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                capture(to: path, content: content)
+            }
+            exit(0)
+        }
+    }
+
+    /// Saves the list as a real playlist, filed in the Curator folder so the
+    /// model's lists never mix with the hand-made ones.
+    private func saveCurated(_ tracks: [Track], suggestedName: String) {
+        guard let window = window, let api = controller.api, !tracks.isEmpty else { return }
+        let prompt = NamePrompt(title: "Save Playlist", prompt: "Name for the playlist (it goes in the Curator folder):",
+                                placeholder: "Curated Playlist", acceptTitle: "Save",
+                                initialValue: suggestedName.isEmpty ? nil : suggestedName)
+        prompt.onAccept = { [weak self] name, done in
+            Task { @MainActor in
+                do {
+                    let playlist = try await api.createPlaylist(name: name, folder: "Curator")
+                    let change = try await api.addToPlaylist(playlist.persistentId, ids: tracks.map { $0.persistentId })
+                    if let parent = playlist.parentId {
+                        self?.collapsedFolders.remove(parent)
+                        self?.saveCollapsedFolders()
+                    }
+                    self?.curatorPage.note("Saved as “\(playlist.name)” in the Curator folder, \(change.changed) songs.")
+                    self?.flashStatus(change.summary("Added"))
+                    await self?.reloadPlaylists()
+                    done(nil)
+                } catch {
+                    done(error.localizedDescription)
+                }
+            }
+        }
+        prompt.present(in: window)
+        namePrompt = prompt
+    }
+
+    // MARK: Folders
+
+    private func toggleFolder(_ pid: String) {
+        if collapsedFolders.contains(pid) { collapsedFolders.remove(pid) } else { collapsedFolders.insert(pid) }
+        saveCollapsedFolders()
+        reloadSourceList()
+    }
+
+    private func saveCollapsedFolders() {
+        UserDefaults.standard.set(Array(collapsedFolders), forKey: "collapsedFolders")
+    }
+
     // MARK: Split view
 
     func splitViewDidResizeSubviews(_ notification: Notification) {
@@ -1531,11 +1715,46 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             sourceRows.append(.header("DEVICES"))
             sourceRows += devices.map { .device($0) }
         }
+        sourceRows.append(.header("CURATOR"))
+        sourceRows.append(.curator)
         sourceRows.append(.header("PLAYLISTS"))
-        sourceRows += controller.playlists.map { .playlist($0) }
+        // Playlists as a tree: a folder's playlists sit under it, stepped in,
+        // and stay hidden while it is closed. The daemon lists them flat,
+        // sorted by name, so each level keeps that order.
+        let known = Set(controller.playlists.map { $0.persistentId })
+        var children: [String: [Playlist]] = [:]
+        for p in controller.playlists {
+            let parent = p.parentId.flatMap { known.contains($0) ? $0 : nil } ?? ""
+            children[parent, default: []].append(p)
+        }
+        // iTunes' XML lists playlists in its own order, folders first; each
+        // level here is folders first and then by name, so a new one lands
+        // where the eye expects it.
+        for key in children.keys {
+            children[key]?.sort { a, b in
+                if a.folder != b.folder { return a.folder }
+                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            }
+        }
+        playlistDepth = [:]
+        func walk(_ parent: String, _ depth: Int) {
+            for p in children[parent] ?? [] {
+                sourceRows.append(.playlist(p))
+                playlistDepth[p.persistentId] = depth
+                if p.folder && !collapsedFolders.contains(p.persistentId) { walk(p.persistentId, depth + 1) }
+            }
+        }
+        walk("", 0)
         sourceList.reloadData()
         var select = 1
-        if controller.source == .recentlyAdded {
+        if initialSource == "curator" {
+            initialSource = nil
+            curatorOpen = true
+        }
+        if curatorOpen, let i = sourceRows.firstIndex(where: { if case .curator = $0 { return true }; return false }) {
+            select = i
+            if curatorPage.isHidden { openCuratorPage() }
+        } else if controller.source == .recentlyAdded {
             select = 2
         } else if let current = controller.source.playlistId,
                   let i = sourceRows.firstIndex(where: { if case .playlist(let p) = $0 { return p.persistentId == current }; return false }) {
@@ -2257,6 +2476,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     private func firstLoadDone() {
+        if !curateScript.isEmpty {
+            runCurateScript()
+            return
+        }
         if snapshotPath == nil {
             restoreLastTrack()
             return
@@ -2420,6 +2643,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     @objc private func sourceDoubleClicked(_ sender: Any?) {
         let row = sourceList.clickedRow
         guard row >= 0, row < sourceRows.count else { return }
+        if case .playlist(let p) = sourceRows[row], p.folder {
+            toggleFolder(p.persistentId)
+            return
+        }
         if case .playlist(let p) = sourceRows[row], let first = rows.first {
             startPlayback(first, playlist: p.persistentId, context: rows)
         }
@@ -2461,6 +2688,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             if event.keyCode == 36, self.window?.firstResponder === self.trackTable {   // Return
                 self.trackDoubleClickedFromSelection()
                 return nil
+            }
+            // The curator's list: Delete drops songs, Return plays the selection.
+            if self.curatorOpen, self.window?.firstResponder === self.curatorPage.table {
+                if event.keyCode == 51 || event.keyCode == 117 { self.curatorPage.deleteSelection(); return nil }
+                if event.keyCode == 36 { self.curatorPage.playSelection(); return nil }
             }
             // Delete and forward-delete act on whichever list has focus, on the
             // whole selection. Both paths confirm first.
@@ -2865,8 +3097,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 return sidebarCell(tableView, text: "Recently Added", icon: .recent)
             case .playlist(let p):
                 let icon: SidebarIcon = p.persistentId == playingPlaylistId
-                    ? .speaker : (p.smart ? .smartPlaylist : .playlist)
-                return sidebarCell(tableView, text: p.name, icon: icon)
+                    ? .speaker : (p.folder ? .folder : (p.smart ? .smartPlaylist : .playlist))
+                let cell = sidebarCell(tableView, text: p.name, icon: icon)
+                cell.indent = CGFloat(playlistDepth[p.persistentId] ?? 0) * 14
+                if p.folder {
+                    cell.disclosure = !collapsedFolders.contains(p.persistentId)
+                    let pid = p.persistentId
+                    cell.onToggle = { [weak self] in self?.toggleFolder(pid) }
+                }
+                return cell
+            case .curator:
+                return sidebarCell(tableView, text: "Playlist Curator", icon: .curator)
             case .device(let d):
                 var text = d.name
                 if let free = d.freeSpace, let cap = d.capacity, cap > 0 {
@@ -2952,6 +3193,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         cell.identifier = ident
         cell.label.stringValue = text
         cell.iconView.icon = icon
+        cell.indent = 0
+        cell.disclosure = nil
+        cell.onToggle = nil
         return cell
     }
 
@@ -3024,10 +3268,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             // lowest-numbered playlist of the group.
             guard table.selectedRowIndexes.count == 1 else { return }
             switch sourceRows[row] {
-            case .library: closeDevicePage(); controller.source = .library
-            case .recentlyAdded: closeDevicePage(); controller.source = .recentlyAdded
-            case .playlist(let p): closeDevicePage(); controller.source = .playlist(p)
-            case .device(let d): openDevicePage(for: d)
+            case .library: closeDevicePage(); closeCuratorPage(); controller.source = .library
+            case .recentlyAdded: closeDevicePage(); closeCuratorPage(); controller.source = .recentlyAdded
+            case .playlist(let p): closeDevicePage(); closeCuratorPage(); controller.source = .playlist(p)
+            case .device(let d): closeCuratorPage(); openDevicePage(for: d)
+            case .curator: openCuratorPage()
             case .header: break
             }
         case .browser:

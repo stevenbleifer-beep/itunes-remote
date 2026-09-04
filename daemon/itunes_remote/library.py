@@ -335,6 +335,10 @@ class Library(object):
                 "playlistId": p["Playlist ID"],
                 "name": p.get("Name", ""),
                 "smart": "Smart Info" in p,
+                # Folders are playlists too, in the XML and to AppleScript;
+                # a folder's items are everything in the playlists under it.
+                "folder": bool(p.get("Folder")),
+                "parentId": p.get("Parent Persistent ID"),
                 "count": len(items),
                 "items": items,
             })
@@ -557,12 +561,14 @@ class Library(object):
 
     # -- playlist membership --------------------------------------------
 
-    def playlist_create(self, persistent_id, name):
+    def playlist_create(self, persistent_id, name, parent_id=None, folder=False):
         entry = {
             "persistentId": persistent_id,
             "playlistId": None,
             "name": name,
             "smart": False,
+            "folder": folder,
+            "parentId": parent_id,
             "count": 0,
             "items": [],
         }
@@ -649,7 +655,7 @@ class LibraryStore(object):
         self._lock = threading.Lock()
         self._lib = None
         self._journal = []  # (timestamp, persistent_id, fields)
-        self._playlist_journal = []  # (timestamp, op, playlist_id, track_ids, name)
+        self._playlist_journal = []  # (timestamp, op, playlist_id, track_ids, name, extra)
         self._reloading = False
         self._stop = threading.Event()
         self._thread = None
@@ -722,11 +728,11 @@ class LibraryStore(object):
                     replayed = 0
             self._journal = [j for j in self._journal if j[0] > new.xml_date]
 
-            for ts, op, plid, track_ids, name in self._playlist_journal:
+            for ts, op, plid, track_ids, name, extra in self._playlist_journal:
                 if ts <= new.xml_date:
                     continue
                 try:
-                    self._apply_playlist_op(new, op, plid, track_ids, name)
+                    self._apply_playlist_op(new, op, plid, track_ids, name, extra)
                 except (KeyError, ValueError) as e:
                     log.warning("playlist journal replay skipped: %s", e)
             self._playlist_journal = [j for j in self._playlist_journal if j[0] > new.xml_date]
@@ -750,17 +756,19 @@ class LibraryStore(object):
 
     # -- playlist membership, journaled the same way as field patches ------
 
-    def playlist_op(self, op, playlist_id, track_ids=(), name=None):
+    def playlist_op(self, op, playlist_id, track_ids=(), name=None, parent_id=None, folder=False):
         """op is "create", "add" or "remove". Returns the operation's result."""
+        extra = {"parent_id": parent_id, "folder": folder}
         with self._lock:
-            result = self._apply_playlist_op(self._lib, op, playlist_id, track_ids, name)
-            self._playlist_journal.append((time.time(), op, playlist_id, list(track_ids), name))
+            result = self._apply_playlist_op(self._lib, op, playlist_id, track_ids, name, extra)
+            self._playlist_journal.append((time.time(), op, playlist_id, list(track_ids), name, extra))
         return result
 
     @staticmethod
-    def _apply_playlist_op(lib, op, playlist_id, track_ids, name):
+    def _apply_playlist_op(lib, op, playlist_id, track_ids, name, extra=None):
+        extra = extra or {}
         if op == "create":
-            return lib.playlist_create(playlist_id, name)
+            return lib.playlist_create(playlist_id, name, extra.get("parent_id"), extra.get("folder", False))
         if op == "add":
             return lib.playlist_add(playlist_id, track_ids)
         if op == "remove":

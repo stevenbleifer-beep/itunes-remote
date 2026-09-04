@@ -5,7 +5,7 @@ import Cocoa
 //   --snapshot PATH               render the main window to PATH after the first load, then quit
 //   --snapshot-device NAME        open that device's Music pane first, so the pane can be checked
 //   --snapshot-lcd player|sync    with --snapshot-device: force the display's view before capturing
-//   --source recent|device:NAME  open that source at launch (device: with no name takes the first)
+//   --source recent|curator|device:NAME  open that source at launch (device: with no name takes the first)
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -34,6 +34,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         main.snapshotLCD = arg("--snapshot-lcd")
         main.initialFlowIndex = arg("--flow-index").flatMap { Int($0) }
         main.initialSource = arg("--source")
+        main.curateScript = zip(args, args.dropFirst()).filter { $0.0 == "--curate" }.map { $0.1 }
+        main.curateSaveName = arg("--curate-save")
         if args.contains("--mini") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak main] in main?.toggleMiniPlayer(nil) }
         }
@@ -152,6 +154,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let showQueue = controlsMenu.addItem(withTitle: "Show Up Next",
                                              action: #selector(MainWindowController.showUpNext(_:)), keyEquivalent: "u")
         showQueue.keyEquivalentModifierMask = [NSEvent.ModifierFlags.command, NSEvent.ModifierFlags.option]
+        controlsMenu.addItem(.separator())
+        let curatorItem = controlsMenu.addItem(withTitle: "Playlist Curator",
+                                               action: #selector(MainWindowController.showCurator(_:)), keyEquivalent: "k")
+        curatorItem.keyEquivalentModifierMask = [.command, .shift]
         controlsMenu.addItem(.separator())
         controlsMenu.addItem(withTitle: "Restart iTunes on the MacBook Pro…",
                              action: #selector(MainWindowController.restartITunes(_:)), keyEquivalent: "")

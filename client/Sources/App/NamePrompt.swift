@@ -13,7 +13,7 @@ final class NamePrompt: NSObject {
     /// open, or nil to close it.
     var onAccept: (String, @escaping (String?) -> Void) -> Void = { _, done in done(nil) }
 
-    init(title: String, prompt: String, placeholder: String, acceptTitle: String) {
+    init(title: String, prompt: String, placeholder: String, acceptTitle: String, initialValue: String? = nil) {
         okButton = AquaPushButton(title: acceptTitle, isDefault: true)
         let content = ChromeView(frame: NSRect(x: 0, y: 0, width: 420, height: 140))
         content.gradientTop = NSColor(white: 0.93, alpha: 1)
@@ -38,6 +38,7 @@ final class NamePrompt: NSObject {
         field.target = self
         field.action = #selector(accept)
         field.frame = NSRect(x: 20, y: 72, width: 380, height: 24)
+        if let v = initialValue { field.stringValue = v }
         content.addSubview(field)
 
         statusLabel.font = Aqua.font(11)

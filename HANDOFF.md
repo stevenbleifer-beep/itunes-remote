@@ -452,3 +452,66 @@ Catalog covers for the genuinely artless: `scratchpad/art/{match,apply}.py`
 on the Air — exact artist+title match against the iTunes Search API,
 `set_art.applescript` sets on tracks with zero artworks. Apple rate-limits
 the search hard (~50 albums in 10 min); run it on the residue only.
+
+## Playlist Curator (2026-09-04)
+
+A local model that builds playlists from the library and edits them on
+request. New sidebar section CURATOR above PLAYLISTS; its page replaces the
+browser and track table (the sidebar and player stay). Controls ▸ Playlist
+Curator, ⇧⌘K.
+
+**How it works** (`client/Sources/App/CuratorEngine.swift`): the model never
+sees the library. Each turn: (1) *plan* — the request (or the feedback plus
+the conversation) becomes JSON: mood, 8–12 search phrases, up to 12 artists,
+things to avoid, length, a name; (2) *gather* — the phrases go through the
+embedding index and the artists through the folded artist table, giving up
+to 140 real songs, round-robin so nobody swamps it, the current list kept on
+the table for feedback turns; (3) *choose* — the model picks by number from
+that list, so it cannot name a song that is not here. Rules the model is told
+and ignores are enforced in code: real numbers only, no repeats, two per
+artist unless the request is about that artist, no holiday songs unless
+asked, the planned length. Feedback re-plans, so "add some slow indie rock"
+reaches artists that were not on the table before. **A feedback turn is an
+edit, not a new list:** the model returns `remove` / `add` / `order` and the
+code applies it to the current list — asked for a whole new list it rewrote
+most of it, and asked for removals it named fifteen of twenty for "less
+jazz", so removals are capped at a third of the list unless the feedback
+says all/most/replace/start over. A number in the feedback ("keep it to
+20") sets the length. The plan step also flags `fresh: true` when a message
+is a new request rather than feedback, which resets the conversation.
+
+**Models** (Ollama, on the Air, `http://127.0.0.1:11434`): picker
+`qwen3.5:4b` (defaults key `curatorModel`), embeddings `embeddinggemma:300m`.
+Measured on the M5 Air: 4B does a 3,900-token curate prompt in 17–29 s
+(721 tok/s prompt, 30 tok/s output); `gemma4:12b` takes 55–60 s for the same
+and picks no better, so it is not the default. A whole turn is two model
+calls: about 25–50 s. For more taste at two minutes a turn:
+`defaults write local.stevenbleifer.itunesremote curatorModel gemma4:12b`.
+
+**Index** (`CuratorIndex.swift`): one 256-dim unit vector per song
+(embeddinggemma's 768 truncated — it is trained for that), in
+`~/Library/Application Support/iTunes Remote/curator/{index.json,vectors.bin}`,
+built in the background the first time the page opens (~130 songs/s, about
+12 minutes for 93k; progress at the top right of the page) and saved every
+4,096 songs, so a quit resumes. Search is one `cblas_sgemv`. The curator
+works before the index is done, on artist matching alone — but the library
+is sorted by artist, so a part-built index only knows the A's and B's and
+the picks show it.
+
+**Saving** files the playlist in an iTunes folder named "Curator"
+(`POST /api/playlists` with `"folder": "Curator"`; the daemon's
+`playlist_create.applescript` makes the folder if needed with
+`make new user playlist at folder playlist X`). Playlists now carry
+`folder`/`parentId`; the sidebar shows folders with a disclosure triangle,
+children indented, collapsed set in defaults `collapsedFolders`.
+
+**Testing without the screen:** `client/build/iTunes\ Remote.app/Contents/MacOS/iTunesRemote --source curator --curate "make a playlist for date night" --curate "less jazz, keep it to 20" --curate-save "Date Night"`
+prints each list, saves the last, then quits. Add `--stay` and it prints
+its window number instead and stays up, for `screencapture -l N`. Do not
+use `--snapshot` for this page: the offscreen capture drops the text of
+the layer-backed AppKit views (labels, text view, table cells) even though
+the live window is fine.
+
+**Prototype:** `curator/curator.py` was the proof (artist-list-in-prompt
+design, ~10 minutes a playlist on gemma4:12b). Superseded; kept for the
+record.

@@ -1608,12 +1608,24 @@ class Api(object):
         name = name.strip()
         if len(name) > 200:
             raise ApiError(400, "name is too long")
-        out = self.itunes.fields(self._script("playlist_create", name, timeout=30))
+        # An optional folder to file it under, made if it does not exist yet.
+        # The Curator keeps its playlists in one so they never mix with the
+        # hand-made ones.
+        folder = (body or {}).get("folder")
+        if folder is not None and (not isinstance(folder, str) or not folder.strip() or len(folder) > 200):
+            raise ApiError(400, "folder must be a name")
+        args = [name] + ([folder.strip()] if folder else [])
+        out = self.itunes.fields(self._script("playlist_create", *args, timeout=30))
         if len(out) < 2 or not out[0]:
             raise ApiError(502, "iTunes did not return a playlist id")
-        entry = self.store.playlist_op("create", out[0], name=out[1])
+        parent_id = out[2] if len(out) > 2 and out[2] else None
+        if parent_id and self.store.lib.playlists_by_id.get(parent_id) is None:
+            # iTunes made the folder just now; the XML will not know it for a
+            # while, so the in-memory library learns it the same way.
+            self.store.playlist_op("create", parent_id, name=out[3] if len(out) > 3 else folder, folder=True)
+        entry = self.store.playlist_op("create", out[0], name=out[1], parent_id=parent_id)
         if self.write_log:
-            self.write_log.record("playlist-create", out[0], None, {"name": out[1]}, "ok")
+            self.write_log.record("playlist-create", out[0], None, {"name": out[1], "parentId": parent_id}, "ok")
         return {k: v for k, v in entry.items() if k != "items"}
 
     def patch_playlist(self, params, query, body):

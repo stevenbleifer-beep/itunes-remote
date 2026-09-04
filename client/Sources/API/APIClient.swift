@@ -372,8 +372,12 @@ final class APIClient {
         return try JSONDecoder().decode(PatchResult.self, from: data)
     }
 
-    func createPlaylist(name: String) async throws -> Playlist {
-        let data = try await request("POST", "/api/playlists", body: ["name": name])
+    /// `folder` files the new playlist under that folder, creating it first
+    /// if iTunes has no folder of that name.
+    func createPlaylist(name: String, folder: String? = nil) async throws -> Playlist {
+        var body: [String: Any] = ["name": name]
+        if let folder = folder { body["folder"] = folder }
+        let data = try await request("POST", "/api/playlists", body: body)
         return try JSONDecoder().decode(Playlist.self, from: data)
     }
 

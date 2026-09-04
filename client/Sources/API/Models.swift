@@ -77,6 +77,37 @@ struct Playlist: Decodable {
     let name: String
     let smart: Bool
     let count: Int
+    /// A folder of playlists. iTunes treats it as a playlist whose items are
+    /// everything in the playlists under it.
+    let folder: Bool
+    /// The folder this one sits in, if any.
+    let parentId: String?
+
+    init(persistentId: String, playlistId: Int?, name: String, smart: Bool, count: Int,
+         folder: Bool = false, parentId: String? = nil) {
+        self.persistentId = persistentId
+        self.playlistId = playlistId
+        self.name = name
+        self.smart = smart
+        self.count = count
+        self.folder = folder
+        self.parentId = parentId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case persistentId, playlistId, name, smart, count, folder, parentId
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        persistentId = try c.decode(String.self, forKey: .persistentId)
+        playlistId = try c.decodeIfPresent(Int.self, forKey: .playlistId)
+        name = try c.decode(String.self, forKey: .name)
+        smart = try c.decodeIfPresent(Bool.self, forKey: .smart) ?? false
+        count = try c.decodeIfPresent(Int.self, forKey: .count) ?? 0
+        folder = try c.decodeIfPresent(Bool.self, forKey: .folder) ?? false
+        parentId = try c.decodeIfPresent(String.self, forKey: .parentId)
+    }
 }
 
 /// Query parameters shared by tracks and facet calls. Nil means no filter.
