@@ -158,7 +158,11 @@ class Api(object):
         "compilation": "compilation",
         "enabled": "enabled",
         "rating": "rating",
+        "lyrics": "lyrics",
     }
+    # Written to iTunes but not carried in the XML, so the in-memory library
+    # has nowhere to keep them and is left alone.
+    EXTERNAL_FIELDS = frozenset(("lyrics",))
     NUMERIC_FIELDS = frozenset(("year", "track_number", "disc_number", "rating", "bpm"))
     BOOL_FIELDS = frozenset(("compilation", "enabled"))
 
@@ -205,6 +209,7 @@ class Api(object):
             ("GET", r"/api/tracks/" + pid, self.get_track),
             ("GET", r"/api/tracks/" + pid + r"/artwork", self.get_artwork),
             ("GET", r"/api/tracks/" + pid + r"/audio", self.get_audio),
+            ("GET", r"/api/tracks/" + pid + r"/lyrics", self.get_lyrics),
             ("GET", r"/api/genres", self.get_genres),
             ("GET", r"/api/artists", self.get_artists),
             ("GET", r"/api/albums", self.get_albums),
@@ -427,6 +432,19 @@ class Api(object):
         if t is None:
             raise ApiError(404, "no such track")
         return t.to_dict()
+
+    def get_lyrics(self, params, query, body):
+        """The song's lyrics, read from iTunes: the XML never carries them."""
+        pid = params["pid"].upper()
+        if pid not in self.store.lib.tracks:
+            raise ApiError(404, "no such track")
+        out = self._script("lyrics_get", pid, timeout=20)
+        record = self.itunes.fields(out)
+        if len(record) < 2 or record[0] != pid:
+            raise ApiError(502, "iTunes did not answer for that track")
+        if record[1] != "ok":
+            raise ApiError(502, record[2] if len(record) > 2 else "could not read lyrics")
+        return {"persistentId": pid, "lyrics": record[2] if len(record) > 2 else ""}
 
     def _facet(self, field, query):
         f = self._filters(query)
@@ -990,10 +1008,10 @@ class Api(object):
             "isConnected": bool(pod and pod["serial"] == plan.key),
             "ready": bool(existing) and on_device is True,
             "setupHint": (
-                "In iTunes on the MacBook Pro, on this iPod's Music pane, leave your own "
+                "In iTunes on %s, on this iPod's Music pane, leave your own "
                 "playlists ticked and tick %r as well, then untick the individual artists, "
                 "albums and genres. Until then this plan changes nothing."
-                % plan.playlist_name
+                % (computer_name(), plan.playlist_name)
             ),
         }
 
@@ -1422,7 +1440,7 @@ class Api(object):
                 "iTunes refused every copy. It only accepts tracks dragged onto a device "
                 "when that device is set to \u201cManually manage music and videos\u201d; "
                 "%s is set to sync selected playlists instead. Turn that on in iTunes on "
-                "the MacBook Pro, or drop the tracks on a playlist that %s syncs." % (name, name)
+                "%s, or drop the tracks on a playlist that %s syncs." % (name, computer_name(), name)
             )
         return out
 
@@ -1993,7 +2011,7 @@ class Api(object):
 
         head = [str(len(ordered))]
         for _, internal, value in ordered:
-            head.append(Track.EDITABLE[internal])
+            head.append(Track.EDITABLE.get(internal, internal))
             head.append(self._script_value(internal, value))
 
         new_values = {api: value for api, _, value in ordered}
@@ -2026,7 +2044,8 @@ class Api(object):
                         old[api_name] = self._memory_value(internal, record[2 + i]) \
                             if internal in self.NUMERIC_FIELDS or internal in self.BOOL_FIELDS else record[2 + i]
                     applied[pid] = {internal: self._memory_value(internal, value)
-                                    for _, internal, value in ordered}
+                                    for _, internal, value in ordered
+                                    if internal not in self.EXTERNAL_FIELDS}
                     results.append({"persistentId": pid, "result": "ok", "old": old})
                     if self.write_log:
                         self.write_log.record("set", pid, old, new_values, "ok")
@@ -2037,7 +2056,7 @@ class Api(object):
                     if self.write_log:
                         self.write_log.record("set", pid, None, new_values, "error", detail)
 
-        if applied:
+        if applied and any(applied.values()):
             # One re-sort for the whole batch, and none at all for a genre edit.
             self.store.patch_many(applied)
         if self.write_log:

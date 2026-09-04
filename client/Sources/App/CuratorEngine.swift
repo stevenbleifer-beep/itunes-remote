@@ -213,6 +213,10 @@ final class CuratorEngine {
     private var editTurns: [(prompt: String, answer: [String: Any])] = []
     private var history: [String] = []
     private var request = ""
+    /// "More like this": songs the listener pointed at instead of, or as
+    /// well as, describing what they want. Their embeddings pull the search
+    /// toward them, and they stay out of the list themselves.
+    private var seeds: [Track] = []
     private(set) var current: [CuratorPick] = []
     private var building = false
     private var asking = false
@@ -350,6 +354,7 @@ final class CuratorEngine {
         editTurns = []
         history = []
         request = ""
+        seeds = []
         current = []
     }
 
@@ -450,8 +455,13 @@ final class CuratorEngine {
     """
 
     /// A request, or feedback on the current list. Returns the new list.
-    func ask(_ text: String) async throws -> Reply {
+    func ask(_ text: String, seeds seedTracks: [Track] = []) async throws -> Reply {
         guard libraryLoaded else { throw CuratorError("The library has not loaded yet.") }
+        // A seeded request is always a fresh list.
+        if !seedTracks.isEmpty {
+            reset()
+            seeds = seedTracks
+        }
         guard await OllamaRuntime.shared.ensureRunning() != nil else {
             throw CuratorError("No model server could be started. Check ~/Library/Logs/iTunesRemote/ollama.log.")
         }
@@ -473,7 +483,9 @@ final class CuratorEngine {
         // "Now something for a road trip" after a date-night list is a new
         // playlist, not an edit; the plan step says which.
         if isFeedback && plan.fresh {
+            let keep = seeds
             reset()
+            seeds = keep
             request = text
             isFeedback = false
             await recall(text)
@@ -500,7 +512,9 @@ final class CuratorEngine {
     private func recall(_ text: String) async {
         await embedQueries([text])
         let vector = queryCache[text]
-        lessons = memory.similar(to: vector, request: text)
+        // A seeded request is defined by its songs, not its words: lessons
+        // about worded requests that merely sound alike do not apply.
+        lessons = seeds.isEmpty ? memory.similar(to: vector, request: text) : []
         memory.begin(request: text, vector: vector)
         firstTurn = nil
         editTurns = []
@@ -521,6 +535,16 @@ final class CuratorEngine {
             prompt += "If instead the listener is asking for a different playlist altogether, say so with \"fresh\": true and plan that.\n"
         } else {
             prompt += "The listener's request: \(text)\n"
+        }
+        if !seeds.isEmpty {
+            prompt += "\nThe listener picked these songs from their library as the seed; the playlist should sound like them (same feel, era and kind of artist), without repeating them:\n"
+            for t in CuratorEngine.seedSample(seeds) {
+                var line = "- \(t.artist) – \(t.name)"
+                if !t.album.isEmpty { line += " (\(t.album)" + (t.year.map { " \($0)" } ?? "") + ")" }
+                if !t.genre.isEmpty { line += " [\(t.genre)]" }
+                prompt += line + "\n"
+            }
+            prompt += "\n"
         }
         prompt += """
 
@@ -554,7 +578,43 @@ final class CuratorEngine {
         if let spoken = CuratorEngine.yearRange(in: (feedback ? request + " " : "") + text) { p.years = spoken }
         if !feedback, let n = CuratorEngine.requestedCount(in: text) { p.length = max(1, min(100, n)) }
         if p.queries.isEmpty { p.queries = [text] }
+        if !seeds.isEmpty {
+            // The seed's own artists join the search, whatever the model
+            // planned, so the list stays near them even when the index has
+            // not reached those songs yet.
+            var names = p.artists
+            for a in CuratorEngine.seedArtists(seeds) where !names.contains(where: { CuratorEngine.fold($0) == CuratorEngine.fold(a) }) {
+                names.append(a)
+            }
+            p.artists = Array(names.prefix(16))
+        }
         return p
+    }
+
+    /// Up to a dozen of the seed songs, spread across its artists, for the
+    /// plan prompt.
+    static func seedSample(_ seeds: [Track]) -> [Track] {
+        var perArtist: [String: Int] = [:]
+        var out: [Track] = []
+        for t in seeds {
+            let key = fold(t.artist)
+            if perArtist[key, default: 0] >= 2 { continue }
+            perArtist[key, default: 0] += 1
+            out.append(t)
+            if out.count >= 12 { break }
+        }
+        return out
+    }
+
+    /// The seed's artists, most represented first.
+    static func seedArtists(_ seeds: [Track]) -> [String] {
+        var count: [String: Int] = [:]
+        var display: [String: String] = [:]
+        for t in seeds where !t.artist.isEmpty {
+            count[fold(t.artist), default: 0] += 1
+            display[fold(t.artist)] = t.artist
+        }
+        return count.sorted { $0.value > $1.value }.prefix(8).compactMap { display[$0.key] }
     }
 
     /// Real songs for the plan: by meaning through the index, and by name
@@ -572,9 +632,14 @@ final class CuratorEngine {
         // one star, are not offered again; the ones on the current list stay.
         let inList = Set(current.map { $0.track.persistentId })
         let unwanted = memory.unwanted(near: lessons)
+        // The seed songs are what "more like this" means; the same songs
+        // again are not.
+        let seedIds = Set(seeds.map { $0.persistentId })
+        let seedKeys = Set(seeds.map { CuratorEngine.fold($0.name) + "|" + CuratorEngine.fold($0.artist) })
         func take(_ t: Track) {
             let key = CuratorEngine.fold(t.name) + "|" + CuratorEngine.fold(t.artist)
             guard !seen.contains(key), !t.name.isEmpty else { return }
+            if seedIds.contains(t.persistentId) || seedKeys.contains(key) { return }
             if !inList.contains(t.persistentId), unwanted.contains(t.persistentId) || t.rating == 20 { return }
             if let years = plan.years {
                 // An era was asked for: a song from outside it is out; one
@@ -604,6 +669,20 @@ final class CuratorEngine {
             }
             guard let tracks = found else { continue }
             lists.append(CuratorEngine.best(of: tracks, limit: 8))
+        }
+        // Seeds first: the songs nearest the seed as a whole, then nearest
+        // each seed song, so a mixed playlist pulls from every corner of
+        // itself rather than from its average alone.
+        if !seeds.isEmpty, index.count > 0 {
+            let vectors = seeds.compactMap { index.vector(of: $0.persistentId) }
+            if !vectors.isEmpty {
+                lists.insert(searchVector(CuratorEngine.centroid(vectors), k: max(40, plan.length * 2)).filter { !avoided($0) }, at: 0)
+                var i = 1
+                for v in vectors.prefix(12) where seeds.count > 1 {
+                    lists.insert(searchVector(v, k: 8).filter { !avoided($0) }, at: i)
+                    i += 1
+                }
+            }
         }
         // Phrases: nearest songs by meaning, when the index has them.
         if index.count > 0 {
@@ -678,12 +757,23 @@ final class CuratorEngine {
 
     private func searchTracks(_ phrase: String, k: Int) -> [Track] {
         guard let q = queryCache[phrase] else { return [] }
-        // Twice as many by meaning, then the listener's own plays break ties.
+        return searchVector(q, k: k)
+    }
+
+    /// Twice as many by meaning, then the listener's own plays break ties.
+    private func searchVector(_ q: [Float], k: Int) -> [Track] {
         let hits = index.search(q, k: k * 2).compactMap { h -> (Track, Float)? in
             guard let t = byId[h.id] else { return nil }
             return (t, h.score + taste(t))
         }
         return hits.sorted { $0.1 > $1.1 }.prefix(k).map { $0.0 }
+    }
+
+    /// The mean of unit vectors, renormalised: where a set of songs sits.
+    static func centroid(_ vectors: [[Float]]) -> [Float] {
+        var sum = [Float](repeating: 0, count: CuratorIndex.dims)
+        for v in vectors { for i in 0..<CuratorIndex.dims { sum[i] += v[i] } }
+        return CuratorIndex.prepare(sum)
     }
 
     /// Embeds every phrase of the plan up front, one call.

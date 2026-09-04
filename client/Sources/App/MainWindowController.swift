@@ -22,6 +22,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         case header(String)
         case library
         case recentlyAdded
+        case duplicates
         case playlist(Playlist)
         case device(DeviceSource)
         case curator
@@ -53,7 +54,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let connectionBadge = AquaConnectionBadge()
     /// When iTunes last saved its library, beside the badge.
     private let libraryStamp = NSTextField(labelWithString: "")
-    /// Makes the MacBook Pro look at the library file this instant.
+    /// Makes the other Mac look at the library file this instant.
     private let refreshButton = AquaBevelButton(glyph: .refresh)
     private var artworkHeight: NSLayoutConstraint?
     private var devices: [DeviceSource] = []
@@ -333,7 +334,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         artworkButton.isOn = UserDefaults.standard.object(forKey: "artworkPane") as? Bool ?? true
         // Left of where the iPod's Sync and Eject buttons appear.
         connectionBadge.autoresizingMask = [.minXMargin]
-        connectionBadge.toolTip = "Working out whether the MacBook Pro is on the local network."
+        connectionBadge.toolTip = "Working out whether the \(ServerSettings.name) is on the local network."
         statusBar.addSubview(connectionBadge)
         libraryStamp.font = Aqua.font(11)
         libraryStamp.textColor = NSColor(white: 0.35, alpha: 1)
@@ -344,7 +345,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         refreshButton.autoresizingMask = [.minXMargin]
         refreshButton.target = self
         refreshButton.action = #selector(refreshLibrary(_:))
-        refreshButton.toolTip = "Check the MacBook Pro's library for changes now. Adds and deletes made in iTunes reach the app on their own within a minute or two; this does not wait."
+        refreshButton.toolTip = "Check the \(ServerSettings.name)'s library for changes now. Adds and deletes made in iTunes reach the app on their own within a minute or two; this does not wait."
         statusBar.addSubview(refreshButton)
         layoutStatusRight()
 
@@ -836,7 +837,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// Every optional column, in the order iTunes listed them.
     static let optionalColumns: [(String, String)] = [
         ("artist", "Artist"), ("album", "Album"), ("genre", "Genre"), ("rating", "Rating"),
-        ("playCount", "Plays"), ("dateAdded", "Date Added"), ("year", "Year"),
+        ("playCount", "Plays"), ("dateAdded", "Date Added"), ("lastPlayed", "Last Played"), ("year", "Year"),
         ("trackNumber", "Track #"), ("discNumber", "Disc #"), ("composer", "Composer"),
         ("grouping", "Grouping"), ("bpm", "BPM"), ("kind", "Kind"),
     ]
@@ -872,6 +873,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         switch controller.source {
         case .playlist: backTo = "Restore Playlist Order"
         case .recentlyAdded: backTo = "Restore Newest First"
+        case .duplicates: backTo = "Restore Grouped Order"
         case .library: backTo = "Restore Default Order"
         }
         let reset = NSMenuItem(title: backTo, action: sorted ? #selector(resetSort(_:)) : nil, keyEquivalent: "")
@@ -930,6 +932,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         trackTable.addTableColumn(AquaTables.column("rating", title: "Rating", width: 70, min: 66))
         trackTable.addTableColumn(AquaTables.column("playCount", title: "Plays", width: 46, min: 40, rightAligned: true))
         trackTable.addTableColumn(AquaTables.column("dateAdded", title: "Date Added", width: 96, min: 70))
+        trackTable.addTableColumn(AquaTables.column("lastPlayed", title: "Last Played", width: 96, min: 70))
         trackTable.addTableColumn(AquaTables.column("year", title: "Year", width: 48, min: 40, rightAligned: true))
         trackTable.addTableColumn(AquaTables.column("trackNumber", title: "Track #", width: 64, min: 40, rightAligned: true))
         AquaTables.style(trackTable, rowHeight: 18, header: true)
@@ -966,6 +969,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             item.attributedTitle = NSAttributedString(string: title, attributes: [.font: Aqua.font(13)])
             menu.addItem(item)
         }
+        menu.addItem(.separator())
+        // The curator, seeded with the selection instead of a description.
+        let like = NSMenuItem(title: "More Like This", action: #selector(moreLikeSelection(_:)), keyEquivalent: "")
+        like.target = self
+        like.attributedTitle = NSAttributedString(string: "More Like This", attributes: [.font: Aqua.font(13)])
+        menu.addItem(like)
         menu.addItem(.separator())
         let remove = NSMenuItem(title: "Remove from Playlist", action: #selector(removeFromPlaylist(_:)), keyEquivalent: "")
         remove.target = self
@@ -1049,19 +1058,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     /// For the iPod that is plugged in but never mounts and never shows up:
     /// iTunes 12.9.5 stops handling devices after an eject that timed out,
-    /// and only a restart of iTunes clears it. Playback on the MacBook Pro
+    /// and only a restart of iTunes clears it. Playback on the other Mac
     /// stops; this Mac's playback carries on.
     @objc func restartITunes(_ sender: Any?) {
         guard let api = controller.api, let window = window else { return }
         let alert = NSAlert()
-        alert.messageText = "Restart iTunes on the MacBook Pro?"
-        alert.informativeText = "Use this when the iPod is plugged in but never appears. Playback on the MacBook Pro stops; it takes about half a minute to come back."
+        alert.messageText = "Restart iTunes on the \(ServerSettings.name)?"
+        alert.informativeText = "Use this when the iPod is plugged in but never appears. Playback on the \(ServerSettings.name) stops; it takes about half a minute to come back."
         alert.addButton(withTitle: "Restart iTunes")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self = self else { return }
-            self.flashStatus("Restarting iTunes on the MacBook Pro…")
+            self.flashStatus("Restarting iTunes on the \(ServerSettings.name)…")
             Task { @MainActor in
                 do {
                     try await api.restartITunes()
@@ -1135,7 +1144,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     @objc private func refreshLibrary(_ sender: Any?) {
         guard controller.api != nil else { return }
         refreshButton.isEnabled = false
-        statusOverride = "Asking the MacBook Pro to re-read its library…"
+        statusOverride = "Asking the \(ServerSettings.name) to re-read its library…"
         updateStatus()
         Task { @MainActor in
             let reloaded = await controller.refreshNow()
@@ -1161,9 +1170,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         connectionBadge.state = state
         layoutStatusRight()
         switch state {
-        case .connecting: connectionBadge.toolTip = "Working out whether the MacBook Pro is on the local network."
+        case .connecting: connectionBadge.toolTip = "Working out whether the \(ServerSettings.name) is on the local network."
         case .home: connectionBadge.toolTip = "Connected on the local network: \(host)"
-            + (connectionBadge.link.isEmpty ? "" : " over \(connectionBadge.link)") + ". Every request goes straight to the MacBook Pro."
+            + (connectionBadge.link.isEmpty ? "" : " over \(connectionBadge.link)") + ". Every request goes straight to the \(ServerSettings.name)."
         case .away: connectionBadge.toolTip = "Connected through the Tailscale tunnel: \(host). The local network did not answer; polling is slower."
         }
     }
@@ -1206,7 +1215,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
-    /// iTunes runs headless on the MacBook Pro, so a modal dialog there stops
+    /// iTunes runs headless on the other Mac, so a modal dialog there stops
     /// everything and nobody sees it. Poll for one and show it here.
     private func pollAlert() {
         guard let api = controller.api, !alertPollInFlight else { return }
@@ -1237,7 +1246,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         closeAlertSheet()
         shownAlert = alert
         let sheet = NSAlert()
-        sheet.messageText = "iTunes on the MacBook Pro is asking something"
+        sheet.messageText = "iTunes on the \(ServerSettings.name) is asking something"
         sheet.informativeText = alert.message.isEmpty
             ? "iTunes is showing a dialog with no text." : alert.message
         sheet.alertStyle = .warning
@@ -1560,6 +1569,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         rightSplit.isHidden = false
     }
 
+    /// View ▸ Show Duplicates: the Duplicates row in the sidebar.
+    static var duplicatesShown: Bool {
+        get { UserDefaults.standard.object(forKey: "duplicatesShown") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "duplicatesShown") }
+    }
+
+    @objc func toggleDuplicatesVisible(_ sender: Any?) {
+        let show = !MainWindowController.duplicatesShown
+        MainWindowController.duplicatesShown = show
+        if !show, controller.source == .duplicates { controller.source = .library }
+        reloadSourceList()
+    }
+
     static var curatorHidden: Bool {
         get { UserDefaults.standard.bool(forKey: "curatorHidden") }
         set { UserDefaults.standard.set(newValue, forKey: "curatorHidden") }
@@ -1574,6 +1596,25 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             controller.source = .library
         }
         reloadSourceList()
+    }
+
+    /// File ▸ Find Missing Artwork…: one window, kept while the app runs.
+    private var missingArtworkWindow: MissingArtworkWindow?
+    @objc func showMissingArtwork(_ sender: Any?) {
+        guard let api = controller.api else { return }
+        if missingArtworkWindow == nil {
+            let w = MissingArtworkWindow(api: api)
+            w.onArtworkSet = { [weak self] ids in
+                self?.artworkChanged(ids)
+                self?.controller.reload()
+            }
+            missingArtworkWindow = w
+        }
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--find-art"), i + 1 < args.count {
+            missingArtworkWindow?.scripted = (args[i + 1], args.contains("--find-art-apply"))
+        }
+        missingArtworkWindow?.show()
     }
 
     /// Controls ▸ Train Curator on My Edits…: one window, kept, so a run
@@ -1594,6 +1635,59 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         window?.makeKeyAndOrderFront(nil)
     }
 
+    // MARK: More like this
+
+    /// Right-click ▸ More Like This: the curator, seeded with the selected
+    /// songs. The page and its conversation work as they always did; this
+    /// is another way in.
+    @objc func moreLikeSelection(_ sender: Any?) {
+        let picked = selectedTracks
+        guard !picked.isEmpty else { return }
+        let text: String
+        if picked.count == 1 {
+            let t = picked[0]
+            text = "More songs like “\(t.name)”" + (t.artist.isEmpty ? "" : " by \(t.artist)")
+        } else {
+            let albums = Set(picked.map { $0.album.lowercased() })
+            let artists = Set(picked.map { $0.displayArtist.lowercased() })
+            if albums.count == 1, artists.count == 1, let t = picked.first, !t.album.isEmpty {
+                text = "More songs like the album “\(t.album)”" + (t.displayArtist.isEmpty ? "" : " by \(t.displayArtist)")
+            } else {
+                text = "More songs like these \(picked.count)"
+            }
+        }
+        seedCurator(text, seeds: picked)
+    }
+
+    /// Sidebar ▸ Make a Playlist Like This…: seeded with a whole playlist.
+    @objc func moreLikePlaylist(_ sender: Any?) {
+        guard let playlist = clickedPlaylist(), let api = controller.api else { return }
+        Task { @MainActor in
+            do {
+                let page = try await api.tracks(filter: TrackFilter(playlist: playlist.persistentId), limit: 400)
+                guard !page.tracks.isEmpty else { flashStatus("“\(playlist.name)” is empty."); return }
+                seedCurator("A playlist like “\(playlist.name)”", seeds: page.tracks)
+            } catch {
+                flashStatus("Could not read “\(playlist.name)”: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func seedCurator(_ text: String, seeds: [Track]) {
+        showCurator(nil)
+        if curatorPage.isHidden { openCuratorPage() }
+        curatorPage.startFresh()
+        Task { @MainActor in
+            // The library the curator works from may still be on its way.
+            var waited = 0
+            while !curator.libraryLoaded, waited < 40 {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                waited += 1
+            }
+            await askCurator(text, seeds: seeds)
+        }
+    }
+
     /// The whole library, once per version of it, for the artist table and
     /// the search index. The read is cached, so after the Music list has
     /// loaded it costs nothing.
@@ -1612,11 +1706,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
-    private func askCurator(_ text: String) async {
+    private func askCurator(_ text: String, seeds: [Track] = []) async {
         curatorPage.setBusy(true)
         curatorPage.say(listener: text)
         do {
-            let reply = try await curator.ask(text)
+            let reply = try await curator.ask(text, seeds: seeds)
             curatorPage.show(reply)
         } catch {
             curatorPage.note("Sorry — \(error.localizedDescription)")
@@ -1768,7 +1862,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 flashStatus("Eject failed: \(error.localizedDescription)")
                 self.report(title: "Could not eject \(device.name)",
                             message: error.localizedDescription
-                                + "\n\niTunes cannot unmount the iPod while anything on the MacBook Pro "
+                                + "\n\niTunes cannot unmount the iPod while anything on the \(ServerSettings.name) "
                                 + "still has a file open on it. Try again in a few seconds; if it keeps "
                                 + "failing, eject it from the Finder on that machine.")
                 self.loadDevices()
@@ -1842,6 +1936,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func reloadSourceList() {
         updatingUI = true
         sourceRows = [.header("LIBRARY"), .library, .recentlyAdded]
+        // View ▸ Show Duplicates puts the duplicates list under the library.
+        if MainWindowController.duplicatesShown { sourceRows.append(.duplicates) }
         if !devices.isEmpty {
             sourceRows.append(.header("DEVICES"))
             sourceRows += devices.map { .device($0) }
@@ -1891,6 +1987,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             if curatorPage.isHidden { openCuratorPage() }
         } else if controller.source == .recentlyAdded {
             select = 2
+        } else if controller.source == .duplicates,
+                  let i = sourceRows.firstIndex(where: { if case .duplicates = $0 { return true }; return false }) {
+            select = i
         } else if let current = controller.source.playlistId,
                   let i = sourceRows.firstIndex(where: { if case .playlist(let p) = $0 { return p.persistentId == current }; return false }) {
             select = i
@@ -1901,6 +2000,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             updatingUI = false
             sourceList.selectRowIndexes(IndexSet(integer: select), byExtendingSelection: false)
             controller.source = .recentlyAdded
+            return
+        }
+        if initialSource == "duplicates",
+           let i = sourceRows.firstIndex(where: { if case .duplicates = $0 { return true }; return false }) {
+            initialSource = nil
+            updatingUI = false
+            sourceList.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false)
+            controller.source = .duplicates
             return
         }
         if let wanted = initialSource, wanted.hasPrefix("device:") {
@@ -1951,7 +2058,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     /// "Library as of 3:41 PM": when iTunes last wrote the library the
-    /// MacBook Pro is serving. Adds and deletes made in iTunes itself show
+    /// other Mac is serving. Adds and deletes made in iTunes itself show
     /// up here a minute or two after they happen; edits made in this app
     /// are applied at once and do not wait for it.
     private func updateLibraryStamp() {
@@ -1971,7 +2078,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         full.dateStyle = .medium
         full.timeStyle = .medium
         libraryStamp.toolTip = "iTunes last saved its library " + (written.map { full.string(from: $0) } ?? "?")
-            + "; the MacBook Pro read it " + (read.map { full.string(from: $0) } ?? "?")
+            + "; the \(ServerSettings.name) read it " + (read.map { full.string(from: $0) } ?? "?")
             + ". The daemon checks the file every 5 seconds and this app asks it every \(Int(controller.versionInterval)) seconds. Changes made from this app show at once."
     }
 
@@ -2007,6 +2114,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         let panel = InfoPanel(tracks: selected)
         panel.knownGenres = controller.facet("genre").map { $0.name }.filter { !$0.isEmpty }
         panel.loadArtwork = { [weak self] pid, done in self?.artworkCache.image(for: pid, then: done) }
+        panel.loadLyrics = { pid, done in
+            Task { @MainActor in done(try? await api.lyrics(for: pid)) }
+        }
         let ids = selected.map { $0.persistentId }
         panel.onApply = { [weak self] fields, done in
             Task { @MainActor in
@@ -2044,10 +2154,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         panel.present(in: window)
         panel.loadCurrentArtwork()
+        panel.loadCurrentLyrics()
         infoPanel = panel
     }
 
-    /// Covers for these tracks just changed on the MacBook Pro: forget what
+    /// Covers for these tracks just changed on the other Mac: forget what
     /// was cached and let every view that shows them ask again.
     private func artworkChanged(_ ids: [String]) {
         artworkCache.forget(ids)
@@ -2106,6 +2217,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         let playlist = clickedPlaylist()
         let editable = playlist != nil && !(playlist!.smart)
         let deletable = deletablePlaylists()
+        menu.addItem(.separator())
+        add("Make a Playlist Like This…", #selector(moreLikePlaylist(_:)),
+            enabled: playlist != nil && !(playlist!.folder) && !MainWindowController.curatorHidden)
         menu.addItem(.separator())
         // Rename is one playlist at a time; deleting is not.
         add("Rename…", #selector(renamePlaylist(_:)), enabled: editable && deletable.count <= 1)
@@ -2321,7 +2435,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             display.primary = t.name
             var parts = [t.artist, t.album].filter { !$0.isEmpty }
             // In local mode the audio comes out of this Mac while iTunes on
-            // the MacBook Pro sits paused on whatever it had. Two players,
+            // the other Mac sits paused on whatever it had. Two players,
             // two volumes — say which one this is, or the two windows look
             // like they have simply fallen out of sync.
             if player.mode == .local { parts.append("on this Mac") }
@@ -2371,6 +2485,15 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         mediaKeys.publish(title: state?.track?.name, artist: state?.track?.artist,
                           album: state?.track?.album, duration: state?.track?.duration,
                           elapsed: player.displayPosition, playing: playing, stopped: stopped)
+        // A banner for the new song when nobody is looking at the window.
+        let outOfSight = !NSApp.isActive || window?.isVisible != true || window?.isMiniaturized == true
+            || miniPlayer?.window?.isVisible == true
+        notifier.songChanged(id: stopped ? nil : state?.track?.persistentId,
+                             title: state?.track?.name ?? "", artist: state?.track?.artist ?? "",
+                             album: state?.track?.album ?? "", playing: playing, outOfSight: outOfSight) { [weak self] done in
+            guard let self = self, let id = state?.track?.persistentId else { done(nil); return }
+            self.artworkCache.image(for: id, then: done)
+        }
         shuffleButton.isOn = state?.shuffle ?? false
         let mode = state?.repeatMode ?? "off"
         repeatButton.glyph = mode == "one" ? .repeatOne : .repeatAll
@@ -2413,8 +2536,27 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// Songs queued ahead of the list. `play <track>` gives iTunes a one-item
     /// queue, so the app has always decided what follows; this is the part of
     /// that decision the user gets to make directly.
-    private var upNext: [Track] = []
+    private var upNext: [Track] = [] {
+        // Kept across launches: what was queued is still queued tomorrow.
+        didSet { UserDefaults.standard.set(upNext.map { $0.defaultsDict }, forKey: "upNextQueue") }
+    }
     private var upNextPanel: UpNextPanel?
+
+    /// The queue as it was when the app last ran.
+    private func restoreUpNext() {
+        guard upNext.isEmpty,
+              let saved = UserDefaults.standard.array(forKey: "upNextQueue") as? [[String: Any]] else { return }
+        let queue = saved.compactMap { Track(defaults: $0) }
+        guard !queue.isEmpty else { return }
+        upNext = queue
+        refreshUpNext()
+    }
+
+    /// Controls ▸ Notify on Song Change.
+    private let notifier = SongNotifier()
+    @objc func toggleSongNotifications(_ sender: Any?) {
+        SongNotifier.enabled.toggle()
+    }
 
     @objc func showUpNext(_ sender: Any?) {
         let p = upNextPanel ?? makeUpNextPanel()
@@ -2575,6 +2717,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         if item.action == #selector(toggleCuratorVisible(_:)) {
             item.state = MainWindowController.curatorHidden ? .off : .on
         }
+        if item.action == #selector(toggleDuplicatesVisible(_:)) {
+            item.state = MainWindowController.duplicatesShown ? .on : .off
+        }
+        if item.action == #selector(toggleSongNotifications(_:)) {
+            item.state = SongNotifier.enabled ? .on : .off
+        }
         return true
     }
 
@@ -2614,7 +2762,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         mine.target = self
         mine.state = player.mode == .local ? .on : .off
         mine.attributedTitle = NSAttributedString(string: "Play on This Mac", attributes: [.font: Aqua.font(13)])
-        mine.toolTip = "Play through this Mac's speakers; the file streams from the MacBook Pro"
+        mine.toolTip = "Play through this Mac's speakers; the file streams from the \(ServerSettings.name)"
         menu.addItem(mine)
         let refresh = NSMenuItem(title: "Refresh Devices", action: #selector(refreshOutputs(_:)), keyEquivalent: "")
         refresh.target = self
@@ -2638,7 +2786,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     @objc private func playHere(_ sender: Any?) {
         player.setMode(player.mode == .local ? .remote : .local)
-        flashStatus(player.mode == .local ? "Playing on this Mac. Double-click a track." : "Playing on the MacBook Pro.")
+        flashStatus(player.mode == .local ? "Playing on this Mac. Double-click a track." : "Playing on the \(ServerSettings.name).")
     }
 
     @objc private func refreshOutputs(_ sender: Any?) {
@@ -2679,7 +2827,21 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
+    var openMissingArtwork = false
+    var likeAlbum: String?
+
     private func firstLoadDone() {
+        restoreUpNext()
+        if openMissingArtwork { showMissingArtwork(nil) }
+        if let want = likeAlbum, let api = controller.api {
+            let parts = want.split(separator: "|", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            Task { @MainActor in
+                let page = (try? await api.tracks(filter: TrackFilter(album: parts.last ?? ""), limit: 2000))?.tracks ?? []
+                let seeds = page.filter { parts.count < 2 || $0.displayArtist.lowercased() == parts[0] }
+                guard let t = seeds.first else { return }
+                seedCurator("More songs like the album “\(t.album)” by \(t.displayArtist)", seeds: seeds)
+            }
+        }
         if !curateScript.isEmpty {
             runCurateScript()
             return
@@ -2693,6 +2855,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 trackTable.selectRowIndexes(IndexSet(integer: tableRow(forTrackIndex: 0) ?? 0), byExtendingSelection: false)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
                     self?.showGetInfo(nil)
+                    if CommandLine.arguments.contains("--info-lyrics") { self?.infoPanel?.selectTab(1) }
                     print("get-info: sheet \(self?.window?.attachedSheet.map { "window \($0.windowNumber)" } ?? "not up")")
                     fflush(stdout)
                 }
@@ -3320,6 +3483,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 return sidebarCell(tableView, text: "Music", icon: .music)
             case .recentlyAdded:
                 return sidebarCell(tableView, text: "Recently Added", icon: .recent)
+            case .duplicates:
+                return sidebarCell(tableView, text: "Duplicates", icon: .duplicates)
             case .playlist(let p):
                 let icon: SidebarIcon = p.persistentId == playingPlaylistId
                     ? .speaker : (p.folder ? .folder : (p.smart ? .smartPlaylist : .playlist))
@@ -3400,12 +3565,16 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             case "trackNumber": text = t.trackNumber.map(String.init) ?? ""
             case "playCount": text = t.playCount > 0 ? String(t.playCount) : ""
             case "dateAdded": text = MainWindowController.shortDate(t.dateAdded)
+            case "lastPlayed": text = MainWindowController.shortDate(t.lastPlayed)
             default: text = ""
             }
             cell.textField?.stringValue = text
             // The playing track is bold, as iTunes marked it.
             let isPlaying = t.persistentId == player.state?.track?.persistentId && player.state?.state != "stopped"
             cell.textField?.font = Aqua.font(11, bold: isPlaying)
+            // In Duplicates, the copies the app would let go of are grey.
+            let extra = controller.source == .duplicates && controller.duplicateExtras.contains(t.persistentId)
+            cell.textField?.textColor = extra ? NSColor(white: 0.5, alpha: 1) : NSColor.controlTextColor
             return cell
         case .none:
             return nil
@@ -3495,6 +3664,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             switch sourceRows[row] {
             case .library: closeDevicePage(); closeCuratorPage(); controller.source = .library
             case .recentlyAdded: closeDevicePage(); closeCuratorPage(); controller.source = .recentlyAdded
+            case .duplicates: closeDevicePage(); closeCuratorPage(); controller.source = .duplicates
             case .playlist(let p): closeDevicePage(); closeCuratorPage(); controller.source = .playlist(p)
             case .device(let d): closeCuratorPage(); openDevicePage(for: d)
             case .curator: openCuratorPage()

@@ -1,7 +1,7 @@
 import Cocoa
 
 enum SidebarIcon {
-    case music, recent, playlist, smartPlaylist, folder, curator, ipod, speaker, none
+    case music, recent, duplicates, playlist, smartPlaylist, folder, curator, ipod, speaker, none
 }
 
 /// The small grey triangle beside a folder: right when closed, down when
@@ -170,6 +170,16 @@ final class SidebarIconView: NSView {
             body.fill()
             (selected ? NSColor(white: 1, alpha: 0.35) : NSColor(white: 1, alpha: 0.35)).setFill()
             NSRect(x: cx - 6, y: cy + 1.5, width: 12, height: 1).fill()
+        case .duplicates:
+            // Two overlapping sheets: the same thing, twice.
+            for (dx, dy) in [(-2.5, 1.5), (1.5, -2.5)] as [(CGFloat, CGFloat)] {
+                let sheet = NSBezierPath(roundedRect: NSRect(x: cx - 4 + dx, y: cy - 4.5 + dy, width: 8, height: 9), xRadius: 1, yRadius: 1)
+                (selected ? NSColor(white: 1, alpha: 0.25) : NSColor(white: 1, alpha: 0.9)).setFill()
+                sheet.fill()
+                fill.setStroke()
+                sheet.lineWidth = 1.3
+                sheet.stroke()
+            }
         case .curator:
             // The Genius atom iTunes 8 wore: a nucleus with two crossed
             // orbits. The curator does what Genius did, with a mind of its own.

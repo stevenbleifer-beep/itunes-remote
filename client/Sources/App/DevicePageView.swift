@@ -514,7 +514,7 @@ final class DeviceSummaryView: NSView {
         if let reason = d.unavailableReason {
             options = []
             note = reason + "\n\nThis is everything the USB bus can say about it. Open iTunes "
-                + "on the MacBook Pro with the device connected, and the rest of this page fills in."
+                + "on the \(ServerSettings.name) with the device connected, and the rest of this page fills in."
         } else {
             // Every option from iTunes' own Summary pane, in its order. A tick
             // is a value actually established; a dash is one iTunes keeps to
@@ -536,7 +536,7 @@ final class DeviceSummaryView: NSView {
             note = "A dash means iTunes keeps that setting in its library database, where nothing "
                 + "outside iTunes can read or change it — its window reports no accessible "
                 + "controls either. The ticked ones were established from the device itself. "
-                + "Change any of them in iTunes on the MacBook Pro."
+                + "Change any of them in iTunes on the \(ServerSettings.name)."
         }
         optionsTitle = d.unavailableReason == nil ? "Options" : "Why this page is short"
         needsDisplay = true

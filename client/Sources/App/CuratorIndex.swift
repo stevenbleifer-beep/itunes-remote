@@ -74,6 +74,13 @@ final class CuratorIndex {
 
     func contains(_ id: String) -> Bool { rowOf[id] != nil }
 
+    /// The stored (unit-length) vector of one song, when it has been embedded.
+    func vector(of id: String) -> [Float]? {
+        guard let row = rowOf[id] else { return nil }
+        let start = row * CuratorIndex.dims
+        return Array(vectors[start..<start + CuratorIndex.dims])
+    }
+
     /// Cuts a raw embedding to the index's width and normalises it.
     static func prepare(_ v: [Float]) -> [Float] {
         var out = Array(v.prefix(dims))

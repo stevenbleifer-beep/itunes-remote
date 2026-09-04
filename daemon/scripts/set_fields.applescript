@@ -55,6 +55,10 @@ on setField(t, fn, fv)
         else if fn is "rating" then
             set old to (rating of t) as text
             set rating of t to (fv as integer)
+        else if fn is "lyrics" then
+            -- Not in the XML: the sheet reads it through lyrics_get first.
+            set old to lyrics of t
+            set lyrics of t to fv
         else
             error "unsupported field: " & fn
         end if

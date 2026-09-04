@@ -408,6 +408,7 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
         draft.host = r.tailscaleName.isEmpty ? homeHost : r.tailscaleName
         draft.port = c.port
         draft.token = r.token
+        if !r.name.isEmpty { draft.name = r.name }
         setBusy(false)
         show(.away)
     }

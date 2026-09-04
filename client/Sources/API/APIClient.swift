@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import AppKit
 
 struct APIError: LocalizedError {
@@ -373,6 +374,14 @@ final class APIClient {
     }
 
     /// Puts one picture (JPEG or PNG bytes) on every track listed.
+    /// The song's lyrics, read from iTunes on demand: they are not in the XML.
+    func lyrics(for persistentId: String) async throws -> String {
+        struct Wrap: Decodable { let lyrics: String }
+        let w: Wrap = try await get("/api/tracks/\(persistentId)/lyrics")
+        // iTunes hands them back with carriage returns.
+        return w.lyrics.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+    }
+
     func setArtwork(ids: [String], image: Data) async throws -> PatchResult {
         let data = try await request("PUT", "/api/tracks/artwork",
                                      body: ["ids": ids, "image": image.base64EncodedString()], timeout: 120)
@@ -500,6 +509,8 @@ final class APIClient {
                 rating: idx["rating"].flatMap { row[$0] as? Int } ?? 0,
                 playCount: idx["playCount"].flatMap { row[$0] as? Int } ?? 0,
                 dateAdded: idx["dateAdded"].flatMap { row[$0] as? String } ?? "",
+                lastPlayed: idx["lastPlayed"].flatMap { row[$0] as? String } ?? "",
+                bitRate: idx["bitRate"].flatMap { row[$0] as? Int },
                 sortArtist: idx["sortArtist"].flatMap { row[$0] as? String } ?? "",
                 sortAlbum: idx["sortAlbum"].flatMap { row[$0] as? String } ?? "",
                 sortName: idx["sortName"].flatMap { row[$0] as? String } ?? ""
@@ -571,6 +582,7 @@ struct ServerSettings {
     static let lanHostKey = "serverLANHost"
     static let portKey = "serverPort"
     static let tokenKey = "serverToken"
+    static let nameKey = "serverName"
 
     /// The host used when the LAN one does not answer — the Tailscale name.
     var host: String
@@ -578,14 +590,34 @@ struct ServerSettings {
     var lanHost: String
     var port: Int
     var token: String
+    /// The other Mac's name as its System Preferences shows it, learned at
+    /// pairing. Every message that names the other machine uses it.
+    var name: String = ServerSettings.name
+
+    /// The paired Mac's name, for messages, without loading the rest.
+    static var name: String {
+        let n = UserDefaults.standard.string(forKey: nameKey) ?? ""
+        return n.isEmpty ? "MacBook Pro" : n
+    }
 
     static func load() -> ServerSettings {
         let d = UserDefaults.standard
+        // The token lives in the keychain. One kept in UserDefaults by an
+        // earlier version, or by a save the keychain refused, moves over
+        // the first time the keychain takes it.
+        var token = d.string(forKey: tokenKey) ?? ""
+        if TokenStore.enabled {
+            if !token.isEmpty {
+                if TokenStore.write(token) { d.removeObject(forKey: tokenKey) }
+            } else {
+                token = TokenStore.read() ?? ""
+            }
+        }
         return ServerSettings(
             host: d.string(forKey: hostKey) ?? "Stevens-MacBook-Pro.local",
             lanHost: d.string(forKey: lanHostKey) ?? "Stevens-MacBook-Pro.local",
             port: d.integer(forKey: portKey) == 0 ? 8765 : d.integer(forKey: portKey),
-            token: d.string(forKey: tokenKey) ?? ""
+            token: token
         )
     }
 
@@ -594,7 +626,12 @@ struct ServerSettings {
         d.set(host, forKey: Self.hostKey)
         d.set(lanHost, forKey: Self.lanHostKey)
         d.set(port, forKey: Self.portKey)
-        d.set(token, forKey: Self.tokenKey)
+        d.set(name, forKey: Self.nameKey)
+        if TokenStore.enabled && TokenStore.write(token) {
+            d.removeObject(forKey: Self.tokenKey)
+        } else {
+            d.set(token, forKey: Self.tokenKey)
+        }
     }
 
     var baseURL: URL? {
@@ -603,5 +640,59 @@ struct ServerSettings {
 
     var lanURL: URL? {
         URL(string: "http://\(lanHost):\(port)")
+    }
+}
+
+/// The daemon's bearer token, in the login keychain rather than in the
+/// preferences file, where anything that can read a plist could read it.
+///
+/// Only a build signed with a Team ID uses the keychain. An ad-hoc
+/// development build would get an "allow access?" dialog for an item the
+/// signed app made (and the signed app one for an item the dev build made),
+/// so development builds stay on UserDefaults, or on `--token`.
+enum TokenStore {
+    static let service = "local.stevenbleifer.itunesremote"
+    static let account = "daemon-token"
+
+    /// Off for `--token` runs, and for anything not signed by a team.
+    nonisolated(unsafe) static var enabled: Bool = signedWithTeam
+
+    static let signedWithTeam: Bool = {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let c = code else { return false }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(c, [], &staticCode) == errSecSuccess, let sc = staticCode else { return false }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(sc, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let dict = info as? [String: Any] else { return false }
+        return ((dict[kSecCodeInfoTeamIdentifier as String] as? String) ?? "").isEmpty == false
+    }()
+
+    private static var base: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: account]
+    }
+
+    static func read() -> String? {
+        var q = base
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult
+    static func write(_ token: String) -> Bool {
+        let data = Data(token.utf8)
+        var status = SecItemUpdate(base as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var add = base
+            add[kSecValueData as String] = data
+            add[kSecAttrLabel as String] = "iTunes Remote daemon token"
+            status = SecItemAdd(add as CFDictionary, nil)
+        }
+        return status == errSecSuccess
     }
 }

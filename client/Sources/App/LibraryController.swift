@@ -3,11 +3,14 @@ import Foundation
 enum Source: Equatable {
     case library
     case recentlyAdded
+    /// Songs the library holds more than once: same title and artist,
+    /// about the same length.
+    case duplicates
     case playlist(Playlist)
 
     static func == (a: Source, b: Source) -> Bool {
         switch (a, b) {
-        case (.library, .library), (.recentlyAdded, .recentlyAdded): return true
+        case (.library, .library), (.recentlyAdded, .recentlyAdded), (.duplicates, .duplicates): return true
         case let (.playlist(x), .playlist(y)): return x.persistentId == y.persistentId
         default: return false
         }
@@ -27,6 +30,7 @@ enum Source: Equatable {
         switch self {
         case .library: return "Music"
         case .recentlyAdded: return "Recently Added"
+        case .duplicates: return "Duplicates"
         case .playlist(let p): return p.name
         }
     }
@@ -47,6 +51,11 @@ final class LibraryController {
     private(set) var selections: [String: String] = [:]
     private(set) var browserFields: [String] = ["genre", "artist", "album"]
     private(set) var tracks: [Track] = []
+    /// In the Duplicates view: the copies the app suggests letting go of —
+    /// every song in a group but the one with the best bit rate, rating
+    /// and play count. Shown grey.
+    private(set) var duplicateExtras: Set<String> = []
+    private(set) var duplicateGroups = 0
     private(set) var totalTime = 0
     private(set) var totalSize = 0
     private(set) var loading = false
@@ -263,9 +272,20 @@ final class LibraryController {
                     reload()
                     return
                 }
-                self.tracks = page.tracks
-                self.totalTime = page.totalTime
-                self.totalSize = page.totalSize
+                if source == .duplicates {
+                    let found = Duplicates.find(in: page.tracks)
+                    self.tracks = found.tracks
+                    self.duplicateExtras = found.extras
+                    self.duplicateGroups = found.groups
+                    self.totalTime = found.tracks.reduce(0) { $0 + ($1.totalTime ?? 0) }
+                    self.totalSize = found.tracks.reduce(0) { $0 + ($1.size ?? 0) }
+                } else {
+                    self.tracks = page.tracks
+                    self.duplicateExtras = []
+                    self.duplicateGroups = 0
+                    self.totalTime = page.totalTime
+                    self.totalSize = page.totalSize
+                }
                 applySort()
                 lastError = nil
                 loading = false
@@ -363,6 +383,7 @@ final class LibraryController {
         case "rating": order.sort { i, j in less(tracks[i].rating, tracks[j].rating, tie: { byArtist(i, j) }) }
         case "playCount": order.sort { i, j in less(tracks[i].playCount, tracks[j].playCount, tie: { byArtist(i, j) }) }
         case "dateAdded": order.sort { i, j in less(tracks[i].dateAdded, tracks[j].dateAdded, tie: { byArtist(i, j) }) }
+        case "lastPlayed": order.sort { i, j in less(tracks[i].lastPlayed, tracks[j].lastPlayed, tie: { byArtist(i, j) }) }
         default: return
         }
         tracks = order.map { tracks[$0] }
@@ -398,6 +419,13 @@ final class LibraryController {
         if let e = lastError { return "Error: \(e)" }
         if api == nil { return "Not connected" }
         if loading && tracks.isEmpty { return "Loading…" }
+        if source == .duplicates {
+            if tracks.isEmpty { return "No duplicates found" }
+            let extra = tracks.filter { duplicateExtras.contains($0.persistentId) }
+            let bytes = extra.reduce(0) { $0 + ($1.size ?? 0) }
+            return "\(duplicateGroups) song\(duplicateGroups == 1 ? "" : "s") with more than one copy · "
+                + "\(extra.count) extra cop\(extra.count == 1 ? "y" : "ies") shown grey, \(StatusFormat.size(bytes))"
+        }
         return StatusFormat.summary(count: tracks.count, totalTime: totalTime, totalSize: totalSize)
     }
 }

@@ -114,7 +114,7 @@ class AppleScript(object):
         require_running = kw.get("require_running", True)
         serialize = kw.get("serialize", True)
         if require_running and not self.itunes_running():
-            raise ITunesNotRunning("iTunes is not running on the MacBook Pro")
+            raise ITunesNotRunning("iTunes is not running on %s" % _computer_name())
         path = os.path.join(self.scripts_dir, name + ".applescript")
         cmd = ["osascript", path] + [str(a) for a in args]
         guard = self.lock if serialize else _NoLock()
@@ -140,6 +140,21 @@ class AppleScript(object):
     @staticmethod
     def fields(text):
         return text.split(US)
+
+
+_name_cache = None
+
+
+def _computer_name():
+    """The Mac's name as System Preferences shows it, for messages."""
+    global _name_cache
+    if _name_cache is None:
+        try:
+            out = subprocess.run(["scutil", "--get", "ComputerName"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            _name_cache = out.stdout.decode("utf-8", "replace").strip() or "the other Mac"
+        except (OSError, subprocess.SubprocessError):
+            _name_cache = "the other Mac"
+    return _name_cache
 
 
 def _clean_error(err):

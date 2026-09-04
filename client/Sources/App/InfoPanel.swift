@@ -53,11 +53,24 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
     var onApply: ([String: Any], @escaping (String?) -> Void) -> Void = { _, done in done(nil) }
     /// Existing genres, for the genre field's autocomplete.
     var knownGenres: [String] = []
+    /// Reads one track's lyrics; nil means they could not be read.
+    var loadLyrics: (String, @escaping (String?) -> Void) -> Void = { _, done in done(nil) }
+
+    // Info | Lyrics, for a single song. Lyrics are not in the library the
+    // app holds, so they are fetched when the sheet opens and written back
+    // as a field of their own if they changed.
+    private let tabs = InfoTabStrip(titles: ["Info", "Lyrics"])
+    private var infoViews: [NSView] = []
+    private let lyricsScroll = NSScrollView()
+    private let lyricsView = NSTextView()
+    private var initialLyrics: String?
+    private var lyricsLoaded = false
 
     init(tracks: [Track]) {
         self.tracks = tracks
         let rowHeight: CGFloat = 27
-        let top: CGFloat = 46
+        let hasLyrics = tracks.count == 1
+        let top: CGFloat = hasLyrics ? 76 : 46
         let height = top + CGFloat(InfoPanel.rows.count) * rowHeight + 34 + 52
         let content = ChromeView(frame: NSRect(x: 0, y: 0, width: 640, height: height))
         content.gradientTop = NSColor(white: 0.93, alpha: 1)
@@ -75,10 +88,37 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
         heading.frame = NSRect(x: 20, y: height - 34, width: 600, height: 18)
         content.addSubview(heading)
 
+        if hasLyrics {
+            let ts = tabs.intrinsicContentSize
+            tabs.frame = NSRect(x: (640 - ts.width) / 2, y: height - 66, width: ts.width, height: ts.height)
+            tabs.onChange = { [weak self] i in self?.showTab(i) }
+            content.addSubview(tabs)
+
+            lyricsView.font = Aqua.font(12)
+            lyricsView.isRichText = false
+            lyricsView.isAutomaticQuoteSubstitutionEnabled = false
+            lyricsView.isAutomaticDashSubstitutionEnabled = false
+            lyricsView.textContainerInset = NSSize(width: 6, height: 6)
+            lyricsView.isVerticallyResizable = true
+            lyricsView.autoresizingMask = [.width]
+            lyricsView.textContainer?.widthTracksTextView = true
+            lyricsView.isEditable = false
+            lyricsView.string = "Reading lyrics…"
+            lyricsScroll.documentView = lyricsView
+            lyricsScroll.hasVerticalScroller = true
+            lyricsScroll.scrollerStyle = .legacy
+            lyricsScroll.verticalScroller = AquaScroller()
+            lyricsScroll.borderType = .bezelBorder
+            lyricsScroll.frame = NSRect(x: 20, y: 52, width: 600, height: height - top - 52 + 10)
+            lyricsScroll.isHidden = true
+            content.addSubview(lyricsScroll)
+        }
+
         // The cover, at the right, the way iTunes' Info window put it.
         well.frame = NSRect(x: 640 - 20 - 120, y: height - top - 120 + 4, width: 120, height: 120)
         well.onImage = { [weak self] image in self?.pickedArtwork(image) }
         content.addSubview(well)
+        infoViews.append(well)
         chooseButton.target = self
         chooseButton.action = #selector(chooseArtwork)
         removeButton.target = self
@@ -90,6 +130,7 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
         removeButton.frame = NSRect(x: well.frame.midX - bw / 2, y: well.frame.minY - 58, width: bw, height: rs.height)
         content.addSubview(chooseButton)
         content.addSubview(removeButton)
+        infoViews += [chooseButton, removeButton]
         removeButton.isEnabled = false
 
         var y = height - top - rowHeight
@@ -99,6 +140,7 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
             label.alignment = .right
             label.frame = NSRect(x: 12, y: y + 3, width: 120, height: 18)
             content.addSubview(label)
+            infoViews.append(label)
 
             let field = NSTextField(string: "")
             field.font = Aqua.font(12)
@@ -112,6 +154,7 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
                 field.formatter = f
             }
             content.addSubview(field)
+            infoViews.append(field)
             fields[row.apiName] = field
 
             let (common, isMixed) = InfoPanel.commonValue(row.apiName, tracks)
@@ -138,6 +181,7 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
         }
         initialCompilation = compilation.state
         content.addSubview(compilation)
+        infoViews.append(compilation)
 
         statusLabel.font = Aqua.font(11)
         statusLabel.textColor = NSColor(white: 0.35, alpha: 1)
@@ -156,6 +200,37 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
         content.addSubview(cancelButton)
 
         panel.initialFirstResponder = fields["name"]
+    }
+
+    /// Switches tabs from outside (the `--info-lyrics` test flag).
+    func selectTab(_ i: Int) {
+        guard tracks.count == 1 else { return }
+        tabs.selectedIndex = i
+        showTab(i)
+    }
+
+    private func showTab(_ i: Int) {
+        let lyrics = i == 1
+        for v in infoViews { v.isHidden = lyrics }
+        lyricsScroll.isHidden = !lyrics
+        if lyrics { panel.makeFirstResponder(lyricsView) }
+    }
+
+    /// Fetches the song's lyrics once the owner has wired `loadLyrics`.
+    func loadCurrentLyrics() {
+        guard tracks.count == 1, let first = tracks.first else { return }
+        loadLyrics(first.persistentId) { [weak self] text in
+            guard let self = self else { return }
+            self.lyricsLoaded = true
+            if let text = text {
+                self.initialLyrics = text
+                self.lyricsView.string = text
+                self.lyricsView.isEditable = true
+            } else {
+                self.lyricsView.string = "The lyrics could not be read from iTunes."
+                self.lyricsView.textColor = NSColor(white: 0.45, alpha: 1)
+            }
+        }
     }
 
     /// Asks for the first track's cover once the owner has wired `loadArtwork`.
@@ -272,6 +347,10 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
         if compilation.state != initialCompilation && compilation.state != .mixed {
             payload["compilation"] = compilation.state == .on
         }
+        if let before = initialLyrics {
+            let now = lyricsView.string.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+            if now != before { payload["lyrics"] = now }
+        }
         switch artworkChange {
         case .set(let image):
             guard let data = InfoPanel.coverData(image) else {
@@ -305,6 +384,7 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
         compilation.isEnabled = !busy
         chooseButton.isEnabled = !busy
         removeButton.isEnabled = !busy && well.image != nil
+        lyricsView.isEditable = !busy && initialLyrics != nil
         statusLabel.stringValue = message
     }
 
@@ -380,5 +460,60 @@ final class ArtworkWell: NSView {
         guard let img = imageOn(sender.draggingPasteboard) else { return false }
         onImage(img)
         return true
+    }
+}
+
+/// Two or three named tabs in an Aqua capsule, for the Info sheet.
+final class InfoTabStrip: NSView {
+    let titles: [String]
+    var selectedIndex = 0 { didSet { needsDisplay = true } }
+    var onChange: (Int) -> Void = { _ in }
+    private let segmentWidth: CGFloat = 78
+
+    init(titles: [String]) {
+        self.titles = titles
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: segmentWidth * CGFloat(titles.count) + 2, height: 22)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let i = Int((p.x - 1) / segmentWidth)
+        guard (0..<titles.count).contains(i), i != selectedIndex else { return }
+        selectedIndex = i
+        onChange(i)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let box = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let shape = NSBezierPath(roundedRect: box, xRadius: 4, yRadius: 4)
+        NSGradient(starting: NSColor(white: 0.99, alpha: 1), ending: NSColor(white: 0.90, alpha: 1))!.draw(in: shape, angle: 90)
+        for (i, title) in titles.enumerated() {
+            let r = NSRect(x: 1 + CGFloat(i) * segmentWidth, y: 1, width: segmentWidth, height: bounds.height - 2)
+            if i == selectedIndex {
+                NSGraphicsContext.saveGraphicsState()
+                shape.addClip()
+                NSGradient(starting: NSColor(white: 0.72, alpha: 1), ending: NSColor(white: 0.80, alpha: 1))!.draw(in: r, angle: 90)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            if i > 0 {
+                NSColor(white: 0.6, alpha: 1).setFill()
+                NSRect(x: r.minX, y: 1, width: 1, height: bounds.height - 2).fill()
+            }
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: Aqua.font(11, bold: i == selectedIndex),
+                .foregroundColor: i == selectedIndex ? NSColor.white : NSColor(white: 0.2, alpha: 1),
+            ]
+            let size = (title as NSString).size(withAttributes: attrs)
+            (title as NSString).draw(at: NSPoint(x: r.midX - size.width / 2, y: r.midY - size.height / 2), withAttributes: attrs)
+        }
+        NSColor(white: 0.55, alpha: 1).setStroke()
+        shape.lineWidth = 1
+        shape.stroke()
     }
 }

@@ -342,6 +342,9 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         onAsk(text)
     }
 
+    /// A seeded request starts a new conversation on the page.
+    func startFresh() { startOver(nil) }
+
     @objc private func startOver(_ sender: Any?) {
         picks = []
         suggestedName = ""

@@ -46,12 +46,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         main.curateScript = zip(args, args.dropFirst()).filter { $0.0 == "--curate" }.map { $0.1 }
         main.curateSaveName = arg("--curate-save")
         main.curateApproveName = arg("--curate-approve")
+        main.openMissingArtwork = args.contains("--missing-art")
+        main.likeAlbum = arg("--like")
         if args.contains("--mini") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak main] in main?.toggleMiniPlayer(nil) }
         }
         main.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
 
+        // A development run with its own token stays out of the keychain.
+        if arg("--token") != nil { TokenStore.enabled = false }
         var settings = ServerSettings.load()
         var overridden = false
         if let h = arg("--host") { settings.host = h; overridden = true }
@@ -132,6 +136,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "Get Info", action: #selector(MainWindowController.showGetInfo(_:)), keyEquivalent: "i")
         fileMenu.addItem(.separator())
+        fileMenu.addItem(withTitle: "Find Missing Artwork…", action: #selector(MainWindowController.showMissingArtwork(_:)), keyEquivalent: "")
+        fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Set Up iTunes Remote…", action: #selector(showSetup(_:)), keyEquivalent: "")
         fileMenu.addItem(withTitle: "Connect…", action: #selector(showConnectPanel(_:)), keyEquivalent: "k")
         fileMenu.addItem(.separator())
@@ -178,6 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         viewMenu.addItem(.separator())
         // Ticked when the CURATOR section is in the sidebar; untick to hide it.
         viewMenu.addItem(withTitle: "Playlist Curator", action: #selector(MainWindowController.toggleCuratorVisible(_:)), keyEquivalent: "")
+        viewMenu.addItem(withTitle: "Show Duplicates", action: #selector(MainWindowController.toggleDuplicatesVisible(_:)), keyEquivalent: "")
         viewMenu.addItem(.separator())
         for (i, title) in ["as List", "as Album List", "as Grid", "as Cover Flow"].enumerated() {
             let item = viewMenu.addItem(withTitle: title,
@@ -203,6 +210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let showQueue = controlsMenu.addItem(withTitle: "Show Up Next",
                                              action: #selector(MainWindowController.showUpNext(_:)), keyEquivalent: "u")
         showQueue.keyEquivalentModifierMask = [NSEvent.ModifierFlags.command, NSEvent.ModifierFlags.option]
+        controlsMenu.addItem(withTitle: "Notify on Song Change",
+                             action: #selector(MainWindowController.toggleSongNotifications(_:)), keyEquivalent: "")
         controlsMenu.addItem(.separator())
         let curatorItem = controlsMenu.addItem(withTitle: "Playlist Curator",
                                                action: #selector(MainWindowController.showCurator(_:)), keyEquivalent: "k")
@@ -210,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controlsMenu.addItem(withTitle: "Train Curator on My Edits…",
                              action: #selector(MainWindowController.showTraining(_:)), keyEquivalent: "")
         controlsMenu.addItem(.separator())
-        controlsMenu.addItem(withTitle: "Restart iTunes on the MacBook Pro…",
+        controlsMenu.addItem(withTitle: "Restart iTunes on the \(ServerSettings.name)…",
                              action: #selector(MainWindowController.restartITunes(_:)), keyEquivalent: "")
         let controlsItem = NSMenuItem()
         controlsItem.submenu = controlsMenu

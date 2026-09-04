@@ -849,3 +849,98 @@ on a second display — `screencapture -l <that number>` gets the sheet.
 **Reconnect button removed** (`reconnectButton`, `reconnect(_:)`): its
 one remaining job, clearing the artwork cache, moved into the Refresh
 button. Reconnection and home/away switching were already automatic.
+
+## Seven features in one pass (2026-09-04, late night)
+
+Steven asked "are there any other features you think should be added?",
+I listed seven, and he said "all of them" — with the note that More Like
+This had to be an *addition* to the curator, keeping the page and the
+conversation exactly as they were. All seven are in; here is where each
+lives and what to know.
+
+**Daemon.** `Track` gained `play_date` (XML "Play Date UTC") → `lastPlayed`,
+and the compact rows now carry `lastPlayed` and `bitRate`. Lyrics are not in
+the XML at all, so there is `GET /api/tracks/<pid>/lyrics` running
+`lyrics_get.applescript` (mind: `words` is a reserved word in AppleScript;
+the first draft used it as a variable and failed with "Can't make every
+word into type Unicode text"). `PATCH /api/tracks` accepts `lyrics`; it is
+in `Api.EXTERNAL_FIELDS`, written to iTunes but never into the in-memory
+library, and `head.append(Track.EDITABLE.get(internal, internal))` is
+what lets a field that `Track` does not carry reach the script. iTunes
+hands lyrics back with `\r`; the client normalises to `\n`. Verified round
+trip on 91A140968E8BD5E9 (set, read, cleared).
+
+**Deploy trap, again.** rsync to the Pro must escape the space:
+`"…:Library/Application\ Support/iTunesRemote/daemon/"`. The Pro's rsync
+is 2.6.9 and splits an unescaped remote path at the space, so a deploy
+with `"Library/Application Support/…"` silently lands in
+`~/Library/Application/` on the Pro and the daemon keeps running old
+code. I did exactly that once tonight, found the stray copy, removed it,
+and redeployed. The recipe in the memory file has the backslash; keep it.
+
+**Client.**
+- `Duplicates.swift`: same folded title + artist, clustered by length
+  within 2 s, keeper first (`keepFirst`: bit rate, rating, plays, date
+  added). `Source.duplicates` in `LibraryController` fetches like the
+  library (so the browser panes still narrow it) and replaces the page
+  with the groups; `duplicateExtras` greys the extras in the table cell.
+  Sidebar row under LIBRARY, `duplicatesShown` (default on), View ▸ Show
+  Duplicates. On this library: 6,448 songs with copies, 8,297 extras,
+  76.91 GB. `--source duplicates` for screenshots.
+- `InfoPanel`: single-song sheets get an `InfoTabStrip` (Info | Lyrics);
+  `infoViews` hide when Lyrics is up; `loadLyrics` fetches on present,
+  `initialLyrics` nil means "could not read" and the view stays
+  read-only. `--get-info --info-lyrics` opens the sheet on the tab.
+- `lastPlayed` column, sort case, optional-columns list.
+- `MissingArtworkWindow.swift`: albums with `hasArtwork == false` from the
+  album list (a settled miss in the daemon's caches, not a "maybe"),
+  iTunes Search (`itunes.apple.com/search?media=music&entity=album`),
+  600×600 art by rewriting `100x100bb`, `agrees()` requires the
+  simplified album names to be equal (a prefix rule matched "Cassadaga: A
+  Companion" for "Cassadaga", so it went) and the artist to agree or
+  contain; Find All sleeps 2.5 s between lookups because the service
+  throttles. Writes go through `api.setArtwork` on the album's track ids
+  (fetched by album, filtered by display artist) and `api.dropCache()`
+  after. 858 albums qualified here. `--missing-art`, and `--find-art
+  "Artist|Album"` (+ `--find-art-apply`) script one lookup. I stopped short
+  of an end-to-end write test: Steven declined the bulk store scan I was
+  running to find an exact match, so the write path is verified only as
+  the same `setArtwork` call the Info sheet uses.
+- More Like This: `CuratorEngine.ask(_:seeds:)`; a seeded ask resets and
+  keeps `seeds`; `gather` inserts the centroid's 40+ nearest and each
+  seed's 8 nearest ahead of the phrase lists (`CuratorIndex.vector(of:)`,
+  `centroid`, `searchVector`); the plan prompt lists up to twelve seed
+  songs and the seed's artists join `plan.artists`; seed ids and
+  title|artist keys are refused by `take`. Text lessons are not recalled
+  for a seeded request (the small embedding model scored "More songs like
+  the album Abbey Road" against "90s road trip" above 0.62). Entry points:
+  track menu "More Like This", sidebar "Make a Playlist Like This…" (up to
+  400 songs of the playlist). `--like "Artist|Album"` for testing; the
+  Abbey Road run produced a sensible 20 in 42 s.
+- Up Next: `upNext.didSet` writes `upNextQueue` (array of
+  `Track.defaultsDict`), `restoreUpNext()` in `firstLoadDone`.
+  `Track(defaults:)` lives in an extension so the memberwise init survives.
+- `SongNotifier.swift` (UserNotifications): one identifier so banners
+  replace each other, cover as a 256 px JPEG attachment from the artwork
+  cache, permission asked on the first post. Fired from `updatePlayerUI`
+  when the song id changes and the window is out of sight. Not exercised
+  live — the permission dialog would have popped on Steven's screen.
+- `TokenStore` (Security): generic password, service
+  `local.stevenbleifer.itunesremote`. Enabled only when the running app
+  has a Team ID (`SecCodeCopySigningInformation`), and never with
+  `--token`. `ServerSettings.load` migrates a UserDefaults token into the
+  keychain and removes it from defaults only after the write succeeded;
+  `save` falls back to defaults if the keychain refuses.
+- `ServerSettings.name` (defaults `serverName`, set from the hello at
+  pairing, default "MacBook Pro"); every "MacBook Pro" string in the
+  client and the daemon's two user-facing ones now use the paired Mac's
+  name.
+- App icon replaced with the iTunes 10 icon Steven supplied
+  (`~/Downloads/itunesicon512.png` → `Resources/AppIcon.iconset` via sips
+  → `AppIcon.icns`).
+
+**Screenshot tooling correction.** `build/windowid` takes the *owner
+name*, which for the bundled app is "iTunes Remote" (with the space), and
+prints every on-screen window of that process with its title; grep the
+title you want. It cannot see sheets; `--get-info` prints the sheet's
+window number for `screencapture -l`.

@@ -63,7 +63,7 @@ class Track(object):
         "genre", "composer", "year", "track_number", "track_count",
         "disc_number", "disc_count", "total_time", "kind", "size", "bit_rate",
         "compilation", "enabled", "rating", "play_count", "grouping", "bpm",
-        "date_added", "date_modified", "location", "artwork_count", "search", "sort_key",
+        "date_added", "date_modified", "play_date", "location", "artwork_count", "search", "sort_key",
         "sort_name", "sort_artist", "sort_album", "sort_album_artist",
         "browse_artist", "group_keys", "artist_display_key",
     )
@@ -122,6 +122,8 @@ class Track(object):
         self.play_count = raw.get("Play Count") or 0
         self.date_added = _iso(raw.get("Date Added"))
         self.date_modified = _iso(raw.get("Date Modified"))
+        # When it last played, on any of the machines iTunes has synced with.
+        self.play_date = _iso(raw.get("Play Date UTC"))
         self.sort_name = _text(raw.get("Sort Name"))
         self.sort_artist = _text(raw.get("Sort Artist"))
         self.sort_album = _text(raw.get("Sort Album"))
@@ -207,6 +209,7 @@ class Track(object):
             "playCount": self.play_count,
             "dateAdded": self.date_added,
             "dateModified": self.date_modified,
+            "lastPlayed": self.play_date,
         }
 
     def apply(self, fields):
@@ -427,6 +430,7 @@ class Library(object):
         "persistentId", "name", "artist", "album", "albumArtist", "genre",
         "year", "trackNumber", "discNumber", "totalTime", "size", "compilation", "enabled",
         "rating", "playCount", "composer", "grouping", "bpm", "kind", "dateAdded",
+        "lastPlayed", "bitRate",
         # iTunes' sort forms, so the client's column sorts agree with the
         # default order instead of filing "The Beatles" under T.
         "sortArtist", "sortAlbum", "sortName",
@@ -456,6 +460,7 @@ class Library(object):
                 [t.persistent_id, t.name, t.artist, t.album, t.album_artist, t.genre,
                  t.year, t.track_number, t.disc_number, t.total_time, t.size, t.compilation, t.enabled,
                  t.rating, t.play_count, t.composer, t.grouping, t.bpm, t.kind, t.date_added,
+                 t.play_date, t.bit_rate,
                  t.sort_key[1], t.sort_key[3], t.sort_key[6]]
                 for t in page
             ]

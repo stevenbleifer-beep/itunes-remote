@@ -57,6 +57,42 @@ picture on it or click Choose…, and OK writes it to every selected song
 are sent as JPEG no larger than 1400 px a side, and every write goes
 through iTunes itself, never to the files behind its back.
 
+## More of what iTunes did, and some it did not
+
+- **Lyrics.** Get Info on one song has an Info | Lyrics switch; the
+  lyrics are read from iTunes when the sheet opens (they are not in the
+  library XML) and written back if you change them.
+- **Last Played column**, from the XML's play date, beside Plays and Date
+  Added. **Bit rate** rides along in the track rows for the next item.
+- **Duplicates**, under LIBRARY in the sidebar (View ▸ Show Duplicates
+  turns it off): songs with the same title and artist within two seconds
+  of the same length, grouped, the copy worth keeping first (best bit
+  rate, then rated, then most played) and the extras in grey. The status
+  line says how many groups, how many extras, and how much space.
+- **Find Missing Artwork…** (File menu): every album with no cover, and a
+  Find Cover button that looks it up in the iTunes Store's catalogue and
+  writes the picture to the album's songs. Find All walks the list and
+  takes a cover only when artist and album names agree exactly. This is
+  the one feature that talks to something other than the paired Mac: the
+  artist and album names go to Apple's search service, and the window
+  says so. You can also drop your own picture on the well.
+- **More Like This**, on the track context menu, and **Make a Playlist Like
+  This…** on a sidebar playlist: the curator, seeded with the selection
+  instead of a description. The seed songs' embeddings pull the search
+  toward them and their artists join the plan; the songs themselves stay
+  off the list. The curator page and its conversation are unchanged —
+  this is another way in, and you can still say what to change.
+- **Up Next survives a relaunch.**
+- **Notifications** when the song changes and the window is out of sight
+  (app in the background, window hidden or minimised, mini player up):
+  title, artist, album, and the cover. Controls ▸ Notify on Song Change
+  turns them off; the first one asks macOS for permission.
+- The daemon's token now lives in the login keychain rather than the
+  preferences file (a signed build only; an ad-hoc development build
+  stays on `--token` or UserDefaults, so neither ever prompts about the
+  other's keychain item). Messages name the paired Mac by its own name,
+  learned at pairing, instead of "the MacBook Pro".
+
 ## The curator learns
 
 Three things make it better the more it is used, none of which sends

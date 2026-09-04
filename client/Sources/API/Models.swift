@@ -39,6 +39,8 @@ struct Track {
     var rating: Int = 0      // 0-100, five stars of 20
     var playCount: Int = 0
     var dateAdded: String = ""   // ISO 8601, so it sorts as text
+    var lastPlayed: String = ""  // ISO 8601, empty when never played
+    var bitRate: Int? = nil      // kbps
     /// iTunes' sort forms: the Sort field if set, else the text with a leading
     /// article dropped, folded. So "The Beatles" sorts as "beatles".
     var sortArtist: String = ""
@@ -52,6 +54,31 @@ struct Track {
         guard let ms = totalTime else { return "" }
         let s = ms / 1000
         return String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    // MARK: Saved to UserDefaults (the Up Next queue outlives a launch)
+
+    var defaultsDict: [String: Any] {
+        var d: [String: Any] = ["id": persistentId, "name": name, "artist": artist, "album": album,
+                                "albumArtist": albumArtist, "genre": genre, "compilation": compilation]
+        if let v = year { d["year"] = v }
+        if let v = trackNumber { d["trackNumber"] = v }
+        if let v = discNumber { d["discNumber"] = v }
+        if let v = totalTime { d["totalTime"] = v }
+        return d
+    }
+}
+
+extension Track {
+    /// A track saved by `defaultsDict`; the memberwise init stays available
+    /// because this one lives in an extension.
+    init?(defaults d: [String: Any]) {
+        guard let id = d["id"] as? String, id.count == 16 else { return nil }
+        self.init(persistentId: id, name: d["name"] as? String ?? "", artist: d["artist"] as? String ?? "",
+                  album: d["album"] as? String ?? "", albumArtist: d["albumArtist"] as? String ?? "",
+                  genre: d["genre"] as? String ?? "", year: d["year"] as? Int, trackNumber: d["trackNumber"] as? Int,
+                  discNumber: d["discNumber"] as? Int, totalTime: d["totalTime"] as? Int, size: nil,
+                  compilation: d["compilation"] as? Bool ?? false)
     }
 }
 
