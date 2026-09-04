@@ -10,6 +10,7 @@ import Cocoa
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var main: MainWindowController!
+    private var setup: SetupAssistant?
     private var browserSubmenu: NSMenu?
     private var columnsSubmenu: NSMenu?
 
@@ -48,12 +49,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let p = arg("--port"), let n = Int(p) { settings.port = n; overridden = true }
         if let t = arg("--token") { settings.token = t; overridden = true }
 
+        if let code = arg("--setup-demo") {
+            let assistant = SetupAssistant(settings: settings)
+            assistant.onFinish = { [weak self] chosen in
+                print("finished: home=\(chosen.lanHost) away=\(chosen.host) port=\(chosen.port) token=\(chosen.token == settings.token ? "same" : "different")")
+                fflush(stdout)
+                self?.connect(with: chosen)
+            }
+            setup = assistant
+            assistant.run()
+            assistant.demo(code: code)
+            return
+        }
         if settings.token.isEmpty && !overridden {
-            guard let chosen = ConnectPanel(settings: settings).run() else { return }
-            settings = chosen
-            settings.save()
+            // Nothing paired yet: the assistant finds the other Mac and
+            // pairs, then connects. Cancelling leaves the window open with
+            // File ▸ Set Up… and Connect… to try again.
+            runSetup(settings)
+            return
         }
         connect(with: settings)
+    }
+
+    @objc func showSetup(_ sender: Any?) {
+        runSetup(ServerSettings.load())
+    }
+
+    private func runSetup(_ settings: ServerSettings) {
+        let assistant = SetupAssistant(settings: settings)
+        assistant.onFinish = { [weak self] chosen in
+            chosen.save()
+            self?.connect(with: chosen)
+            self?.setup = nil
+        }
+        assistant.onCancel = { [weak self] in self?.setup = nil }
+        setup = assistant
+        assistant.run()
     }
 
     private func connect(with settings: ServerSettings) {
@@ -87,6 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "Get Info", action: #selector(MainWindowController.showGetInfo(_:)), keyEquivalent: "i")
         fileMenu.addItem(.separator())
+        fileMenu.addItem(withTitle: "Set Up iTunes Remote…", action: #selector(showSetup(_:)), keyEquivalent: "")
         fileMenu.addItem(withTitle: "Connect…", action: #selector(showConnectPanel(_:)), keyEquivalent: "k")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")

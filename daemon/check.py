@@ -14,7 +14,9 @@ import sys
 import time
 import urllib.request
 
-LABEL = "local.stevenbleifer.itunesremote"
+# The installer's label, or the development one if that is what is loaded.
+LABELS = ["local.itunesremote.daemon", "local.stevenbleifer.itunesremote"]
+LABEL = next((l for l in LABELS if os.path.exists(os.path.expanduser("~/Library/LaunchAgents/%s.plist" % l))), LABELS[0])
 CONFIG = os.path.expanduser("~/Library/Application Support/iTunesRemote/config.json")
 XML = os.path.expanduser("~/Music/iTunes/iTunes Music Library.xml")
 PLIST = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LABEL)

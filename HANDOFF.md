@@ -524,3 +524,53 @@ the live window is fine.
 **Prototype:** `curator/curator.py` was the proof (artist-list-in-prompt
 design, ~10 minutes a playlist on gemma4:12b). Superseded; kept for the
 record.
+
+## Plug and play (2026-09-04, afternoon)
+
+**The daemon moved.** Steven's Pro now runs the daemon the way a stranger's
+would: from `~/Library/Application Support/iTunesRemote/daemon/` under the
+LaunchAgent label **`local.itunesremote.daemon`** (the old
+`local.stevenbleifer.itunesremote` was booted out and its plist removed by
+the installer). **New deploy recipe:**
+
+    rsync -a -e "ssh -i ~/.ssh/id_ed25519_mbp2012" --exclude __pycache__ --exclude tests \
+        daemon/ "stevenbleifer@Stevens-MacBook-Pro.local:Library/Application Support/iTunesRemote/daemon/"
+    ssh -i ~/.ssh/id_ed25519_mbp2012 stevenbleifer@Stevens-MacBook-Pro.local \
+        'launchctl kickstart -k gui/$(id -u)/local.itunesremote.daemon'
+
+(`~/iTunesRemote/daemon` on the Pro is now just a staging copy; the installer
+is `daemon/Install iTunes Remote Daemon.command`, double-clickable, rerunnable,
+prints the pairing code. `setup.sh` is the old dev installer and is superseded.)
+
+**Pairing.** `config.json` gained `pairing_code` (six digits, made on first
+load of an old config). `GET /api/hello` (no token) says app/name/host/port/
+iTunes version; `POST /api/pair {"code"}` returns the token plus the Mac's
+name and its Tailscale MagicDNS name (found via `~/tailscale/tailscale`,
+`/usr/local/bin/tailscale` or the Tailscale.app CLI, with the community
+socket path tried too). Wrong codes cost a second; five lock pairing for ten
+minutes. `python3 -m itunes_remote --pairing-code` prints the code.
+
+**Bonjour.** The daemon registers `_itunesremote._tcp` through
+`/usr/bin/dns-sd -R` as a child process (`advertise()` in `__main__.py`).
+`dns-sd -B _itunesremote._tcp` from the Air sees it on both bridge0 and Wi-Fi.
+
+**Client.** `SetupAssistant.swift` (find → pair → away → curator → done),
+`DaemonBrowser.swift` (NWBrowser, then hello over the address it resolved).
+First run with no token opens it; File ▸ Set Up iTunes Remote… reruns it.
+ATS exception is now `ts.net` with subdomains, so any tailnet works. The
+status bar has a badge (`AquaConnectionBadge`): Home · Thunderbolt / Wi-Fi /
+Ethernet (the interface the probe's own request left on, from URLSession
+metrics + getifaddrs) or Away via Tailscale; and "Library as of <time>".
+
+**Dev flags:** `--setup-demo CODE` walks the assistant against the real
+daemon, printing `step <name> window <N>` so `scratchpad/demo.sh` can
+screencapture each page. Trap found: an NSTextField sends its action on end
+editing by default, so hiding the code field advanced the assistant a page;
+`sendsActionOnEndEditing = false`.
+
+**Packaging.** `client/package.sh` → `client/build/dist/iTunes Remote <v>.dmg`
+with the app, the `Daemon/` folder (installer inside) and a Read Me.
+`ITR_SIGN_IDENTITY` on build.sh/package.sh signs with the hardened runtime;
+`ITR_NOTARY_PROFILE` notarizes and staples. Steven has a Developer ID; he
+declined a keychain check, so ask him for the identity string and the
+notarytool profile name rather than looking.

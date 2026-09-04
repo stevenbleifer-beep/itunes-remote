@@ -495,6 +495,57 @@ final class APIClient {
 }
 
 /// Where the daemon is. Stored in UserDefaults; edited from the connect panel.
+/// What a daemon says about itself before pairing.
+struct DaemonHello {
+    let name: String
+    let host: String
+    let port: Int
+    let itunesVersion: String
+}
+
+/// The result of a successful pairing: the token, plus the daemon's names.
+struct PairResult {
+    let token: String
+    let name: String
+    let tailscaleName: String
+}
+
+extension APIClient {
+    private static func literal(_ host: String) -> String { host.contains(":") ? "[\(host)]" : host }
+
+    /// GET /api/hello on a host, no token needed.
+    static func hello(host: String, port: Int) async throws -> DaemonHello {
+        guard let url = URL(string: "http://\(literal(host)):\(port)/api/hello") else { throw APIError(status: 0, message: "bad address") }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 6
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              obj["app"] as? String == "iTunes Remote" else {
+            throw APIError(status: (resp as? HTTPURLResponse)?.statusCode ?? 0, message: "that is not an iTunes Remote daemon")
+        }
+        return DaemonHello(name: obj["name"] as? String ?? host, host: obj["host"] as? String ?? host,
+                           port: obj["port"] as? Int ?? port, itunesVersion: obj["itunesVersion"] as? String ?? "")
+    }
+
+    /// POST /api/pair with the six-digit code the installer printed.
+    static func pair(host: String, port: Int, code: String) async throws -> PairResult {
+        guard let url = URL(string: "http://\(literal(host)):\(port)/api/pair") else { throw APIError(status: 0, message: "bad address") }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 15
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["code": code])
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        let obj = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200, let token = obj["token"] as? String, !token.isEmpty else {
+            throw APIError(status: status, message: obj["error"] as? String ?? "pairing failed")
+        }
+        return PairResult(token: token, name: obj["name"] as? String ?? host, tailscaleName: obj["tailscaleName"] as? String ?? "")
+    }
+}
+
 struct ServerSettings {
     static let hostKey = "serverHost"
     static let lanHostKey = "serverLANHost"

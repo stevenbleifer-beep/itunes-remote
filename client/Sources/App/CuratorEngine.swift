@@ -67,6 +67,28 @@ final class OllamaClient {
         return result
     }
 
+    /// Downloads a model, reporting (fraction, status line) as Ollama streams
+    /// its progress. Returns when the pull is complete.
+    func pull(model: String, progress: @escaping @Sendable (Double, String) -> Void) async throws {
+        var req = URLRequest(url: baseURL.appendingPathComponent("api/pull"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 3600
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["model": model, "stream": true])
+        let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw CuratorError("Ollama refused to pull \(model)") }
+        for try await line in bytes.lines {
+            guard let d = line.data(using: .utf8), let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
+            if let err = obj["error"] as? String { throw CuratorError(err) }
+            let status = obj["status"] as? String ?? ""
+            if let total = obj["total"] as? Double, total > 0, let done = obj["completed"] as? Double {
+                progress(done / total, "\(status) — \(Int(done / 1_048_576)) of \(Int(total / 1_048_576)) MB")
+            } else {
+                progress(status == "success" ? 1 : -1, status)
+            }
+        }
+    }
+
     /// ~/Library/Logs/iTunesRemote/curator.log: every prompt and reply, so
     /// a bad playlist can be traced to what the model was shown and said.
     static func log(_ line: String) {

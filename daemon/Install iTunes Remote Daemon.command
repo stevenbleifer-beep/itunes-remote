@@ -133,7 +133,7 @@ echo
 echo "Optional, so the app can show and dismiss iTunes' own alert dialogs from afar:"
 echo "  System Preferences > Security & Privacy > Privacy > Accessibility"
 echo "  click the lock, then +, press Command-Shift-G and paste:"
-echo "    $(dirname "$(dirname "$(readlink "$PYTHON" 2>/dev/null || echo "$PYTHON")")")/Resources/Python.app"
+echo "    $("$PYTHON" -c 'import os, sys; print(os.path.dirname(os.path.dirname(os.path.realpath(sys.executable))) + "/Resources/Python.app")')"
 echo
 echo "Logs: $LOG_DIR    Reinstall or reprint the code: run this file again."
 echo

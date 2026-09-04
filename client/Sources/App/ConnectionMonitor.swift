@@ -19,7 +19,9 @@ final class ConnectionMonitor {
     var onChange: (Mode) -> Void = { _ in }
 
     private let session: URLSession
+    private let metrics = MetricsCatcher()
     private let pathMonitor = NWPathMonitor()
+    private var interfaceTypes: [String: NWInterface.InterfaceType] = [:]
     private var timer: Timer?
     private var probing = false
 
@@ -30,12 +32,27 @@ final class ConnectionMonitor {
         c.timeoutIntervalForRequest = 2
         c.timeoutIntervalForResource = 3
         c.waitsForConnectivity = false
-        session = URLSession(configuration: c)
+        session = URLSession(configuration: c, delegate: metrics, delegateQueue: nil)
+    }
+
+    /// Keeps the local address of the most recent request.
+    final class MetricsCatcher: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        private let lock = NSLock()
+        private var address: String?
+        var lastLocalAddress: String? { lock.lock(); defer { lock.unlock() }; return address }
+        func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+            guard let a = metrics.transactionMetrics.last?.localAddress else { return }
+            lock.lock(); address = a; lock.unlock()
+        }
     }
 
     func start() {
-        pathMonitor.pathUpdateHandler = { [weak self] _ in
-            Task { @MainActor in self?.probe() }
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let types = Dictionary(path.availableInterfaces.map { ($0.name, $0.type) }, uniquingKeysWith: { a, _ in a })
+            Task { @MainActor in
+                self?.interfaceTypes = types
+                self?.probe()
+            }
         }
         pathMonitor.start(queue: DispatchQueue(label: "local.stevenbleifer.itunesremote.path"))
         timer?.invalidate()
@@ -73,44 +90,39 @@ final class ConnectionMonitor {
         }
     }
 
-    /// A one-shot latch safe to hit from two queues.
-    private final class OnceBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var taken = false
-        func take() -> Bool {
-            lock.lock(); defer { lock.unlock() }
-            if taken { return false }
-            taken = true
-            return true
+    /// Which interface the probe's own request left on, so the badge
+    /// describes the path the app's requests take rather than a separate
+    /// guess: the probe and the API share the resolver and the routing.
+    private func linkName() async -> String {
+        guard let local = metrics.lastLocalAddress else { return "" }
+        guard let name = ConnectionMonitor.interfaceName(forLocalAddress: local) else { return "" }
+        if name.hasPrefix("bridge") { return "Thunderbolt" }
+        if let type = interfaceTypes[name] {
+            switch type {
+            case .wifi: return "Wi-Fi"
+            case .wiredEthernet: return name.hasPrefix("bridge") ? "Thunderbolt" : "Ethernet"
+            default: return ""
+            }
         }
+        return name.hasPrefix("en0") ? "Wi-Fi" : ""
     }
 
-    /// Opens a connection to the LAN host and reads which interface it went
-    /// out on. A Thunderbolt bridge shows up as wired Ethernet on bridge0.
-    private func linkName() async -> String {
-        guard let host = lanURL.host, let port = NWEndpoint.Port(rawValue: UInt16(lanURL.port ?? 8765)) else { return "" }
-        let conn = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
-        return await withCheckedContinuation { (cont: CheckedContinuation<String, Never>) in
-            let once = OnceBox()
-            @Sendable func finish(_ s: String) {
-                guard once.take() else { return }
-                conn.cancel()
-                cont.resume(returning: s)
+    /// The interface that owns a local address, from getifaddrs.
+    private static func interfaceName(forLocalAddress address: String) -> String? {
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else { return nil }
+        defer { freeifaddrs(list) }
+        var p: UnsafeMutablePointer<ifaddrs>? = first
+        while let cur = p {
+            defer { p = cur.pointee.ifa_next }
+            guard let sa = cur.pointee.ifa_addr else { continue }
+            var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 {
+                var s = String(cString: buf)
+                if let i = s.firstIndex(of: "%") { s = String(s[..<i]) }
+                if s == address { return String(cString: cur.pointee.ifa_name) }
             }
-            conn.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    guard let i = conn.currentPath?.availableInterfaces.first else { finish(""); return }
-                    if i.name.hasPrefix("bridge") { finish("Thunderbolt") }
-                    else if i.type == .wifi { finish("Wi-Fi") }
-                    else if i.type == .wiredEthernet { finish("Ethernet") }
-                    else { finish("") }
-                case .failed, .cancelled: finish("")
-                default: break
-                }
-            }
-            conn.start(queue: .global())
-            DispatchQueue.global().asyncAfter(deadline: .now() + 3) { finish("") }
         }
+        return nil
     }
 }

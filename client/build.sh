@@ -36,7 +36,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSAppTransportSecurity</key><dict>
     <key>NSAllowsLocalNetworking</key><true/>
     <key>NSExceptionDomains</key><dict>
-      <key><tailnet>.ts.net</key><dict>
+      <key>ts.net</key><dict>
         <key>NSIncludesSubdomains</key><true/>
         <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
       </dict>
@@ -45,7 +45,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-codesign --force -s - "$APP" >/dev/null 2>&1
+# Ad-hoc for development. With ITR_SIGN_IDENTITY set to a "Developer ID
+# Application: …" identity, a real signature with the hardened runtime, which
+# is what notarization needs; package.sh does the notarizing.
+if [ -n "${ITR_SIGN_IDENTITY:-}" ]; then
+    codesign --force --options runtime --timestamp -s "$ITR_SIGN_IDENTITY" "$APP"
+    echo "signed as $ITR_SIGN_IDENTITY"
+else
+    codesign --force -s - "$APP" >/dev/null 2>&1
+fi
 echo "built $APP"
 
 case "${1:-}" in
