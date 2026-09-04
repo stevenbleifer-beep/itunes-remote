@@ -410,3 +410,12 @@ process); quit first, install, relaunch.
   for queued or searched songs); `step`, `playInContext`, `nextIndex(in:)`
   and the Up Next preview all walk that snapshot, and nothing hands a step
   to iTunes any more.
+
+## Remote access (2026-09-03, late)
+
+Tailscale. The Air runs the official app; the Pro (Mojave) runs the community
+v1.76.3 build from stanwu/tailscale-macos-mojave as a LaunchDaemon, socket
+`/var/run/tailscaled.socket`, operator `stevenbleifer`. The client's
+`serverHost` default is `<pro-name>.<tailnet>.ts.net`; the daemon
+already listened on all interfaces. Nothing in the daemon changed. Over the
+tunnel from home: player 0.43 s, cover 0.08 s, audio 2.9 MB/s.
