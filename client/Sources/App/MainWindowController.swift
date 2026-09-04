@@ -50,6 +50,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let upNextButton = AquaBevelButton(glyph: .upNext)
     private let syncButton = AquaBevelButton(glyph: .sync)
     private let ejectButton = AquaBevelButton(glyph: .eject)
+    /// Home or away, at the right end of the status bar.
+    private let connectionBadge = AquaConnectionBadge()
     private var artworkHeight: NSLayoutConstraint?
     private var devices: [DeviceSource] = []
     private var deviceTimer: Timer?
@@ -323,6 +325,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             statusBar.addSubview(button)
         }
         artworkButton.isOn = UserDefaults.standard.object(forKey: "artworkPane") as? Bool ?? true
+        // Left of where the iPod's Sync and Eject buttons appear.
+        let bs = connectionBadge.intrinsicContentSize
+        connectionBadge.frame = NSRect(x: W - 84 - bs.width, y: 4, width: bs.width, height: bs.height)
+        connectionBadge.autoresizingMask = [.minXMargin]
+        connectionBadge.toolTip = "Working out whether the MacBook Pro is on the local network."
+        statusBar.addSubview(connectionBadge)
 
         // Main split: [source list over artwork] | right side
         mainSplit.frame = NSRect(x: 0, y: statusH, width: W, height: H - toolbarH - statusH)
@@ -1054,9 +1062,23 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         startAlertPolling()
         flashStatus(isAway ? "Away — connected through Tailscale."
                            : "Home — connected on the local network.")
+        showConnectionBadge(isAway ? .away : .home, host: api.baseURL.host ?? "")
         // If the first load failed before the right host was known (Tailscale
         // off at home, say), ask again now that it is.
         if controller.info == nil { controller.connect(api) }
+    }
+
+    /// The badge keeps its right edge where it is as the text changes width.
+    private func showConnectionBadge(_ state: AquaConnectionBadge.State, host: String) {
+        let right = connectionBadge.frame.maxX
+        connectionBadge.state = state
+        let w = connectionBadge.intrinsicContentSize.width
+        connectionBadge.frame = NSRect(x: right - w, y: connectionBadge.frame.minY, width: w, height: connectionBadge.frame.height)
+        switch state {
+        case .connecting: connectionBadge.toolTip = "Working out whether the MacBook Pro is on the local network."
+        case .home: connectionBadge.toolTip = "Connected on the local network: \(host). Every request goes straight to the MacBook Pro."
+        case .away: connectionBadge.toolTip = "Connected through the Tailscale tunnel: \(host). The local network did not answer; polling is slower."
+        }
     }
 
     func connect(_ api: APIClient) {
@@ -1071,6 +1093,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         deviceTimer?.invalidate()
         deviceTimer = Timer.scheduledTimer(withTimeInterval: deviceInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.loadDevices() }
+        }
+        // With one host configured there is nothing to probe: it is home.
+        showConnectionBadge(.connecting, host: "")
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.connectionMonitor == nil else { return }
+            self.showConnectionBadge(.home, host: api.baseURL.host ?? "")
         }
     }
 
