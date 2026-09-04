@@ -30,7 +30,18 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSRequiresAquaSystemAppearance</key><true/>
-  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+  <!-- Plain HTTP is fine on the LAN (.local) and inside the Tailscale
+       tunnel, which is WireGuard-encrypted end to end; ATS only knows the
+       second one by name. -->
+  <key>NSAppTransportSecurity</key><dict>
+    <key>NSAllowsLocalNetworking</key><true/>
+    <key>NSExceptionDomains</key><dict>
+      <key><tailnet>.ts.net</key><dict>
+        <key>NSIncludesSubdomains</key><true/>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+      </dict>
+    </dict>
+  </dict>
 </dict></plist>
 PLIST
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
