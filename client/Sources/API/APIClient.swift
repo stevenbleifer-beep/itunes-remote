@@ -372,6 +372,19 @@ final class APIClient {
         return try JSONDecoder().decode(PatchResult.self, from: data)
     }
 
+    /// Puts one picture (JPEG or PNG bytes) on every track listed.
+    func setArtwork(ids: [String], image: Data) async throws -> PatchResult {
+        let data = try await request("PUT", "/api/tracks/artwork",
+                                     body: ["ids": ids, "image": image.base64EncodedString()], timeout: 120)
+        return try JSONDecoder().decode(PatchResult.self, from: data)
+    }
+
+    /// Takes the artwork off every track listed.
+    func clearArtwork(ids: [String]) async throws -> PatchResult {
+        let data = try await request("DELETE", "/api/tracks/artwork", body: ["ids": ids], timeout: 120)
+        return try JSONDecoder().decode(PatchResult.self, from: data)
+    }
+
     /// `folder` files the new playlist under that folder, creating it first
     /// if iTunes has no folder of that name.
     func createPlaylist(name: String, folder: String? = nil) async throws -> Playlist {

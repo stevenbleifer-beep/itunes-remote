@@ -1,5 +1,6 @@
 """HTTP API. Threaded so reads keep answering while a write is in flight."""
 
+import base64
 import hashlib
 import collections
 import gzip
@@ -243,6 +244,8 @@ class Api(object):
             ("GET", r"/api/outputs", self.get_outputs),
             ("POST", r"/api/outputs", self.post_outputs),
             ("PATCH", r"/api/tracks", self.patch_tracks),
+            ("PUT", r"/api/tracks/artwork", self.put_artwork),
+            ("DELETE", r"/api/tracks/artwork", self.delete_artwork),
             ("POST", r"/api/playlists", self.post_playlist),
             ("PATCH", r"/api/playlists/" + pid, self.patch_playlist),
             ("DELETE", r"/api/playlists/" + pid, self.delete_playlist),
@@ -1840,6 +1843,91 @@ class Api(object):
     def delete_playlist_tracks(self, params, query, body):
         return self._playlist_track_op("playlist_remove", "remove", params["pid"].upper(), body)
 
+    # -- artwork writes --------------------------------------------------
+
+    # Copying a picture onto a track is one Apple Event per track and the
+    # picture crosses each time, so the batches stay small.
+    ARTWORK_CHUNK = 25
+
+    def _artwork_write(self, script, pids, result, extra_args=()):
+        """Runs an artwork script over the tracks and settles every cache
+        the answer lives in, so the new picture (or its absence) shows at
+        once rather than after the XML catches up."""
+        lib = self.store.lib
+        results, ok = [], []
+        for start in range(0, len(pids), self.ARTWORK_CHUNK):
+            chunk = pids[start:start + self.ARTWORK_CHUNK]
+            try:
+                out = self._script(script, *(list(extra_args) + chunk), timeout=30 + 2.0 * len(chunk))
+            except ApiError as e:
+                state = "unknown" if e.status == 504 else "error"
+                for p in chunk:
+                    results.append({"persistentId": p, "result": state, "detail": e.message})
+                continue
+            for record in self.itunes.records(out):
+                if len(record) >= 2 and record[1] == "ok":
+                    ok.append(record[0])
+                    results.append({"persistentId": record[0], "result": "ok"})
+                else:
+                    detail = record[2] if len(record) > 2 else "unknown error"
+                    results.append({"persistentId": record[0], "result": "error", "detail": detail})
+        flags = getattr(self, "_art_flags", None)
+        for p in ok:
+            self.artwork_disk.put(p, result)
+            self._remember(p, result)
+            t = lib.tracks.get(p)
+            if t is not None:
+                t.artwork_count = 1 if result is not None else 0
+            if flags is not None and flags[0] is lib:
+                flags[1][p] = result is not None
+        return {"requested": len(pids), "changed": len(ok), "failed": len(pids) - len(ok), "results": results}
+
+    def put_artwork(self, params, query, body):
+        """Puts one picture on every track listed: body {ids, image (base64), mime}."""
+        pids = self._track_ids(body)
+        missing = [p for p in pids if p not in self.store.lib.tracks]
+        if missing:
+            raise ApiError(404, "no such track: %s" % missing[0])
+        raw = (body or {}).get("image")
+        if not isinstance(raw, str) or not raw:
+            raise ApiError(400, "body needs the image as base64")
+        try:
+            data = base64.b64decode(raw, validate=True)
+        except (ValueError, TypeError):
+            raise ApiError(400, "image is not valid base64")
+        mime = artwork_mod.sniff(data)
+        if mime not in ("image/jpeg", "image/png"):
+            raise ApiError(400, "the image must be a JPEG or a PNG")
+        if len(data) > 3 * 1024 * 1024:
+            raise ApiError(413, "the image is over 3 MB; iTunes covers are smaller than that")
+        fd, tmp = tempfile.mkstemp(prefix="itr-art-in-", suffix=artwork_mod.EXTENSIONS[mime])
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            klass = "PNGf" if mime == "image/png" else "JPEG"
+            out = self._artwork_write("artwork_set", pids, (mime, data), extra_args=(tmp, klass))
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        if self.write_log:
+            self.write_log.record_batch("artwork-set", len(pids), {"mime": mime, "bytes": len(data)},
+                                        "%d ok, %d failed" % (out["changed"], out["failed"]))
+        return out
+
+    def delete_artwork(self, params, query, body):
+        """Takes the artwork off every track listed: body {ids}."""
+        pids = self._track_ids(body)
+        missing = [p for p in pids if p not in self.store.lib.tracks]
+        if missing:
+            raise ApiError(404, "no such track: %s" % missing[0])
+        out = self._artwork_write("artwork_clear", pids, None)
+        if self.write_log:
+            self.write_log.record_batch("artwork-clear", len(pids), None,
+                                        "%d ok, %d failed" % (out["changed"], out["failed"]))
+        return out
+
     # -- metadata writes -------------------------------------------------
 
     def _script_value(self, internal_name, value):
@@ -1964,8 +2052,8 @@ class Api(object):
 
 
 class Handler(BaseHTTPRequestHandler):
-    # Bulk track edits are the biggest legitimate body, well under this.
-    MAX_BODY = 4 * 1024 * 1024
+    # A cover as base64 is the biggest legitimate body, well under this.
+    MAX_BODY = 6 * 1024 * 1024
     # No "BaseHTTP/0.6 Python/3.13" banner for scanners to read.
     sys_version = ""
     server_version = "iTunesRemote/0.2"

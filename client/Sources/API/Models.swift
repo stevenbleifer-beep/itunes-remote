@@ -348,6 +348,16 @@ struct PatchResult: Decodable {
     let updated: Int
     let failed: Int
 
+    private enum CodingKeys: String, CodingKey { case requested, updated, changed, failed }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        requested = try c.decodeIfPresent(Int.self, forKey: .requested) ?? 0
+        // Field edits say "updated"; artwork writes say "changed".
+        updated = try c.decodeIfPresent(Int.self, forKey: .updated)
+            ?? c.decodeIfPresent(Int.self, forKey: .changed) ?? 0
+        failed = try c.decodeIfPresent(Int.self, forKey: .failed) ?? 0
+    }
+
     var summary: String {
         if failed == 0 {
             return "Updated \(updated) track\(updated == 1 ? "" : "s")."

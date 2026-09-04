@@ -46,7 +46,6 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let shuffleButton = AquaBevelButton(glyph: .shuffle)
     private let repeatButton = AquaBevelButton(glyph: .repeatAll)
     private let artworkButton = AquaBevelButton(glyph: .artwork)
-    private let reconnectButton = AquaBevelButton(glyph: .reconnect)
     private let upNextButton = AquaBevelButton(glyph: .upNext)
     private let syncButton = AquaBevelButton(glyph: .sync)
     private let ejectButton = AquaBevelButton(glyph: .eject)
@@ -311,7 +310,6 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             (repeatButton, #selector(cycleRepeat(_:)), "Repeat"),
             (artworkButton, #selector(toggleArtworkPane(_:)), "Show or hide artwork"),
             (upNextButton, #selector(showUpNext(_:)), "Up Next"),
-            (reconnectButton, #selector(reconnect(_:)), "Reconnect to the MacBook Pro and reload everything"),
         ] {
             button.frame = NSRect(x: bx, y: 2, width: 34, height: 20)
             button.target = self
@@ -1143,6 +1141,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             let reloaded = await controller.refreshNow()
             refreshButton.isEnabled = true
             statusOverride = nil
+            // What the old Reconnect button did that nothing else does:
+            // covers changed in iTunes come back fresh.
+            artworkCache.clear()
             if reloaded, let info = controller.info {
                 flashStatus("Library re-read: \(info.trackCount.formatted()) songs.")
             } else if let info = controller.info, let written = MainWindowController.parseISO(info.xmlWrittenAt) {
@@ -1779,33 +1780,6 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     // MARK: Bottom bar
 
-    /// Drops everything and asks the daemon again: library, playlists,
-    /// devices, player and artwork. For when a request failed and the app is
-    /// sitting on a stale or empty view.
-    @objc private func reconnect(_ sender: Any?) {
-        guard let api = controller.api else { return }
-        reconnectButton.isEnabled = false
-        flashStatus("Reconnecting to \(api.baseURL.host ?? "the MacBook Pro")…")
-        artworkCache.clear()
-        controller.connect(api)
-        player.api = api
-        player.start()
-        loadDevices()
-        startAlertPolling()
-        if openDevice != nil { refreshDevicePage() }
-        Task { @MainActor in
-            // Give the reloads a moment, then say what actually happened
-            // rather than claiming success straight away.
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
-            self.reconnectButton.isEnabled = true
-            if let e = self.controller.lastError {
-                self.flashStatus("Still failing: \(e)")
-            } else if self.controller.info != nil {
-                self.flashStatus("Reconnected.")
-            }
-        }
-    }
-
     @objc private func toggleShuffle(_ sender: Any?) {
         player.setShuffle(!player.shuffle)
     }
@@ -2032,21 +2006,54 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         guard !selected.isEmpty, let window = window, let api = controller.api else { return }
         let panel = InfoPanel(tracks: selected)
         panel.knownGenres = controller.facet("genre").map { $0.name }.filter { !$0.isEmpty }
+        panel.loadArtwork = { [weak self] pid, done in self?.artworkCache.image(for: pid, then: done) }
         let ids = selected.map { $0.persistentId }
         panel.onApply = { [weak self] fields, done in
             Task { @MainActor in
                 do {
-                    let result = try await api.patchTracks(ids: ids, fields: fields)
-                    self?.flashStatus(result.summary)
+                    // The picture travels beside the field edits and is
+                    // written by its own call; either may be all there is.
+                    var fields = fields
+                    let artwork = fields.removeValue(forKey: "artwork") as? Data
+                    let clear = fields.removeValue(forKey: "clearArtwork") as? Bool ?? false
+                    var summary: [String] = []
+                    var failed = 0
+                    if !fields.isEmpty {
+                        let result = try await api.patchTracks(ids: ids, fields: fields)
+                        summary.append(result.summary)
+                        failed += result.failed
+                    }
+                    if let data = artwork {
+                        let result = try await api.setArtwork(ids: ids, image: data)
+                        summary.append("Artwork set on \(result.updated) track\(result.updated == 1 ? "" : "s").")
+                        failed += result.failed
+                    } else if clear {
+                        let result = try await api.clearArtwork(ids: ids)
+                        summary.append("Artwork removed from \(result.updated) track\(result.updated == 1 ? "" : "s").")
+                        failed += result.failed
+                    }
+                    if artwork != nil || clear { self?.artworkChanged(ids) }
+                    let text = summary.joined(separator: " ")
+                    self?.flashStatus(text)
                     self?.controller.reload()
-                    done(result.failed == 0 ? nil : result.summary)
+                    done(failed == 0 ? nil : text)
                 } catch {
                     done(error.localizedDescription)
                 }
             }
         }
         panel.present(in: window)
+        panel.loadCurrentArtwork()
         infoPanel = panel
+    }
+
+    /// Covers for these tracks just changed on the MacBook Pro: forget what
+    /// was cached and let every view that shows them ask again.
+    private func artworkChanged(_ ids: [String]) {
+        artworkCache.forget(ids)
+        artworkToken += 1
+        if viewMode != .list { loadAlbums() }
+        updateArtwork()
     }
 
     // MARK: Playlists
@@ -2679,6 +2686,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         if snapshotPath == nil {
             restoreLastTrack()
+            // `--get-info`: open the Info sheet on the first row, for
+            // checking the sheet without driving the screen.
+            if CommandLine.arguments.contains("--get-info") {
+                print("get-info: \(rows.count) rows")
+                trackTable.selectRowIndexes(IndexSet(integer: tableRow(forTrackIndex: 0) ?? 0), byExtendingSelection: false)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                    self?.showGetInfo(nil)
+                    print("get-info: sheet \(self?.window?.attachedSheet.map { "window \($0.windowNumber)" } ?? "not up")")
+                    fflush(stdout)
+                }
+            }
             return
         }
         guard let path = snapshotPath, let content = window?.contentView else { return }

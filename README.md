@@ -47,6 +47,16 @@ and `ITR_NOTARY_PROFILE=<notarytool keychain profile>` on `package.sh`.
   model server for the curator is built in (Ollama, Apple Silicon build);
   an Ollama app already on the Mac is used instead when it is running.
 
+## Editing tags and artwork
+
+Get Info (⌘I) on any selection edits the tags iTunes lets a script set:
+name, artist, album artist, album, composer, genre, year, track and disc
+numbers, the compilation flag. The sheet also carries the cover: drop a
+picture on it or click Choose…, and OK writes it to every selected song
+(so select an album to re-cover the album); Remove takes it off. Pictures
+are sent as JPEG no larger than 1400 px a side, and every write goes
+through iTunes itself, never to the files behind its back.
+
 ## The curator learns
 
 Three things make it better the more it is used, none of which sends

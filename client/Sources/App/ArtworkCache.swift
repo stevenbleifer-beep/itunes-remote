@@ -85,4 +85,12 @@ final class ArtworkCache {
         cache.removeAllObjects()
         misses.removeAll()
     }
+
+    /// Drops what is known about these tracks: their art just changed.
+    func forget(_ ids: [String]) {
+        for id in ids {
+            cache.removeObject(forKey: id as NSString)
+            misses.remove(id)
+        }
+    }
 }

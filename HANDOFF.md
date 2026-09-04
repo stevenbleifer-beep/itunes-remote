@@ -816,3 +816,36 @@ Noted, not changed (Steven's call or bigger jobs):
   cache of the unfiltered result would make browser clicks on the Pro
   faster still.
 - `AlbumGridView` decodes images on the main thread on first draw.
+
+## Artwork editing, and the Reconnect button gone (2026-09-04, night)
+
+**Artwork.** Daemon: `PUT /api/tracks/artwork` with `{ids, image}` (base64
+JPEG or PNG, sniffed, ≤ 3 MB, `MAX_BODY` raised to 6 MB for the base64)
+and `DELETE /api/tracks/artwork` with `{ids}`. Both run
+`artwork_set.applescript` (reads the picture outside the iTunes tell
+block as «class JPEG»/«class PNGf», deletes existing artworks, then
+`set data of artwork 1 of t`, which makes the artwork when there is none)
+or `artwork_clear.applescript`, 25 tracks a run, and then settle every
+cache the answer lives in: the memory LRU, the disk cache (`put`), the
+in-memory track's `artwork_count`, and the per-library `_art_flags`. So
+the new cover shows at once; when the XML catches up the cache's
+date-modified check re-exports from iTunes anyway. Verified end to end
+against iTunes on the Pro: set → `count of artworks` 1 → clear → 0, on a
+track that had none (left as it was).
+
+Client: `APIClient.setArtwork(ids:image:)` / `clearArtwork(ids:)`
+(`PatchResult` now decodes either `updated` or `changed`);
+`ArtworkCache.forget(_:)`; the Get Info sheet (`InfoPanel`, now 640 wide)
+has an `ArtworkWell` (drop target for image files or images, click →
+`NSOpenPanel`) with Choose… and Remove stacked under it; the change
+travels in the apply payload as `artwork` (JPEG Data from
+`InfoPanel.coverData`, ≤ 1400 px, quality 0.9) or `clearArtwork`, and
+`showGetInfo`'s apply splits it into its own call, then
+`artworkChanged(ids)` forgets the cache, reloads the album views and the
+side panel. `--get-info` opens the sheet on the first row at launch and
+prints the sheet's window number, since `windowid` does not list windows
+on a second display — `screencapture -l <that number>` gets the sheet.
+
+**Reconnect button removed** (`reconnectButton`, `reconnect(_:)`): its
+one remaining job, clearing the artwork cache, moved into the Refresh
+button. Reconnection and home/away switching were already automatic.
