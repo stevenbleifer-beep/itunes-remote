@@ -51,18 +51,18 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         super.init(frame: frame)
         // Two panes with a divider the listener can drag: the conversation
         // was a fixed 300 points and read cramped once the answers got long.
+        // Frames, not constraints, for the split itself: the main window's
+        // sidebar split is built the same way, and setPosition is honoured at
+        // once, where the autolayout flavour kept redistributing to halves.
         split.isVertical = true
         split.dividerStyle = .thin
         split.autosaveName = "curatorSplit"
-        split.translatesAutoresizingMaskIntoConstraints = false
+        split.frame = bounds
+        split.autoresizingMask = [.width, .height]
         addSubview(split)
-        NSLayoutConstraint.activate([
-            split.leadingAnchor.constraint(equalTo: leadingAnchor),
-            split.trailingAnchor.constraint(equalTo: trailingAnchor),
-            split.topAnchor.constraint(equalTo: topAnchor),
-            split.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
         split.delegate = self
+        leftPane.frame = NSRect(x: 0, y: 0, width: 400, height: bounds.height)
+        rightPane.frame = NSRect(x: 401, y: 0, width: max(480, bounds.width - 401), height: bounds.height)
         for v in [transcriptScroll as NSView, field, askButton] {
             v.translatesAutoresizingMaskIntoConstraints = false
             leftPane.addSubview(v)
@@ -71,8 +71,8 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
             v.translatesAutoresizingMaskIntoConstraints = false
             rightPane.addSubview(v)
         }
-        split.addArrangedSubview(leftPane)
-        split.addArrangedSubview(rightPane)
+        split.addSubview(leftPane)
+        split.addSubview(rightPane)
         split.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
 
         // The conversation.
@@ -154,9 +154,6 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
 
         let pad: CGFloat = 14
         NSLayoutConstraint.activate([
-            leftPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
-            rightPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 480),
-
             transcriptScroll.leadingAnchor.constraint(equalTo: leftPane.leadingAnchor, constant: pad),
             transcriptScroll.trailingAnchor.constraint(equalTo: leftPane.trailingAnchor, constant: -6),
             transcriptScroll.topAnchor.constraint(equalTo: leftPane.topAnchor, constant: pad),
@@ -218,6 +215,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         }
         placementTries += 1
         split.setPosition(target, ofDividerAt: 0)
+        split.adjustSubviews()
         DispatchQueue.main.async { [weak self] in self?.needsLayout = true }
     }
 
