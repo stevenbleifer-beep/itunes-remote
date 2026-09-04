@@ -420,6 +420,7 @@ final class CuratorEngine {
             prompt += "The conversation so far:\n" + history.joined(separator: "\n") + "\n\n"
             prompt += "The listener's feedback on the current playlist: \(text)\n\n"
             prompt += "Plan the search for what the feedback needs (new kinds of songs, artists, moods); keep the original request in mind: \(request)\n"
+            prompt += "If the feedback only corrects something you said about the playlist rather than asking for different songs, plan for the same songs.\n"
             prompt += "If instead the listener is asking for a different playlist altogether, say so with \"fresh\": true and plan that.\n"
         } else {
             prompt += "The listener's request: \(text)\n"
@@ -428,7 +429,7 @@ final class CuratorEngine {
 
         Write a JSON object:
         {
-          "vibe": "one sentence: the mood, tempo and setting",
+          "vibe": "one sentence restating what the listener asked for, in their terms. Add nothing they did not say: no setting, no time of day, no occasion unless they named one. A broad request stays broad.",
           "queries": ["8 to 12 short phrases a music search engine would match: moods, genres, eras, instruments, and specific well-known songs or albums that fit"],
           "artists": ["up to 12 well-known artists likely to fit"],
           "avoid": ["things to steer clear of: genres, moods, artists"],
@@ -613,7 +614,7 @@ final class CuratorEngine {
             prompt += "The listener's feedback on the current playlist: \(text)\n"
             prompt += "Songs marked ✓ are the current playlist, in its order.\n"
         }
-        prompt += "Your plan: \(plan.vibe)"
+        prompt += "The request, restated: \(plan.vibe) (the listener's words above are what counts; do not add a mood, setting or occasion they did not give)"
         if !plan.avoid.isEmpty { prompt += " Avoid: \(plan.avoid.joined(separator: ", "))." }
         prompt += """
 
@@ -633,8 +634,9 @@ final class CuratorEngine {
             - If the feedback asks for a length, remove or add enough to reach it.
             - At most 2 songs by the same artist unless the request is about one artist.
             - "order" is every remaining ✓ song and every added song, sequenced like a real playlist.
+            - If the feedback corrects your description of the playlist rather than the songs, remove and add nothing, and say so in the note.
             \(eraRule)
-            Return JSON: {"remove": [numbers], "add": [{"n": 12, "why": "a few words"}, ...], "order": [numbers], "note": "one or two sentences to the listener about what changed", "name": "a short playlist name"}
+            Return JSON: {"remove": [numbers], "add": [{"n": 12, "why": "a few words"}, ...], "order": [numbers], "note": "one or two sentences to the listener about what changed, in terms of the songs, not a scene", "name": "a short playlist name"}
 
             Candidates:
 
@@ -647,7 +649,7 @@ final class CuratorEngine {
             - Vary artists; at most 2 songs by the same artist unless the request is about one artist.
             - Prefer songs that clearly fit the request over merely famous ones.
             \(eraRule)
-            Return JSON: {"playlist": [{"n": 12, "why": "a few words"}, ...], "note": "one or two sentences to the listener about the choices", "name": "a short playlist name"}
+            Return JSON: {"playlist": [{"n": 12, "why": "a few words"}, ...], "note": "one or two sentences to the listener about the songs chosen — describe the music, never a scene or occasion the listener did not mention", "name": "a short playlist name"}
 
             Candidates:
 
@@ -734,7 +736,7 @@ final class CuratorEngine {
         guard !lines.isEmpty else { return ([], 0) }
         let prompt = """
         Request: \(request)
-        Your plan: \(plan.vibe)
+        The request, restated: \(plan.vibe)
         The playlist already has most of its songs. Choose \(count + 2) MORE from the candidates below, one per line as N. artist – title (album year) [genre]. Rules:
         - Use ONLY the numbers listed. Never invent a song.
         - Prefer songs that clearly fit the request.
@@ -876,7 +878,19 @@ final class CuratorEngine {
                 }
             }
         }
-        return Reply(picks: list, note: obj["note"] as? String ?? "", name: obj["name"] as? String ?? plan.name, seconds: seconds)
+        // The note says what the model meant to do; the tally says what was
+        // done. The two differed once — "removed all existing songs" over a
+        // list that kept seventeen of twenty.
+        let before = Set(current.map { $0.track.persistentId })
+        let after = Set(list.map { $0.track.persistentId })
+        let out = before.subtracting(after).count, added2 = after.subtracting(before).count
+        var note = obj["note"] as? String ?? ""
+        if out == 0 && added2 == 0 {
+            note = "Nothing changed; the songs stand as they were."
+        } else {
+            note += " (\(out) out, \(added2) in.)"
+        }
+        return Reply(picks: list, note: note, name: obj["name"] as? String ?? plan.name, seconds: seconds)
     }
 
     private static func parseJSON(_ text: String) -> [String: Any] {
