@@ -977,7 +977,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         like.target = self
         like.attributedTitle = NSAttributedString(string: "More Like This", attributes: [.font: Aqua.font(13)])
         menu.addItem(like)
-        menu.addItem(.separator())
+        moreLikeItem = like
+        let likeSeparator = NSMenuItem.separator()
+        menu.addItem(likeSeparator)
+        moreLikeSeparator = likeSeparator
         let remove = NSMenuItem(title: "Remove from Playlist", action: #selector(removeFromPlaylist(_:)), keyEquivalent: "")
         remove.target = self
         remove.attributedTitle = NSAttributedString(string: "Remove from Playlist", attributes: [.font: Aqua.font(13)])
@@ -999,6 +1002,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     // MARK: Controller wiring
+
+    private var moreLikeItem: NSMenuItem?
+    private var moreLikeSeparator: NSMenuItem?
 
     private func wireController() {
         controller.onPlaylistsChanged = { [weak self] in self?.reloadSourceList() }
@@ -1674,6 +1680,34 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         rightSplit.isHidden = false
     }
 
+    /// View ▸ AI Features: one switch for everything that runs a model —
+    /// the Playlist Curator, More Like This, training, and the bundled
+    /// model server. Off, none of it shows and no model runs; nothing on
+    /// disk (the index, the lessons, a trained picker) is touched.
+    static var aiEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "aiFeatures") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "aiFeatures") }
+    }
+
+    @objc func toggleAIFeatures(_ sender: Any?) {
+        let on = !MainWindowController.aiEnabled
+        MainWindowController.aiEnabled = on
+        if !on {
+            if curatorOpen {
+                closeCuratorPage()
+                curatorOpen = false
+                selectSourceRow(forLibrary: true)
+            }
+            trainingWindow?.window.orderOut(nil)
+            CuratorTrainer.shared.cancel()
+            OllamaRuntime.shared.stop()
+            flashStatus("AI features off. No model runs until they are turned back on.")
+        } else {
+            flashStatus("AI features on.")
+        }
+        reloadSourceList()
+    }
+
     /// View ▸ Show Duplicates: the Duplicates row in the sidebar.
     static var duplicatesShown: Bool {
         get { UserDefaults.standard.object(forKey: "duplicatesShown") as? Bool ?? true }
@@ -1726,11 +1760,16 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// in progress is found again where it was left.
     private var trainingWindow: TrainingWindow?
     @objc func showTraining(_ sender: Any?) {
+        guard MainWindowController.aiEnabled else { return }
         if trainingWindow == nil { trainingWindow = TrainingWindow() }
         trainingWindow?.run()
     }
 
     @objc func showCurator(_ sender: Any?) {
+        guard MainWindowController.aiEnabled else {
+            flashStatus("AI features are off: View ▸ AI Features turns them back on.")
+            return
+        }
         if MainWindowController.curatorHidden {
             MainWindowController.curatorHidden = false
             reloadSourceList()
@@ -1747,7 +1786,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// is another way in.
     @objc func moreLikeSelection(_ sender: Any?) {
         let picked = selectedTracks
-        guard !picked.isEmpty else { return }
+        guard !picked.isEmpty, MainWindowController.aiEnabled else { return }
         let text: String
         if picked.count == 1 {
             let t = picked[0]
@@ -2049,7 +2088,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         // The curator's section can be switched off entirely, for anyone
         // who would rather not see it: View ▸ Playlist Curator.
-        if !MainWindowController.curatorHidden {
+        if !MainWindowController.curatorHidden && MainWindowController.aiEnabled {
             sourceRows.append(.header("CURATOR"))
             sourceRows.append(.curator)
         }
@@ -2323,9 +2362,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         let editable = playlist != nil && !(playlist!.smart)
         let deletable = deletablePlaylists()
         menu.addItem(.separator())
-        add("Make a Playlist Like This…", #selector(moreLikePlaylist(_:)),
-            enabled: playlist != nil && !(playlist!.folder) && !MainWindowController.curatorHidden)
-        menu.addItem(.separator())
+        if MainWindowController.aiEnabled {
+            add("Make a Playlist Like This…", #selector(moreLikePlaylist(_:)),
+                enabled: playlist != nil && !(playlist!.folder) && !MainWindowController.curatorHidden)
+            menu.addItem(.separator())
+        }
         // Rename is one playlist at a time; deleting is not.
         add("Rename…", #selector(renamePlaylist(_:)), enabled: editable && deletable.count <= 1)
         let deleteTitle = deletable.count > 1 ? "Delete \(deletable.count) Playlists" : "Delete Playlist"
@@ -2834,6 +2875,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         if item.action == #selector(toggleDuplicatesVisible(_:)) {
             item.state = MainWindowController.duplicatesShown ? .on : .off
         }
+        if item.action == #selector(toggleAIFeatures(_:)) {
+            item.state = MainWindowController.aiEnabled ? .on : .off
+        }
+        // Everything that runs a model is greyed out while AI features are off.
+        if item.action == #selector(showCurator(_:)) || item.action == #selector(showTraining(_:))
+            || item.action == #selector(toggleCuratorVisible(_:)) || item.action == #selector(moreLikeSelection(_:)) {
+            return MainWindowController.aiEnabled
+        }
         if item.action == #selector(toggleSongNotifications(_:)) {
             item.state = SongNotifier.enabled ? .on : .off
         }
@@ -3257,6 +3306,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         addToPlaylistItem?.submenu = submenu
         addToPlaylistItem?.isEnabled = !selectedTracks.isEmpty
+        moreLikeItem?.isHidden = !MainWindowController.aiEnabled
+        moreLikeSeparator?.isHidden = !MainWindowController.aiEnabled
         removeFromPlaylistItem?.isHidden = controller.source.playlistId == nil
         buildIPodMenus()
     }

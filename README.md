@@ -117,6 +117,16 @@ through iTunes itself, never to the files behind its back.
   other's keychain item). Messages name the paired Mac by its own name,
   learned at pairing, instead of "the MacBook Pro".
 
+## Turning the AI off
+
+**View ▸ AI Features** is one switch for everything that runs a model: the
+Playlist Curator section, More Like This and Make a Playlist Like This…,
+Controls ▸ Train Curator on My Edits…, and the bundled model server,
+which is stopped so nothing runs in the background. Off, none of it shows.
+Nothing on disk is touched — the search index, the saved lessons and any
+trained picker stay where they are — and turning it back on brings it all
+back as it was. Find Missing Artwork… is not AI and stays.
+
 ## The curator learns
 
 Three things make it better the more it is used, none of which sends

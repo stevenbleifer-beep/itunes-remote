@@ -231,6 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         resetSortItem.keyEquivalentModifierMask = [NSEvent.ModifierFlags.command, NSEvent.ModifierFlags.option]
         viewMenu.addItem(.separator())
         // Ticked when the CURATOR section is in the sidebar; untick to hide it.
+        viewMenu.addItem(withTitle: "AI Features", action: #selector(MainWindowController.toggleAIFeatures(_:)), keyEquivalent: "")
         viewMenu.addItem(withTitle: "Playlist Curator", action: #selector(MainWindowController.toggleCuratorVisible(_:)), keyEquivalent: "")
         viewMenu.addItem(withTitle: "Show Duplicates", action: #selector(MainWindowController.toggleDuplicatesVisible(_:)), keyEquivalent: "")
         viewMenu.addItem(.separator())

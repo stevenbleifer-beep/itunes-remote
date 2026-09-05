@@ -1153,3 +1153,19 @@ what was done about it, so nobody repeats it:
 
 **Rule from tonight: one session per working tree.** If two must run,
 the second works in a git worktree.
+
+## View ▸ AI Features (2026-09-04, last thing)
+
+Steven asked for a menu switch that turns off all the AI. It is
+`MainWindowController.aiEnabled` (defaults key `aiFeatures`, default on)
+and `toggleAIFeatures`. Off: the CURATOR sidebar section is not built
+(`reloadSourceList` checks it beside `curatorHidden`), `showCurator` and
+`showTraining` return early, the track menu's "More Like This" and its
+separator are hidden (`moreLikeItem`/`moreLikeSeparator`), the sidebar's
+"Make a Playlist Like This…" is not added, `validateMenuItem` greys the
+curator, training and More Like This items, an open curator page is
+closed and the library row selected, a training run is cancelled and
+`OllamaRuntime.shared.stop()` is called. On disk nothing changes. Test
+without touching the saved preference: `-aiFeatures NO` on the command
+line (NSUserDefaults argument domain). The existing View ▸ Playlist
+Curator toggle stays, for hiding just the sidebar section.
