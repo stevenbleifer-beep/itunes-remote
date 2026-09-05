@@ -970,3 +970,18 @@ medium there is nothing user-space on the Pro can do; the message says to
 replug or reset the iPod (Menu + centre until the Apple logo) and to let
 it charge if the battery is low. Nothing in the app can mount what the
 device is not presenting, and the feature is honest about that.
+
+**The real cause, found an hour later.** Steven reported the iPod's screen
+said "Connected", then "Ejecting", then "OK to disconnect". The unified log
+for 21:11:56, nine seconds after the USBMSC enumeration:
+`loginwindow: CopySLMountApprovalCallback | DiskArb - wholeDisk != nil,
+calling DADiskEject`, and `ioreg -n Root -d1 -a` showed
+`CGSSessionScreenIsLocked = 1`. **macOS will not mount a removable disk
+plugged in while the screen is locked; loginwindow ejects it.** That is
+the whole "wedge": the Pro's screen was locked. The iTunes-restart story
+from 2026-09-03 was a coincidence (the screen must have been unlocked in
+between), and the "lock/unlock made no difference" note was wrong too.
+`post_devices_find` now checks the lock first (`_screen_locked`) and
+answers `state: "locked"` with the fix in words; the client shows it as a
+plain alert with no restart offer. The memory file `itunes-device-wedge`
+is corrected.

@@ -1245,6 +1245,22 @@ class Api(object):
                             syncable=False))
         return {"devices": out}
 
+    @staticmethod
+    def _screen_locked():
+        """Whether this Mac's screen is locked. macOS refuses to mount a disk
+        plugged in while the screen is locked and ejects it instead
+        (loginwindow's CopySLMountApprovalCallback calls DADiskEject), which
+        is why an iPod says Connected, then Ejecting, then OK to disconnect."""
+        try:
+            r = subprocess.run("ioreg -n Root -d1 -a | plutil -p -", shell=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+            for line in r.stdout.decode("utf-8", "replace").splitlines():
+                if "CGSSessionScreenIsLocked" in line:
+                    return line.strip().endswith("1")
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return False
+
     def post_devices_find(self, params, query, body):
         """The "Find iPod" button. Looks at the USB bus afresh and at what
         iTunes has opened, and says which of the three states the iPod is in:
@@ -1283,6 +1299,14 @@ class Api(object):
                               "try unplugging it and plugging it back in." % computer_name())
             return out
         name = apple[0]["productName"]
+        if self._screen_locked():
+            out["state"] = "locked"
+            out["screenLocked"] = True
+            out["message"] = ("%s is plugged in, but the screen on %s is locked, and macOS ejects any disk plugged "
+                              "in while the screen is locked: the iPod said Connected, then Ejecting. Unlock %s, then "
+                              "unplug the iPod and plug it back in."
+                              % (name, computer_name(), computer_name()))
+            return out
         if not restart:
             out["state"] = "wedged"
             out["message"] = ("%s is on the USB bus but iTunes has not opened it. This is iTunes' device "

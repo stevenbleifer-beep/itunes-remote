@@ -475,7 +475,7 @@ struct IPodSearch: Decodable {
         let product: String
         let mountPoint: String?
     }
-    let state: String        // open | absent | wedged
+    let state: String        // open | absent | locked | wedged
     let source: String?
     let restarted: Bool
     let message: String

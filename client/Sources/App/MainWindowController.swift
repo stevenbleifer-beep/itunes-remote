@@ -1074,6 +1074,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                     loadDevices()
                 case "wedged":
                     offerITunesRestart(for: found)
+                case "locked":
+                    // Nothing to offer: only unlocking the other Mac helps.
+                    flashStatus("The \(ServerSettings.name)'s screen is locked; the iPod was ejected.")
+                    let alert = NSAlert()
+                    alert.messageText = "The \(ServerSettings.name) is locked"
+                    alert.informativeText = found.message
+                    alert.addButton(withTitle: "OK")
+                    if let window = window { alert.beginSheetModal(for: window) { _ in } }
                 default:
                     flashStatus("No iPod found.")
                     let alert = NSAlert()
