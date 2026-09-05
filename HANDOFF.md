@@ -985,3 +985,11 @@ between), and the "lock/unlock made no difference" note was wrong too.
 answers `state: "locked"` with the fix in words; the client shows it as a
 plain alert with no restart offer. The memory file `itunes-device-wedge`
 is corrected.
+
+**Permanent fix, verified.** Steven ran
+`sudo defaults write /Library/Preferences/SystemConfiguration/autodiskmount AutomountDisksWithoutUserLogin -bool true`
+on the Pro and rebooted. With the screen locked afterwards the iPod mounted
+at /Volumes/iPod, iTunes opened "iPod classic", and the log had no
+DADiskEject. The key is documented for the login window; it covers the
+lock screen too. The daemon and iTunes came back on their own after the
+reboot (LaunchAgent, 93,156 tracks loaded in 27 s).

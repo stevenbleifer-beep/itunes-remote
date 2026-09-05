@@ -89,9 +89,12 @@ through iTunes itself, never to the files behind its back.
   not plugged in; open in iTunes; plugged in while the other Mac's
   **screen is locked**, which is the usual case: macOS refuses to mount a
   disk plugged in while the screen is locked and ejects it, so the iPod
-  says Connected, then Ejecting (the fix is to unlock that Mac and plug
-  the iPod in again); or on the bus with iTunes ignoring it, for which it
-  offers a restart of iTunes and waits up to a minute.
+  says Connected, then Ejecting (unlock that Mac and plug the iPod in
+  again — or, once and for all, run
+  `sudo defaults write /Library/Preferences/SystemConfiguration/autodiskmount AutomountDisksWithoutUserLogin -bool true`
+  there and reboot, after which disks mount behind the lock screen); or
+  on the bus with iTunes ignoring it, for which it offers a restart of
+  iTunes and waits up to a minute.
 - **Notifications** when the song changes and the window is out of sight
   (app in the background, window hidden or minimised, mini player up):
   title, artist, album, and the cover. Controls ▸ Notify on Song Change
