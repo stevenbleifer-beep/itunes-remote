@@ -1304,3 +1304,20 @@ repeat); `playInContext` moves the cursor when something is played out
 of order; `upcomingTracks` returns the order after the cursor and the
 panel's header says "(shuffled)". `--shuffle-preview` prints the first
 five of an order (it restores the shuffle preference afterwards).
+
+**Shuffle in a playlist played random library songs (2026-09-05).** Two
+causes, both fixed. (1) `startPlayback` passed the playlist to
+`play_track`, which plays the song *inside* the playlist — and then iTunes'
+queue is that playlist and iTunes advances by itself, with its own
+shuffle, so `reachedEnd` (which waits for iTunes to stop with no track)
+never fired and the app's order was never consulted. Now every play is
+from the library playlist (a one-item queue for iTunes); the playlist id
+is kept only as `startedFromPlaylistId` for the sidebar speaker.
+(2) Belt and braces in `PlayerController.refresh`: `expectedTrack` is the
+song the app last asked for; when a poll shows iTunes playing a
+*different* song, nobody here asked for it, and the previous poll had ours
+— iTunes wandered (its own shuffle over the library after a one-item
+queue, say) — the app treats ours as finished and `onRemoteTrackFinished`
+plays the next from its own order. `step` finds the song to step from
+by what is playing, else by `player.lastOwnTrack`, so the list carries on
+from the right place even while iTunes' wrong song is briefly up.

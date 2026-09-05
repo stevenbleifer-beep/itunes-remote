@@ -100,6 +100,11 @@ through iTunes itself, never to the files behind its back.
   coming under "Continuing from … (shuffled)", and playing something from
   the panel moves the shuffle along to it. Repeat All deals a new order
   when the round ends.
+- **The app owns the queue, always.** Every song is started from the
+  library, never "inside" a playlist, so iTunes holds a one-item queue and
+  the app decides what follows; and if iTunes ever wanders off to a song
+  of its own choosing, the app notices on the next poll and plays the
+  right next one.
 - **Play with nothing playing starts the list on screen** — the selected
   song, or the first (a random one with shuffle on) — instead of handing
   the click to iTunes, whose queue was whatever it last had and, with its

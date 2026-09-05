@@ -5,7 +5,9 @@ import Cocoa
 /// poll is one osascript spawn on the old machine, so this is deliberate.
 @MainActor
 final class PlayerController {
-    var api: APIClient?
+    var api: APIClient? {
+        didSet { if api != nil { keepITunesNeutral() } }
+    }
 
     /// Where sound comes out: iTunes on the MacBook Pro, or this Mac.
     enum Mode { case remote, local }
@@ -142,6 +144,20 @@ final class PlayerController {
         defer { inFlight = false }
         do {
             let s = try await api.playerState()
+            // iTunes moved on by itself: it was playing our song, and now it
+            // is playing another one we never asked for. Treat our song as
+            // finished and let the window choose what follows.
+            if let expected = expectedTrack, let now = s.track?.persistentId, now != expected, s.isPlaying,
+               lastRemote?.id == expected {
+                expectedTrack = nil
+                remoteState = s
+                lastPoll = Date()
+                lastRemote = (now, s.position, s.track?.duration ?? 0, true)
+                onChange()
+                onRemoteTrackFinished()
+                return
+            }
+            if s.track?.persistentId == expectedTrack, s.state == "stopped" { expectedTrack = nil }
             let finished = reachedEnd(s)
             // Playing again means the stop the flag was waiting for never
             // came (play/pause pressed to resume): let it go, or the next
@@ -231,7 +247,15 @@ final class PlayerController {
 
     /// Plays a track wherever the current mode says. Local needs the Track
     /// itself; remote only needs its id.
+    /// The song this app last asked for. When a poll shows iTunes playing
+    /// something else that nobody here asked for, iTunes has advanced on
+    /// its own — its queue, its shuffle — and the app takes the step back.
+    private(set) var lastOwnTrack: String?
+    private var expectedTrack: String?
+
     func play(_ track: Track, playlist: String?) {
+        lastOwnTrack = track.persistentId
+        expectedTrack = track.persistentId
         if mode == .local, let api = api {
             local.play(track, api: api)
             onChange()
@@ -302,8 +326,20 @@ final class PlayerController {
         shuffle = on
         UserDefaults.standard.set(on, forKey: "shuffle")
         onChange()
-        // Mirrored to iTunes so its own window agrees; nothing depends on it.
-        if let api = api { Task { try? await api.setShuffle(on) } }
+        // Not mirrored to iTunes any more: with its own shuffle on, iTunes
+        // followed a one-item queue with random songs of its own. Its
+        // shuffle and repeat stay off; this app is the queue.
+        keepITunesNeutral()
+    }
+
+    /// iTunes' own shuffle and repeat off, so a one-item queue ends when the
+    /// song does and the app decides what follows.
+    private func keepITunesNeutral() {
+        guard let api = api else { return }
+        Task {
+            try? await api.setShuffle(false)
+            try? await api.setRepeat("off")
+        }
     }
 
     /// off -> all -> one -> off, the order the iTunes button cycled.
@@ -317,7 +353,7 @@ final class PlayerController {
         repeatMode = next
         UserDefaults.standard.set(next, forKey: "repeatMode")
         onChange()
-        if let api = api { Task { try? await api.setRepeat(next) } }
+        keepITunesNeutral()
     }
 
     func launchITunes() {

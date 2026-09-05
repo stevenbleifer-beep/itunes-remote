@@ -2749,7 +2749,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             rebuildShuffleOrder(startingWith: list.firstIndex { $0.persistentId == track.persistentId })
         }
         startedFromPlaylistId = playlist
-        player.play(track, playlist: playlist)
+        // Always from the library, never "inside" the playlist: played inside
+        // it, iTunes makes the playlist its queue and advances on its own
+        // (with its own shuffle), and the app's order never gets a turn.
+        // The playlist is remembered here for the sidebar's speaker only.
+        player.play(track, playlist: nil)
     }
 
     /// The list playback continues through, fixed when it started.
@@ -3253,8 +3257,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             return
         }
         let list = playContext.isEmpty ? rows : playContext
-        guard let playing = player.state?.track?.persistentId,
-              let i = list.firstIndex(where: { $0.persistentId == playing }) else {
+        // The song to step from: what is playing, or — when iTunes has
+        // wandered off to something of its own — the last song this app
+        // started, so the list carries on where it should.
+        var current: Int? = nil
+        if let playing = player.state?.track?.persistentId { current = list.firstIndex { $0.persistentId == playing } }
+        if current == nil, let own = player.lastOwnTrack { current = list.firstIndex { $0.persistentId == own } }
+        guard let i = current else {
             // Nothing of ours is playing (iTunes was started from its own
             // window, say). Start the list on screen from the top rather
             // than handing the step to iTunes, whose queue is whatever it
