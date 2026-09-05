@@ -46,6 +46,15 @@ final class AquaRoundButton: NSView {
         let pressed = pressedOverride ?? isPressed
         let circleRect = NSRect(x: 2, y: 2, width: diameter, height: diameter).insetBy(dx: 0.5, dy: 0.5)
         let circle = NSBezierPath(ovalIn: circleRect)
+        if Theme.isModern {
+            // Flat glyphs on the glass capsule behind; a press shows as a tint.
+            if pressed {
+                Theme.controlFillPressed.setFill()
+                circle.fill()
+            }
+            drawGlyph(in: circleRect, pressed: pressed)
+            return
+        }
 
         // Shadow beneath
         NSGraphicsContext.saveGraphicsState()
@@ -87,7 +96,7 @@ final class AquaRoundButton: NSView {
     }
 
     private func drawGlyph(in r: NSRect, pressed: Bool) {
-        let color = isEnabled ? Aqua.glyph : NSColor(white: 0.6, alpha: 1)
+        let color = isEnabled ? (Theme.isModern ? Theme.text : Aqua.glyph) : NSColor(white: 0.6, alpha: 1)
         color.setFill()
         let cx = r.midX, cy = r.midY
         let s = diameter * 0.36   // glyph height
@@ -117,14 +126,16 @@ final class AquaRoundButton: NSView {
             triangle(cx + s * 0.05, cx - w + s * 0.05)
             path.appendRect(NSRect(x: cx - w + s * 0.05 - s * 0.16, y: cy - s / 2, width: s * 0.16, height: s))
         }
-        // Slight white emboss under the glyph
-        NSGraphicsContext.saveGraphicsState()
-        let t = AffineTransform(translationByX: 0, byY: -1)
-        let embossed = path.copy() as! NSBezierPath
-        embossed.transform(using: t)
-        NSColor.white.withAlphaComponent(0.6).setFill()
-        embossed.fill()
-        NSGraphicsContext.restoreGraphicsState()
+        if !Theme.isModern {
+            // Slight white emboss under the glyph
+            NSGraphicsContext.saveGraphicsState()
+            let t = AffineTransform(translationByX: 0, byY: -1)
+            let embossed = path.copy() as! NSBezierPath
+            embossed.transform(using: t)
+            NSColor.white.withAlphaComponent(0.6).setFill()
+            embossed.fill()
+            NSGraphicsContext.restoreGraphicsState()
+        }
         color.setFill()
         path.fill()
     }
@@ -176,6 +187,30 @@ final class AquaVolumeSlider: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let t = trackRect
+        if Theme.isModern {
+            let track = NSBezierPath(roundedRect: t, xRadius: 2, yRadius: 2)
+            Theme.controlFillPressed.setFill()
+            track.fill()
+            let c = knobCenter()
+            Theme.accent.setFill()
+            NSBezierPath(roundedRect: NSRect(x: t.minX, y: t.minY, width: max(4, c.x - t.minX), height: t.height), xRadius: 2, yRadius: 2).fill()
+            let kr = NSRect(x: c.x - 6, y: c.y - 6, width: 12, height: 12)
+            let k = NSBezierPath(ovalIn: kr)
+            NSGraphicsContext.saveGraphicsState()
+            let sh = NSShadow()
+            sh.shadowColor = NSColor.black.withAlphaComponent(0.25)
+            sh.shadowBlurRadius = 2
+            sh.shadowOffset = NSSize(width: 0, height: -0.5)
+            sh.set()
+            NSColor.white.setFill()
+            k.fill()
+            NSGraphicsContext.restoreGraphicsState()
+            Theme.hairline.setStroke()
+            k.stroke()
+            drawSpeaker(at: NSPoint(x: 2, y: bounds.midY), loud: false)
+            drawSpeaker(at: NSPoint(x: bounds.width - iconWidth - 1, y: bounds.midY), loud: true)
+            return
+        }
         // Groove
         let groove = NSBezierPath(roundedRect: t, xRadius: 2, yRadius: 2)
         NSGradient(starting: NSColor(white: 0.62, alpha: 1), ending: NSColor(white: 0.80, alpha: 1))!.draw(in: groove, angle: -90)
@@ -208,7 +243,7 @@ final class AquaVolumeSlider: NSView {
     }
 
     private func drawSpeaker(at origin: NSPoint, loud: Bool) {
-        let color = NSColor(white: 0.35, alpha: 1)
+        let color = Theme.isModern ? Theme.secondaryText : NSColor(white: 0.35, alpha: 1)
         let body = NSBezierPath()
         let x = origin.x, y = origin.y
         body.move(to: NSPoint(x: x, y: y - 2))

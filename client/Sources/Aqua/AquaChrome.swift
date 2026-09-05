@@ -3,7 +3,11 @@ import Cocoa
 /// Shared colours and fonts for the iTunes 10 look. Nothing is loaded from
 /// disk; every surface is a gradient drawn in code.
 enum Aqua {
-    static func font(_ size: CGFloat, bold: Bool = false) -> NSFont {
+    /// The app's text face: Lucida Grande in the classic look, the system
+    /// font in the modern one. Every label goes through here.
+    static func font(_ size: CGFloat, bold: Bool = false) -> NSFont { Theme.font(size, bold: bold) }
+
+    static func lucida(_ size: CGFloat, bold: Bool) -> NSFont {
         let name = bold ? "LucidaGrande-Bold" : "LucidaGrande"
         return NSFont(name: name, size: size) ?? NSFont.systemFont(ofSize: size)
     }
@@ -17,8 +21,9 @@ enum Aqua {
     static let selectionBottomInactive = NSColor(white: 0.58, alpha: 1)
 
     // Sidebar
-    static let sidebarBackground = NSColor(srgbRed: 0.878, green: 0.902, blue: 0.933, alpha: 1)  // #E0E6EE
-    static let sidebarHeaderText = NSColor(srgbRed: 0.40, green: 0.45, blue: 0.52, alpha: 1)
+    static let classicSidebarBackground = NSColor(srgbRed: 0.878, green: 0.902, blue: 0.933, alpha: 1)  // #E0E6EE
+    static var sidebarBackground: NSColor { Theme.isModern ? Theme.sidebarBackground : classicSidebarBackground }
+    static var sidebarHeaderText: NSColor { Theme.isModern ? Theme.secondaryText : NSColor(srgbRed: 0.40, green: 0.45, blue: 0.52, alpha: 1) }
 
     // Chrome (toolbar, status bar, panels)
     static let chromeTop = NSColor(white: 0.92, alpha: 1)
@@ -26,7 +31,7 @@ enum Aqua {
     static let chromeLine = NSColor(white: 0.48, alpha: 1)
     static let chromeHighlight = NSColor(white: 1.0, alpha: 0.55)
     static let glyph = NSColor(white: 0.22, alpha: 1)
-    static let accent = NSColor(srgbRed: 0.16, green: 0.42, blue: 0.85, alpha: 1)
+    static var accent: NSColor { Theme.isModern ? Theme.accent : NSColor(srgbRed: 0.16, green: 0.42, blue: 0.85, alpha: 1) }
 
     /// mm:ss, as the display panel and track table show durations.
     static func clock(_ seconds: Double) -> String {
@@ -51,8 +56,23 @@ class ChromeView: NSView {
     /// toolbar's buttons and display panel handle their own clicks first, so
     /// only clicks on the empty chrome reach this.
     var actsAsTitleBar = false
+    /// Modern look: a translucent bar with the desktop blurred behind it
+    /// (the toolbar and status bar) rather than a flat fill.
+    var usesMaterial = false {
+        didSet { if usesMaterial { installMaterial() } }
+    }
+    private var materialView: NSVisualEffectView?
 
-    override var isOpaque: Bool { true }
+    override var isOpaque: Bool { !Theme.isModern }
+
+    private func installMaterial() {
+        guard Theme.isModern, materialView == nil else { return }
+        let v = Theme.material(.titlebar)
+        v.frame = bounds
+        v.autoresizingMask = [.width, .height]
+        addSubview(v, positioned: .below, relativeTo: nil)
+        materialView = v
+    }
 
     override func mouseDown(with event: NSEvent) {
         guard actsAsTitleBar else { super.mouseDown(with: event); return }
@@ -64,6 +84,17 @@ class ChromeView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if Theme.isModern {
+            // Flat, unless a material sits under it; hairlines either way.
+            if materialView == nil {
+                Theme.windowBackground.setFill()
+                bounds.fill()
+            }
+            Theme.hairline.setFill()
+            if topLine { NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill() }
+            if bottomLine { NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill() }
+            return
+        }
         NSGradient(starting: gradientTop, ending: gradientBottom)!.draw(in: bounds, angle: -90)
         if topLine {
             Aqua.chromeLine.setFill()
@@ -216,6 +247,16 @@ final class AquaDisplayPanel: NSView {
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
+        if Theme.isModern {
+            // The glass card behind this view is the bezel; only content here.
+            switch mode {
+            case .sync: drawSync()
+            case .player: duration == nil ? drawIdle() : drawPlaying()
+            }
+            drawCornerGlyphs()
+            if showsArrows { drawArrows() }
+            return
+        }
         let r = bounds.insetBy(dx: 0.5, dy: 1.5)
         let path = NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4)
 
@@ -281,8 +322,13 @@ final class AquaDisplayPanel: NSView {
 
         let g = grooveRect
         let groove = NSBezierPath(roundedRect: g, xRadius: 2, yRadius: 2)
-        NSGradient(starting: NSColor(white: 0.72, alpha: 1), ending: NSColor(white: 0.86, alpha: 1))!
-            .draw(in: groove, angle: -90)
+        if Theme.isModern {
+            Theme.controlFillPressed.setFill()
+            groove.fill()
+        } else {
+            NSGradient(starting: NSColor(white: 0.72, alpha: 1), ending: NSColor(white: 0.86, alpha: 1))!
+                .draw(in: groove, angle: -90)
+        }
         NSGraphicsContext.saveGraphicsState()
         groove.addClip()
         if let f = syncFraction {
@@ -311,8 +357,10 @@ final class AquaDisplayPanel: NSView {
             }
         }
         NSGraphicsContext.restoreGraphicsState()
-        NSColor(white: 0.56, alpha: 1).setStroke()
-        NSBezierPath(roundedRect: g.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2).stroke()
+        if !Theme.isModern {
+            NSColor(white: 0.56, alpha: 1).setStroke()
+            NSBezierPath(roundedRect: g.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2).stroke()
+        }
     }
 
     /// The small circled glyphs in the display's corners: play or pause at the
@@ -321,7 +369,7 @@ final class AquaDisplayPanel: NSView {
     var airPlayActive = false { didSet { needsDisplay = true } }
 
     private func drawCornerGlyphs() {
-        let color = airPlayActive ? Aqua.accent : NSColor(white: 0.45, alpha: 1)
+        let color = airPlayActive ? Aqua.accent : (Theme.isModern ? Theme.secondaryText : NSColor(white: 0.45, alpha: 1))
         let cy = bounds.midY
         func circle(_ cx: CGFloat, _ fill: NSColor) {
             let p = NSBezierPath(ovalIn: NSRect(x: cx - 6, y: cy - 6, width: 12, height: 12))
@@ -363,7 +411,7 @@ final class AquaDisplayPanel: NSView {
         style.lineBreakMode = .byTruncatingTail
         (text as NSString).draw(in: rect, withAttributes: [
             .font: Aqua.font(size, bold: bold),
-            .foregroundColor: NSColor(white: 0.25, alpha: alpha),
+            .foregroundColor: (Theme.isModern ? Theme.text : NSColor(white: 0.25, alpha: 1)).withAlphaComponent(alpha),
             .paragraphStyle: style,
         ])
     }
@@ -405,10 +453,15 @@ final class AquaDisplayPanel: NSView {
 
         // Groove, recessed.
         let groove = NSBezierPath(roundedRect: g, xRadius: 2, yRadius: 2)
-        NSGradient(starting: NSColor(white: 0.72, alpha: 1), ending: NSColor(white: 0.86, alpha: 1))!
-            .draw(in: groove, angle: -90)
-        NSColor(white: 0.56, alpha: 1).setStroke()
-        NSBezierPath(roundedRect: g.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2).stroke()
+        if Theme.isModern {
+            Theme.controlFillPressed.setFill()
+            groove.fill()
+        } else {
+            NSGradient(starting: NSColor(white: 0.72, alpha: 1), ending: NSColor(white: 0.86, alpha: 1))!
+                .draw(in: groove, angle: -90)
+            NSColor(white: 0.56, alpha: 1).setStroke()
+            NSBezierPath(roundedRect: g.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2).stroke()
+        }
 
         guard total > 0 else { return }
         let f = CGFloat(pos / total)
@@ -418,9 +471,14 @@ final class AquaDisplayPanel: NSView {
             let filled = NSRect(x: g.minX, y: g.minY, width: g.width * f, height: g.height)
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(roundedRect: g, xRadius: 2, yRadius: 2).addClip()
-            NSGradient(starting: NSColor(srgbRed: 0.42, green: 0.60, blue: 0.88, alpha: 1),
-                       ending: NSColor(srgbRed: 0.26, green: 0.46, blue: 0.80, alpha: 1))!
-                .draw(in: filled, angle: -90)
+            if Theme.isModern {
+                Theme.accent.setFill()
+                filled.fill()
+            } else {
+                NSGradient(starting: NSColor(srgbRed: 0.42, green: 0.60, blue: 0.88, alpha: 1),
+                           ending: NSColor(srgbRed: 0.26, green: 0.46, blue: 0.80, alpha: 1))!
+                    .draw(in: filled, angle: -90)
+            }
             NSGraphicsContext.restoreGraphicsState()
         }
 
@@ -429,6 +487,20 @@ final class AquaDisplayPanel: NSView {
         let c = NSPoint(x: g.minX + g.width * f, y: g.midY)
         let kr = NSRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)
         let knob = NSBezierPath(ovalIn: kr.insetBy(dx: 0.5, dy: 0.5))
+        if Theme.isModern {
+            NSGraphicsContext.saveGraphicsState()
+            let sh = NSShadow()
+            sh.shadowColor = NSColor.black.withAlphaComponent(0.25)
+            sh.shadowBlurRadius = 2
+            sh.shadowOffset = NSSize(width: 0, height: -0.5)
+            sh.set()
+            NSColor.white.setFill()
+            knob.fill()
+            NSGraphicsContext.restoreGraphicsState()
+            Theme.hairline.setStroke()
+            knob.stroke()
+            return
+        }
         NSGraphicsContext.saveGraphicsState()
         let sh = NSShadow()
         sh.shadowColor = NSColor.black.withAlphaComponent(0.4)
@@ -512,15 +584,19 @@ final class ArtworkView: NSView {
         if let img = image {
             NSGraphicsContext.saveGraphicsState()
             let sh = NSShadow()
-            sh.shadowColor = NSColor.black.withAlphaComponent(0.35)
-            sh.shadowBlurRadius = 3
+            sh.shadowColor = NSColor.black.withAlphaComponent(Theme.isModern ? 0.22 : 0.35)
+            sh.shadowBlurRadius = Theme.isModern ? 6 : 3
             sh.shadowOffset = NSSize(width: 0, height: -1)
             sh.set()
             NSColor.white.setFill()
-            NSBezierPath(rect: box).fill()
+            let shape = Theme.isModern ? NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6) : NSBezierPath(rect: box)
+            shape.fill()
             NSGraphicsContext.restoreGraphicsState()
+            NSGraphicsContext.saveGraphicsState()
+            shape.addClip()
             img.draw(in: box, from: .zero, operation: .sourceOver, fraction: 1,
                      respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high.rawValue])
+            NSGraphicsContext.restoreGraphicsState()
         } else {
             NSGradient(starting: NSColor(white: 0.97, alpha: 1), ending: NSColor(white: 0.88, alpha: 1))!
                 .draw(in: box, angle: -90)
@@ -536,15 +612,17 @@ final class ArtworkView: NSView {
             NSColor(white: 0.80, alpha: 1).setFill()
             NSBezierPath(ovalIn: NSRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4)).fill()
         }
-        NSColor(white: 0.55, alpha: 1).setStroke()
-        NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5)).stroke()
+        if !Theme.isModern {
+            NSColor(white: 0.55, alpha: 1).setStroke()
+            NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5)).stroke()
+        }
 
         if !caption.isEmpty {
             let style = NSMutableParagraphStyle()
             style.alignment = .center
             style.lineBreakMode = .byTruncatingTail
             let emboss = NSShadow()
-            emboss.shadowColor = NSColor.white.withAlphaComponent(0.9)
+            emboss.shadowColor = NSColor.white.withAlphaComponent(Theme.isModern ? 0 : 0.9)
             emboss.shadowOffset = NSSize(width: 0, height: -1)
             emboss.shadowBlurRadius = 0
             (caption as NSString).draw(in: NSRect(x: 4, y: 2, width: bounds.width - 8, height: 14), withAttributes: [

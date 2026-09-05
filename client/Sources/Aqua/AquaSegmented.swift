@@ -52,6 +52,29 @@ final class AquaSegmentedControl: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let outer = bounds.insetBy(dx: 0.5, dy: 1.5)
+        if Theme.isModern {
+            // A quiet track with a white pill on the chosen segment.
+            let track = NSBezierPath(roundedRect: outer, xRadius: outer.height / 2, yRadius: outer.height / 2)
+            Theme.controlFill.setFill()
+            track.fill()
+            for (i, glyph) in glyphs.enumerated() {
+                let r = NSRect(x: outer.minX + CGFloat(i) * segmentWidth, y: outer.minY, width: segmentWidth, height: outer.height)
+                let down = i == selectedIndex || i == pressedIndex
+                if down {
+                    NSGraphicsContext.saveGraphicsState()
+                    let sh = NSShadow()
+                    sh.shadowColor = NSColor.black.withAlphaComponent(0.18)
+                    sh.shadowBlurRadius = 2
+                    sh.shadowOffset = NSSize(width: 0, height: -0.5)
+                    sh.set()
+                    NSColor.white.setFill()
+                    NSBezierPath(roundedRect: r.insetBy(dx: 2, dy: 2), xRadius: (r.height - 4) / 2, yRadius: (r.height - 4) / 2).fill()
+                    NSGraphicsContext.restoreGraphicsState()
+                }
+                drawGlyph(glyph, in: r, down: down)
+            }
+            return
+        }
         let capsule = NSBezierPath(roundedRect: outer, xRadius: 4, yRadius: 4)
 
         NSGraphicsContext.saveGraphicsState()
@@ -94,7 +117,7 @@ final class AquaSegmentedControl: NSView {
     }
 
     private func drawGlyph(_ glyph: ViewGlyph, in r: NSRect, down: Bool) {
-        let color = down ? NSColor(white: 0.15, alpha: 1) : NSColor(white: 0.30, alpha: 1)
+        let color = Theme.isModern ? (down ? Theme.text : Theme.secondaryText) : (down ? NSColor(white: 0.15, alpha: 1) : NSColor(white: 0.30, alpha: 1))
         color.setFill()
         color.setStroke()
         let cx = r.midX, cy = r.midY

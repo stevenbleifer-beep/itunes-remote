@@ -89,7 +89,7 @@ final class TrainingWindow: NSObject, NSWindowDelegate {
         log.textContainer?.widthTracksTextView = true
         logScroll.documentView = log
         logScroll.hasVerticalScroller = true
-        logScroll.scrollerStyle = .legacy
+        logScroll.scrollerStyle = Theme.scrollerStyle
         logScroll.verticalScroller = AquaScroller()
         logScroll.borderType = .bezelBorder
         logScroll.frame = NSRect(x: 24, y: 64, width: W - 48, height: H - 264 - 72)

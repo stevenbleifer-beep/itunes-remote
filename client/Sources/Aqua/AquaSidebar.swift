@@ -89,7 +89,7 @@ final class SidebarCellView: NSTableCellView {
     override var backgroundStyle: NSView.BackgroundStyle {
         didSet {
             let selected = backgroundStyle == .emphasized
-            label.font = Aqua.font(12, bold: selected)
+            label.font = Aqua.font(12, bold: selected && !Theme.isModern)
             iconView.selected = selected
         }
     }
@@ -100,8 +100,9 @@ final class SidebarIconView: NSView {
     var selected = false { didSet { needsDisplay = true } }
 
     override func draw(_ dirtyRect: NSRect) {
-        let fill = selected ? NSColor.white : NSColor(srgbRed: 0.32, green: 0.40, blue: 0.52, alpha: 1)
-        let dark = selected ? NSColor(white: 1, alpha: 0.9) : NSColor(srgbRed: 0.20, green: 0.27, blue: 0.38, alpha: 1)
+        // Modern: the accent colour, the way the Finder's sidebar tints its icons.
+        let fill = Theme.isModern ? Theme.accent : (selected ? NSColor.white : NSColor(srgbRed: 0.32, green: 0.40, blue: 0.52, alpha: 1))
+        let dark = Theme.isModern ? Theme.accent : (selected ? NSColor(white: 1, alpha: 0.9) : NSColor(srgbRed: 0.20, green: 0.27, blue: 0.38, alpha: 1))
         let cx = bounds.midX, cy = bounds.midY
         switch icon {
         case .none:

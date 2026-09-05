@@ -96,7 +96,7 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
         table.doubleAction = #selector(next(_:))
         tableScroll.documentView = table
         tableScroll.hasVerticalScroller = true
-        tableScroll.scrollerStyle = .legacy
+        tableScroll.scrollerStyle = Theme.scrollerStyle
         tableScroll.verticalScroller = AquaScroller()
         tableScroll.borderType = .bezelBorder
         tableScroll.frame = NSRect(x: 24, y: 150, width: W - 48, height: 120)

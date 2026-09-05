@@ -24,9 +24,9 @@ final class AquaConnectionBadge: NSView {
 
     private var attributes: [NSAttributedString.Key: Any] {
         let emboss = NSShadow()
-        emboss.shadowColor = NSColor.white.withAlphaComponent(0.7)
+        emboss.shadowColor = NSColor.white.withAlphaComponent(Theme.isModern ? 0 : 0.7)
         emboss.shadowOffset = NSSize(width: 0, height: -1)
-        return [.font: Aqua.font(11), .foregroundColor: NSColor(white: 0.25, alpha: 1), .shadow: emboss]
+        return [.font: Aqua.font(11), .foregroundColor: Theme.isModern ? Theme.secondaryText : NSColor(white: 0.25, alpha: 1), .shadow: emboss]
     }
 
     override var intrinsicContentSize: NSSize {
@@ -47,6 +47,15 @@ final class AquaConnectionBadge: NSView {
         // The light: a gradient ball with a highlight, like the Aqua era's.
         let r = NSRect(x: 2, y: round(bounds.midY) - 5, width: 10, height: 10)
         let ball = NSBezierPath(ovalIn: r)
+        if Theme.isModern {
+            // A plain dot, the modern status light.
+            bottom.setFill()
+            NSBezierPath(ovalIn: r.insetBy(dx: 1.5, dy: 1.5)).fill()
+            let a = attributes
+            let s = (text as NSString).size(withAttributes: a)
+            (text as NSString).draw(at: NSPoint(x: r.maxX + 5, y: round(bounds.midY - s.height / 2)), withAttributes: a)
+            return
+        }
         NSGradient(starting: top, ending: bottom)?.draw(in: ball, angle: -90)
         bottom.withAlphaComponent(0.7).setStroke()
         ball.lineWidth = 0.8

@@ -106,7 +106,7 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
             lyricsView.string = "Reading lyrics…"
             lyricsScroll.documentView = lyricsView
             lyricsScroll.hasVerticalScroller = true
-            lyricsScroll.scrollerStyle = .legacy
+            lyricsScroll.scrollerStyle = Theme.scrollerStyle
             lyricsScroll.verticalScroller = AquaScroller()
             lyricsScroll.borderType = .bezelBorder
             lyricsScroll.frame = NSRect(x: 20, y: 52, width: 600, height: height - top - 52 + 10)

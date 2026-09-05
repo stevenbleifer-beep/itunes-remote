@@ -67,7 +67,7 @@ final class UpNextPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
         scroll.documentView = table
         scroll.hasVerticalScroller = true
-        scroll.scrollerStyle = .legacy
+        scroll.scrollerStyle = Theme.scrollerStyle
         scroll.verticalScroller = AquaScroller()
         scroll.borderType = .bezelBorder
         scroll.autohidesScrollers = false

@@ -169,7 +169,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         window.titleVisibility = .hidden
         window.minSize = NSSize(width: 900, height: 560)
         window.appearance = NSAppearance(named: .aqua)
-        window.backgroundColor = NSColor(white: 0.80, alpha: 1)
+        window.backgroundColor = Theme.isModern ? Theme.windowBackground : NSColor(white: 0.80, alpha: 1)
         buildViews()
         wireController()
         window.setFrameAutosaveName("MainWindow")
@@ -200,6 +200,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         toolbar.autoresizingMask = [.width, .minYMargin]
         toolbar.bottomLine = true
         toolbar.actsAsTitleBar = true
+        toolbar.usesMaterial = true
         content.addSubview(toolbar)
 
         let midY: CGFloat = 28   // keeps the controls clear of the traffic lights
@@ -214,6 +215,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         previousButton.action = #selector(previousTrack(_:))
         playButton.action = #selector(togglePlay(_:))
         nextButton.action = #selector(nextTrack(_:))
+        if Theme.isModern {
+            // The three transport buttons share one glass capsule.
+            let buttons = [previousButton, playButton, nextButton]
+            let union = buttons.map { $0.frame }.reduce(buttons[0].frame) { $0.union($1) }.insetBy(dx: -8, dy: -3)
+            let cluster = NSView(frame: NSRect(origin: .zero, size: union.size))
+            for b in buttons {
+                b.removeFromSuperview()
+                b.frame = b.frame.offsetBy(dx: -union.minX, dy: -union.minY)
+                cluster.addSubview(b)
+            }
+            cluster.frame = union
+            toolbar.addSubview(Theme.glass(around: cluster, radius: union.height / 2))
+        }
 
         volumeSlider.frame = NSRect(x: x + 12, y: round(midY - 9), width: 110, height: 18)
         volumeSlider.onChange = { [weak self] v in
@@ -227,7 +241,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         display.onSeek = { [weak self] seconds in self?.player.seek(to: seconds) }
         display.onPlayPause = { [weak self] in self?.player.playPause() }
         display.onAirPlay = { [weak self] sender in self?.showOutputMenu(sender) }
-        toolbar.addSubview(display)
+        if Theme.isModern {
+            toolbar.addSubview(Theme.glass(around: display, radius: 14))
+        } else {
+            toolbar.addSubview(display)
+        }
 
         // Right side of the toolbar, laid out from the window edge inwards.
         let rightMargin: CGFloat = 14
@@ -296,6 +314,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         statusBar.frame = NSRect(x: 0, y: 0, width: W, height: statusH)
         statusBar.autoresizingMask = [.width, .maxYMargin]
         statusBar.topLine = true
+        statusBar.usesMaterial = true
         content.addSubview(statusBar)
         statusLabel.frame = NSRect(x: 0, y: 4, width: W, height: 16)
         statusLabel.autoresizingMask = [.width]
@@ -360,6 +379,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         // scrolled by the artwork pane's height under the springs-and-struts
         // layout the split view drives.
         let leftPane = NSView(frame: NSRect(x: 0, y: 0, width: 190, height: mainSplit.bounds.height))
+        if Theme.isModern {
+            // The sidebar is see-through: the desktop, blurred, like the Finder's.
+            let side = Theme.material(.sidebar)
+            side.frame = leftPane.bounds
+            side.autoresizingMask = [.width, .height]
+            leftPane.addSubview(side)
+        }
         artworkView.caption = "SELECTED ITEM"
         let sourceScroll = scroll(for: sourceList)
         for v in [artworkView as NSView, sourceScroll as NSView] {
@@ -448,9 +474,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         gridScroll.frame = topPane.bounds
         gridScroll.autoresizingMask = [.width, .height]
         gridScroll.hasVerticalScroller = true
-        gridScroll.scrollerStyle = .legacy
+        gridScroll.scrollerStyle = Theme.scrollerStyle
         gridScroll.verticalScroller = AquaScroller()
-        gridScroll.borderType = .lineBorder
+        gridScroll.borderType = Theme.isModern ? .noBorder : .lineBorder
         gridScroll.documentView = grid
         gridScroll.isHidden = true
         grid.onSelect = { [weak self] _ in self?.coverSelectionChanged() }
@@ -663,9 +689,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         s.hasVerticalScroller = true
         s.hasHorizontalScroller = false
         s.autohidesScrollers = true
-        s.scrollerStyle = .legacy
+        s.scrollerStyle = Theme.scrollerStyle
         s.verticalScroller = AquaScroller()
-        s.borderType = .lineBorder
+        s.borderType = Theme.isModern ? .noBorder : .lineBorder
         s.drawsBackground = true
         s.backgroundColor = .white
         return s
@@ -827,6 +853,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         // see selectionIndexesForProposedSelection below.
         sourceList.allowsMultipleSelection = true
         sourceList.enclosingScrollView?.backgroundColor = Aqua.sidebarBackground
+        if Theme.isModern {
+            // Transparent over the sidebar material.
+            sourceList.backgroundColor = .clear
+            sourceList.enclosingScrollView?.drawsBackground = false
+        }
         sourceList.target = self
         sourceList.doubleAction = #selector(sourceDoubleClicked(_:))
 
@@ -3894,7 +3925,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             case .header(let s):
                 let cell = AquaTables.labelCell(tableView, id: "sourceHeader")
                 let emboss = NSShadow()
-                emboss.shadowColor = NSColor.white.withAlphaComponent(0.9)
+                emboss.shadowColor = NSColor.white.withAlphaComponent(Theme.isModern ? 0 : 0.9)
                 emboss.shadowOffset = NSSize(width: 0, height: -1)
                 emboss.shadowBlurRadius = 0
                 cell.textField?.attributedStringValue = NSAttributedString(string: s, attributes: [
@@ -4021,7 +4052,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             return AquaTables.rowView(tableView, row: 0, striped: false, background: .white)
         }
         return AquaTables.rowView(tableView, row: row, striped: tag == .tracks,
-                                  background: tag == .source ? Aqua.sidebarBackground : .white,
+                                  background: tag == .source ? (Theme.isModern ? .clear : Aqua.sidebarBackground) : .white,
                                   selection: tag == .source ? .sidebar : .blue)
     }
 

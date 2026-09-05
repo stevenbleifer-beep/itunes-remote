@@ -56,8 +56,18 @@ final class AquaBevelButton: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let r = bounds.insetBy(dx: 0.5, dy: 0.5)
-        let path = NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3)
         let down = isPressed || isOn
+        if Theme.isModern {
+            let shape = NSBezierPath(roundedRect: r, xRadius: 6, yRadius: 6)
+            (isOn ? Theme.accent.withAlphaComponent(0.16) : (isPressed ? Theme.controlFillPressed : Theme.controlFill)).setFill()
+            shape.fill()
+            let color = isEnabled ? (isOn ? Theme.accent : Theme.text) : Theme.secondaryText.withAlphaComponent(0.5)
+            color.setFill()
+            color.setStroke()
+            drawGlyph(cx: bounds.midX, cy: bounds.midY)
+            return
+        }
+        let path = NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3)
         if down {
             NSGradient(starting: NSColor(white: 0.62, alpha: 1), ending: NSColor(white: 0.74, alpha: 1))!.draw(in: path, angle: -90)
         } else {
@@ -190,11 +200,11 @@ final class AquaCaption: NSView {
         let style = NSMutableParagraphStyle()
         style.alignment = .center
         let emboss = NSShadow()
-        emboss.shadowColor = NSColor.white.withAlphaComponent(0.8)
+        emboss.shadowColor = NSColor.white.withAlphaComponent(Theme.isModern ? 0 : 0.8)
         emboss.shadowOffset = NSSize(width: 0, height: -1)
         emboss.shadowBlurRadius = 0
         (text as NSString).draw(in: bounds, withAttributes: [
-            .font: Aqua.font(10), .foregroundColor: NSColor(white: 0.25, alpha: 1),
+            .font: Aqua.font(10), .foregroundColor: Theme.isModern ? Theme.secondaryText : NSColor(white: 0.25, alpha: 1),
             .paragraphStyle: style, .shadow: emboss,
         ])
     }
@@ -216,7 +226,25 @@ final class AquaCheckbox: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let box = NSRect(x: round(bounds.midX - 5.5), y: round(bounds.midY - 5.5), width: 11, height: 11).insetBy(dx: 0.5, dy: 0.5)
-        let path = NSBezierPath(roundedRect: box, xRadius: 2, yRadius: 2)
+        let path = NSBezierPath(roundedRect: box, xRadius: Theme.isModern ? 3 : 2, yRadius: Theme.isModern ? 3 : 2)
+        if Theme.isModern {
+            (isOn ? Theme.accent : NSColor.white).setFill()
+            path.fill()
+            (isOn ? Theme.accent : NSColor(white: 0, alpha: 0.25)).setStroke()
+            path.lineWidth = 1
+            path.stroke()
+            guard isOn else { return }
+            let tick = NSBezierPath()
+            tick.lineWidth = 1.6
+            tick.lineCapStyle = .round
+            tick.lineJoinStyle = .round
+            tick.move(to: NSPoint(x: box.minX + 2.4, y: box.midY))
+            tick.line(to: NSPoint(x: box.minX + 4.6, y: box.minY + 2.6))
+            tick.line(to: NSPoint(x: box.maxX - 2, y: box.maxY - 1.8))
+            NSColor.white.setStroke()
+            tick.stroke()
+            return
+        }
         NSGradient(starting: NSColor(white: 0.99, alpha: 1), ending: NSColor(white: 0.90, alpha: 1))!.draw(in: path, angle: -90)
         NSColor(white: 0.45, alpha: 1).setStroke()
         path.lineWidth = 1
@@ -269,8 +297,8 @@ final class AquaRatingView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let stars = rating / 20
-        let on: NSColor = isEmphasized ? .white : NSColor(white: 0.30, alpha: 1)
-        let off: NSColor = isEmphasized ? NSColor(white: 1, alpha: 0.45) : NSColor(white: 0.72, alpha: 1)
+        let on: NSColor = isEmphasized ? .white : (Theme.isModern ? Theme.accent : NSColor(white: 0.30, alpha: 1))
+        let off: NSColor = isEmphasized ? NSColor(white: 1, alpha: 0.45) : NSColor(white: Theme.isModern ? 0.80 : 0.72, alpha: 1)
         for i in 0..<5 {
             let c = NSPoint(x: 2 + step * CGFloat(i) + step / 2, y: bounds.midY)
             if i < stars {

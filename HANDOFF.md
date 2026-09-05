@@ -1241,3 +1241,30 @@ file via `SHSignatureGenerator` (`--shazam-file PATH`), which named
 Music id attached. Controls ▸ Identify What's Playing… (⌘⇧I). Adds,
 playlist writes and Apple Music playback are wired but were not
 exercised against Steven's real library; the delete route likewise.
+
+## Two looks: View ▸ Appearance (2026-09-05, morning)
+
+`Sources/Aqua/Theme.swift`: `Theme.isModern` (defaults `appearance` ==
+"modern", read once), `Theme.font` (system font vs Lucida — `Aqua.font`
+now routes through it, so every label follows), a light modern palette,
+`Theme.scrollerStyle`, `Theme.material(_:)` (NSVisualEffectView, behind
+window) and `Theme.glass(around:radius:)` (NSGlassEffectView on macOS 26
+with the content as its `contentView`, else a rounded hudWindow
+material). Every Aqua control got a modern branch at the top of `draw`:
+ChromeView (flat, or a `.titlebar` material when `usesMaterial` — the
+toolbar and status bar), AquaDisplayPanel (content only; the glass card
+is outside it), AquaRoundButton (flat glyph; the three sit in one glass
+capsule built in `buildViews`), AquaVolumeSlider, AquaPushButton (accent
+capsule / white pill, no pulse), AquaBevelButton, AquaSegmentedControl,
+AquaCheckbox, AquaRatingView, AquaHeaderCell, AquaRowView (pill
+selection; `interiorBackgroundStyle` is `.emphasized` only for a focused
+blue selection — the first cut painted white text on the grey pill of an
+unfocused browser pane), SidebarIconView (accent icons), AquaScroller
+(hands everything to the system overlay scroller), the badge and captions
+(no emboss), ArtworkView (rounded, no frame). The sidebar sits on a
+`.sidebar` material with a transparent table. `Aqua.sidebarBackground`,
+`Aqua.sidebarHeaderText` and `Aqua.accent` became computed. Switching:
+`AppDelegate.useClassicLook/useModernLook` → `relaunch()` (shared with
+the library switch). Test without saving: `-appearance modern`.
+Verified with live captures in List and Cover Flow. Light-only: the
+app's own labels carry fixed greys, so dark mode is a follow-up.

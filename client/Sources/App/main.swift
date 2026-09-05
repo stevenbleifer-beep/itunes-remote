@@ -158,6 +158,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func useITunesLibrary(_ sender: Any?) { switchLibrary(to: "itunes") }
     @objc func useMusicLibrary(_ sender: Any?) { switchLibrary(to: "music") }
 
+    // MARK: Appearance
+
+    /// View ▸ Appearance ▸ …: the other look, in a fresh copy of the app.
+    /// Every control reads the choice once at launch, so a relaunch is the
+    /// clean way to change all of them at once.
+    @objc func useClassicLook(_ sender: Any?) { switchAppearance(to: "classic") }
+    @objc func useModernLook(_ sender: Any?) { switchAppearance(to: "modern") }
+
+    private func switchAppearance(to look: String) {
+        let modern = look == "modern"
+        guard modern != Theme.isModern else { return }
+        UserDefaults.standard.set(look, forKey: "appearance")
+        relaunch()
+    }
+
+    private func relaunch() {
+        UserDefaults.standard.synchronize()
+        let path = Bundle.main.bundlePath
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 1; open -n \"\(path)\""]
+        try? p.run()
+        NSApp.terminate(nil)
+    }
+
     private func switchLibrary(to profile: String) {
         guard profile != ServerSettings.profile else { return }
         let alert = NSAlert()
@@ -168,16 +193,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         ServerSettings.profile = profile
-        UserDefaults.standard.synchronize()
-        let path = Bundle.main.bundlePath
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = ["-c", "sleep 1; open -n \"\(path)\""]
-        try? p.run()
-        NSApp.terminate(nil)
+        relaunch()
     }
 
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(useClassicLook(_:)) { item.state = Theme.isModern ? .off : .on }
+        if item.action == #selector(useModernLook(_:)) { item.state = Theme.isModern ? .on : .off }
         if item.action == #selector(useITunesLibrary(_:)) { item.state = ServerSettings.isMusicProfile ? .off : .on }
         if item.action == #selector(useMusicLibrary(_:)) {
             item.state = ServerSettings.isMusicProfile ? .on : .off
@@ -289,6 +310,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         resetSortItem.keyEquivalentModifierMask = [NSEvent.ModifierFlags.command, NSEvent.ModifierFlags.option]
         viewMenu.addItem(.separator())
         // Ticked when the CURATOR section is in the sidebar; untick to hide it.
+        let lookMenu = NSMenu(title: "Appearance")
+        lookMenu.addItem(withTitle: "Classic iTunes 10", action: #selector(useClassicLook(_:)), keyEquivalent: "")
+        lookMenu.addItem(withTitle: "Modern Glass", action: #selector(useModernLook(_:)), keyEquivalent: "")
+        let lookItem = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
+        lookItem.submenu = lookMenu
+        viewMenu.addItem(lookItem)
+        viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "AI Features", action: #selector(MainWindowController.toggleAIFeatures(_:)), keyEquivalent: "")
         viewMenu.addItem(withTitle: "Playlist Curator", action: #selector(MainWindowController.toggleCuratorVisible(_:)), keyEquivalent: "")
         viewMenu.addItem(withTitle: "Show Duplicates", action: #selector(MainWindowController.toggleDuplicatesVisible(_:)), keyEquivalent: "")

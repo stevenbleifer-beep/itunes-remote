@@ -117,6 +117,18 @@ through iTunes itself, never to the files behind its back.
   other's keychain item). Messages name the paired Mac by its own name,
   learned at pairing, instead of "the MacBook Pro".
 
+## Two looks
+
+**View ▸ Appearance** switches between **Classic iTunes 10** — Lucida
+Grande, brushed gradients, gel buttons, the green LCD — and **Modern
+Glass**: the system font, flat translucent bars with the desktop blurred
+behind them, the transport buttons and the display on the system's glass
+(macOS 26's glass effect, a translucent panel on older systems), rounded
+pill selections in the accent colour, overlay scrollers. Every control is
+still drawn by the app; each one asks the theme at draw time. The choice
+is read once at launch, so the switch relaunches the app. The modern look
+is light-only for now.
+
 ## Two libraries: iTunes over there, Apple Music here
 
 **File ▸ Library** switches the app between iTunes on the other Mac and

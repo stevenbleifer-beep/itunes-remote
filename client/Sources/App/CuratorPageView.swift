@@ -91,7 +91,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         transcript.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         transcriptScroll.documentView = transcript
         transcriptScroll.hasVerticalScroller = true
-        transcriptScroll.scrollerStyle = .legacy
+        transcriptScroll.scrollerStyle = Theme.scrollerStyle
         transcriptScroll.verticalScroller = AquaScroller()
         transcriptScroll.borderType = .bezelBorder
         transcriptScroll.drawsBackground = true
@@ -147,7 +147,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         table.setDraggingSourceOperationMask(.copy, forLocal: false)
         tableScroll.documentView = table
         tableScroll.hasVerticalScroller = true
-        tableScroll.scrollerStyle = .legacy
+        tableScroll.scrollerStyle = Theme.scrollerStyle
         tableScroll.verticalScroller = AquaScroller()
         tableScroll.borderType = .bezelBorder
         tableScroll.autohidesScrollers = false

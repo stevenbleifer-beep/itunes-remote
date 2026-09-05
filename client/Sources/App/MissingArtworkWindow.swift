@@ -93,7 +93,7 @@ final class MissingArtworkWindow: NSObject, NSTableViewDataSource, NSTableViewDe
         table.delegate = self
         scroll.documentView = table
         scroll.hasVerticalScroller = true
-        scroll.scrollerStyle = .legacy
+        scroll.scrollerStyle = Theme.scrollerStyle
         scroll.verticalScroller = AquaScroller()
         scroll.borderType = .bezelBorder
         scroll.frame = NSRect(x: 24, y: 64, width: 490, height: H - 92 - 76)

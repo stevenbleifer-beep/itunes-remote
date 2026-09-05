@@ -109,7 +109,7 @@ final class AquaPushButton: NSView {
     private var pulsePhase: CGFloat = 0
 
     private func updatePulse() {
-        let shouldPulse = isDefault && isEnabled && pulses && pulseOverride == nil
+        let shouldPulse = isDefault && isEnabled && pulses && pulseOverride == nil && !Theme.isModern
         if shouldPulse, pulseTimer == nil {
             pulseTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
                 guard let self = self else { return }
@@ -157,8 +157,43 @@ final class AquaPushButton: NSView {
 
     // MARK: Drawing
 
+    private static var labelFont: NSFont { Theme.isModern ? NSFont.systemFont(ofSize: 13, weight: .medium) : AquaPushButton.font }
+
     private var titleSize: NSSize {
-        (title as NSString).size(withAttributes: [.font: AquaPushButton.font])
+        (title as NSString).size(withAttributes: [.font: AquaPushButton.labelFont])
+    }
+
+    /// The modern capsule: the accent colour for the default button, a
+    /// white pill with a hairline for the rest. No gloss, no pulse.
+    private func drawModern(body: NSRect, capsule: NSBezierPath, pressed: Bool) {
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(isEnabled ? 0.12 : 0.05)
+        shadow.shadowBlurRadius = 2
+        shadow.shadowOffset = NSSize(width: 0, height: -0.5)
+        shadow.set()
+        (isDefault ? Theme.accent : NSColor.white).setFill()
+        capsule.fill()
+        NSGraphicsContext.restoreGraphicsState()
+        if pressed {
+            NSColor.black.withAlphaComponent(0.12).setFill()
+            capsule.fill()
+        }
+        if !isDefault {
+            Theme.hairline.setStroke()
+            capsule.lineWidth = 1
+            capsule.stroke()
+        }
+        let color = isDefault ? NSColor.white : Theme.text
+        let attrs: [NSAttributedString.Key: Any] = [.font: AquaPushButton.labelFont,
+                                                    .foregroundColor: color.withAlphaComponent(isEnabled ? 1 : 0.4)]
+        let size = titleSize
+        (title as NSString).draw(at: NSPoint(x: round(body.midX - size.width / 2), y: round(body.midY - size.height / 2) + 1),
+                                 withAttributes: attrs)
+        if !isEnabled {
+            NSColor.white.withAlphaComponent(0.4).setFill()
+            capsule.fill()
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -169,6 +204,10 @@ final class AquaPushButton: NSView {
         let capsule = NSBezierPath(roundedRect: body, xRadius: radius, yRadius: radius)
 
         let pressed = pressedOverride ?? isPressed
+        if Theme.isModern {
+            drawModern(body: body, capsule: capsule, pressed: pressed)
+            return
+        }
         let pulse = pulseAmount
         let base: AquaGelPalette = isDefault ? .blue : .white
         let palette = pulse > 0 ? base.lightened(by: pulse) : base
@@ -255,7 +294,7 @@ final class AquaPushButton: NSView {
 
         // Label.
         let color = isEnabled ? palette.text : NSColor.black.withAlphaComponent(0.35)
-        let attrs: [NSAttributedString.Key: Any] = [.font: AquaPushButton.font, .foregroundColor: color]
+        let attrs: [NSAttributedString.Key: Any] = [.font: AquaPushButton.labelFont, .foregroundColor: color]
         let size = titleSize
         let origin = NSPoint(x: round(body.midX - size.width / 2),
                              y: round(body.midY - size.height / 2) + 1)

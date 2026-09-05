@@ -9,15 +9,27 @@ final class AquaRowView: NSTableRowView {
     var selectionStyle: SelectionStyle = .blue
 
     override var interiorBackgroundStyle: NSView.BackgroundStyle {
-        isSelected ? .emphasized : .normal
+        // Modern: white text only on the accent pill of a focused table; the
+        // grey pill of an unfocused one, and the sidebar's, keep dark text.
+        if Theme.isModern { return isSelected && isEmphasized && selectionStyle == .blue ? .emphasized : .normal }
+        return isSelected ? .emphasized : .normal
     }
 
     override func drawBackground(in dirtyRect: NSRect) {
-        (striped && alternate ? Aqua.stripe : plainBackground).setFill()
+        (striped && alternate ? (Theme.isModern ? Theme.stripe : Aqua.stripe) : plainBackground).setFill()
         bounds.fill()
     }
 
     override func drawSelection(in dirtyRect: NSRect) {
+        if Theme.isModern {
+            let pill = Theme.selectionPill(in: bounds)
+            switch selectionStyle {
+            case .blue: (isEmphasized ? Theme.accent : NSColor(white: 0, alpha: 0.10)).setFill()
+            case .sidebar: NSColor(white: 0, alpha: isEmphasized ? 0.10 : 0.07).setFill()
+            }
+            pill.fill()
+            return
+        }
         switch selectionStyle {
         case .blue:
             let top = isEmphasized ? Aqua.selectionTopKey : Aqua.selectionTopInactive
@@ -54,6 +66,18 @@ final class AquaHeaderCell: NSTableHeaderCell {
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
         let ascending = sortDirection(controlView)
         let sorted = ascending != nil
+        if Theme.isModern {
+            NSColor(white: 0.985, alpha: 1).setFill()
+            cellFrame.fill()
+            Theme.hairline.setFill()
+            NSRect(x: cellFrame.minX, y: cellFrame.minY, width: cellFrame.width, height: 1).fill()
+            NSRect(x: cellFrame.maxX - 1, y: cellFrame.minY + 4, width: 1, height: cellFrame.height - 8).fill()
+            drawInterior(withFrame: cellFrame, in: controlView)
+            if let ascending = ascending {
+                drawSortIndicator(withFrame: cellFrame, in: controlView, ascending: ascending, priority: 0)
+            }
+            return
+        }
         let top = sorted ? NSColor(srgbRed: 0.85, green: 0.90, blue: 0.97, alpha: 1) : NSColor(white: 1.0, alpha: 1)
         let bottom = sorted ? NSColor(srgbRed: 0.72, green: 0.80, blue: 0.93, alpha: 1) : NSColor(white: 0.87, alpha: 1)
         NSGradient(starting: top, ending: bottom)!.draw(in: cellFrame, angle: -90)
@@ -75,7 +99,9 @@ final class AquaHeaderCell: NSTableHeaderCell {
         style.lineBreakMode = .byTruncatingTail
         style.alignment = alignment == .right ? .right : .left
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: Aqua.font(11), .foregroundColor: NSColor.black, .paragraphStyle: style,
+            .font: Theme.isModern ? NSFont.systemFont(ofSize: 11, weight: .medium) : Aqua.font(11),
+            .foregroundColor: Theme.isModern ? (isSortColumn(controlView) ? Theme.text : Theme.secondaryText) : NSColor.black,
+            .paragraphStyle: style,
         ]
         let inset = cellFrame.insetBy(dx: 5, dy: 0)
         // Keep the title clear of the sort triangle, which sits at the right
@@ -125,8 +151,8 @@ enum AquaTables {
         table.selectionHighlightStyle = .regular
         table.allowsColumnReordering = true
         table.allowsMultipleSelection = false
-        table.gridColor = Aqua.gridLine
-        table.gridStyleMask = header ? [.solidVerticalGridLineMask] : []
+        table.gridColor = Theme.isModern ? Theme.hairline : Aqua.gridLine
+        table.gridStyleMask = header && !Theme.isModern ? [.solidVerticalGridLineMask] : []
         table.focusRingType = .none
         if header {
             let hv = AquaHeaderView(frame: NSRect(x: 0, y: 0, width: 0, height: 18))

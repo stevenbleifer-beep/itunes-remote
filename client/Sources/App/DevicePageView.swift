@@ -106,7 +106,7 @@ final class DevicePageView: NSView {
         listScroll.drawsBackground = true
         listScroll.backgroundColor = Aqua.sidebarBackground
         listScroll.hasVerticalScroller = true
-        listScroll.scrollerStyle = .legacy
+        listScroll.scrollerStyle = Theme.scrollerStyle
         listScroll.verticalScroller = AquaScroller()
 
         let pad: CGFloat = 14
@@ -875,7 +875,7 @@ final class SimpleTable: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         table.delegate = self
         scrollView.documentView = table
         scrollView.hasVerticalScroller = true
-        scrollView.scrollerStyle = .legacy
+        scrollView.scrollerStyle = Theme.scrollerStyle
         scrollView.verticalScroller = AquaScroller()
         scrollView.borderType = .bezelBorder
         scrollView.autohidesScrollers = false
@@ -1066,7 +1066,7 @@ final class DeviceMusicView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         scroll.hasVerticalScroller = true
-        scroll.scrollerStyle = .legacy
+        scroll.scrollerStyle = Theme.scrollerStyle
         scroll.verticalScroller = AquaScroller()
         scroll.drawsBackground = false
         doc.wantsLayer = false
@@ -1353,7 +1353,7 @@ final class CheckListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         scroll.documentView = table
         scroll.hasVerticalScroller = true
-        scroll.scrollerStyle = .legacy
+        scroll.scrollerStyle = Theme.scrollerStyle
         scroll.verticalScroller = AquaScroller()
         scroll.borderType = .bezelBorder
         for v in [titleLabel, scroll] as [NSView] {

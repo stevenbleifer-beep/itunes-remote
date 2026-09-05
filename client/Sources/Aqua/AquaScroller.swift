@@ -4,12 +4,14 @@ import Cocoa
 /// gray pill knob, the way iTunes 10's lists scrolled before overlay bars.
 final class AquaScroller: NSScroller {
 
-    override class var isCompatibleWithOverlayScrollers: Bool { false }
+    override class var isCompatibleWithOverlayScrollers: Bool { Theme.isModern }
 
     override class func scrollerWidth(for controlSize: NSControl.ControlSize,
-                                      scrollerStyle: NSScroller.Style) -> CGFloat { 15 }
+                                      scrollerStyle: NSScroller.Style) -> CGFloat {
+        Theme.isModern ? super.scrollerWidth(for: controlSize, scrollerStyle: scrollerStyle) : 15
+    }
 
-    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {
+    private func drawClassicSlot(in slotRect: NSRect) {
         let vertical = bounds.height > bounds.width
         NSGradient(starting: NSColor(white: 0.90, alpha: 1), ending: NSColor(white: 0.96, alpha: 1))!
             .draw(in: slotRect, angle: vertical ? 0 : 90)
@@ -22,7 +24,7 @@ final class AquaScroller: NSScroller {
         }
     }
 
-    override func drawKnob() {
+    private func drawClassicKnob() {
         let vertical = bounds.height > bounds.width
         // Take only the length and position from AppKit. Its knob rect is
         // already inset unevenly — x 1, width 11 inside a 15-point scroller —
@@ -59,7 +61,18 @@ final class AquaScroller: NSScroller {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if Theme.isModern { super.draw(dirtyRect); return }
         drawKnobSlot(in: bounds, highlight: false)
         if usableParts != .noScrollerParts { drawKnob() }
+    }
+
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {
+        if Theme.isModern { super.drawKnobSlot(in: slotRect, highlight: flag); return }
+        drawClassicSlot(in: slotRect)
+    }
+
+    override func drawKnob() {
+        if Theme.isModern { super.drawKnob(); return }
+        drawClassicKnob()
     }
 }
