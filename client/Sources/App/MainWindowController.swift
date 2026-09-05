@@ -2056,6 +2056,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     @objc private func toggleShuffle(_ sender: Any?) {
         player.setShuffle(!player.shuffle)
+        // A fresh order from the song that is playing, or none.
+        let list = playContext.isEmpty ? rows : playContext
+        var current: Int? = nil
+        if let id = player.state?.track?.persistentId { current = list.firstIndex { $0.persistentId == id } }
+        rebuildShuffleOrder(startingWith: current)
+        refreshUpNext()
     }
 
     @objc private func cycleRepeat(_ sender: Any?) {
@@ -2739,7 +2745,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             playContext = list
             playContextPlaylist = playlist
             playContextName = controller.source.displayName
-            shuffleHistory.removeAll()
+            // Shuffle is an order, decided now, so Up Next can show it.
+            rebuildShuffleOrder(startingWith: list.firstIndex { $0.persistentId == track.persistentId })
         }
         startedFromPlaylistId = playlist
         player.play(track, playlist: playlist)
@@ -2812,23 +2819,27 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     /// What the current list would play after the current song, ignoring the
-    /// manual queue. Shuffle picks at random each time, so there is no honest
-    /// order to show for it.
+    /// manual queue. With shuffle on it is the shuffled order from here on,
+    /// which is fixed when playback starts, so it can be shown.
     private func upcomingTracks(limit: Int = 100) -> [Track] {
-        guard !(player.state?.shuffle ?? false) else { return [] }
         let list = playContext.isEmpty ? rows : playContext
-        guard let playing = player.state?.track?.persistentId,
-              let i = list.firstIndex(where: { $0.persistentId == playing }) else {
-            return Array(list.prefix(limit))
+        var playing: Int? = nil
+        if let id = player.state?.track?.persistentId { playing = list.firstIndex { $0.persistentId == id } }
+        if player.shuffle {
+            if shuffleOrder.isEmpty || shuffleOrder.count != list.count { rebuildShuffleOrder(startingWith: playing) }
+            if let i = playing, let c = shuffleOrder.firstIndex(of: i) { shuffleCursor = c }
+            let from = playing == nil ? 0 : shuffleCursor + 1
+            return shuffleOrder.dropFirst(from).prefix(limit).compactMap { $0 < list.count ? list[$0] : nil }
         }
+        guard let i = playing else { return Array(list.prefix(limit)) }
         return Array(list.dropFirst(i + 1).prefix(limit))
     }
 
     private func refreshUpNext() {
-        let shuffling = player.state?.shuffle ?? false
+        let name = playContextName ?? controller.source.displayName
         upNextPanel?.update(queue: upNext,
                             upcoming: upcomingTracks(),
-                            sourceName: shuffling ? "" : (playContextName ?? controller.source.displayName))
+                            sourceName: player.shuffle ? "\(name) (shuffled)" : name)
         upNextButton.isOn = !upNext.isEmpty
     }
 
@@ -3073,6 +3084,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func firstLoadDone() {
         restoreUpNext()
         if CommandLine.arguments.contains("--find-ipod") { findIPod(nil) }
+        // `--shuffle-preview`: the shuffled order the queue would show, printed.
+        if CommandLine.arguments.contains("--shuffle-preview") {
+            let was = player.shuffle
+            player.setShuffle(true)
+            playContext = rows
+            rebuildShuffleOrder(startingWith: 0)
+            let coming = upcomingTracks(limit: 5)
+            print("shuffle: " + coming.map { $0.name }.joined(separator: " | ") + " (of \(rows.count))")
+            fflush(stdout)
+            player.setShuffle(was)
+        }
         // `--shazam-file PATH`: identify a file instead of the microphone, for testing.
         if let i = CommandLine.arguments.firstIndex(of: "--shazam-file"), i + 1 < CommandLine.arguments.count {
             shazam.identify(file: URL(fileURLWithPath: CommandLine.arguments[i + 1])) { [weak self] result in
@@ -3165,7 +3187,22 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     // MARK: Transport
 
-    @objc func togglePlay(_ sender: Any?) { player.playPause() }
+    @objc func togglePlay(_ sender: Any?) {
+        // Nothing of ours playing: start the list on screen here, rather than
+        // handing Play to iTunes, whose queue is whatever it last had — and,
+        // with its own shuffle on, a random song out of it.
+        let s = player.state
+        if s == nil || s?.state == "stopped" || s?.track == nil, !rows.isEmpty {
+            if let picked = selectedTracks.first {
+                startPlayback(picked, playlist: controller.source.playlistId, context: rows)
+            } else {
+                let start = player.shuffle ? Int.random(in: 0..<rows.count) : 0
+                playRow(start)
+            }
+            return
+        }
+        player.playPause()
+    }
     @objc func nextTrack(_ sender: Any?) { step(by: 1) }
     @objc func previousTrack(_ sender: Any?) { previousPressed() }
 
@@ -3183,9 +3220,21 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// `next track` stops playback instead of advancing. Step through the list
     /// the user is actually looking at instead, which is also what they expect
     /// after a search, a browser filter, or a column sort.
-    /// Rows already played in this shuffle run, newest last, so Previous can
-    /// walk back through them and Next avoids an immediate repeat.
-    private var shuffleHistory: [Int] = []
+    /// The shuffle: a permutation of the context, decided when playback
+    /// starts (or shuffle is turned on) with the current song first, so
+    /// Next, Previous and the Up Next panel all agree on what comes.
+    private var shuffleOrder: [Int] = []
+    private var shuffleCursor = 0
+
+    private func rebuildShuffleOrder(startingWith index: Int?) {
+        let list = playContext.isEmpty ? rows : playContext
+        guard player.shuffle, !list.isEmpty else { shuffleOrder = []; shuffleCursor = 0; return }
+        var rest = Array(list.indices)
+        if let i = index { rest.removeAll { $0 == i } }
+        rest.shuffle()
+        shuffleOrder = (index.map { [$0] } ?? []) + rest
+        shuffleCursor = 0
+    }
 
     /// Steps to the next or previous track, honouring shuffle and repeat.
     ///
@@ -3219,9 +3268,23 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             playInContext(i)
             return
         }
-        guard let j = nextIndex(from: i, in: list, delta: delta,
-                                shuffle: player.state?.shuffle ?? false,
-                                repeatAll: mode == "all") else { return }
+        if player.shuffle {
+            if shuffleOrder.count != list.count || !shuffleOrder.contains(i) { rebuildShuffleOrder(startingWith: i) }
+            if let c = shuffleOrder.firstIndex(of: i) { shuffleCursor = c }
+            var next = shuffleCursor + delta
+            if next < 0 { next = 0 }
+            if next >= shuffleOrder.count {
+                // The round is over: again, in a new order, if repeating.
+                guard mode == "all" else { return }
+                rebuildShuffleOrder(startingWith: nil)
+                if shuffleOrder.first == i, shuffleOrder.count > 1 { shuffleOrder.swapAt(0, 1) }
+                next = 0
+            }
+            shuffleCursor = next
+            playInContext(shuffleOrder[next])
+            return
+        }
+        guard let j = nextIndex(from: i, in: list, delta: delta, repeatAll: mode == "all") else { return }
         playInContext(j)
     }
 
@@ -3231,6 +3294,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         let list = playContext.isEmpty ? rows : playContext
         guard index >= 0, index < list.count else { return }
         let track = list[index]
+        // Playing something out of order (from the queue panel, say) moves
+        // the shuffle along to it, so Next carries on from there.
+        if player.shuffle, let c = shuffleOrder.firstIndex(of: index) { shuffleCursor = c }
         startPlayback(track, playlist: playContext.isEmpty ? controller.source.playlistId : playContextPlaylist)
         if let i = rows.firstIndex(where: { $0.persistentId == track.persistentId }),
            let r = tableRow(forTrackIndex: i) {
@@ -3239,31 +3305,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
-    private func nextIndex(from i: Int, in list: [Track], delta: Int, shuffle: Bool, repeatAll: Bool) -> Int? {
+    private func nextIndex(from i: Int, in list: [Track], delta: Int, repeatAll: Bool) -> Int? {
         guard list.count > 1 else { return repeatAll ? i : nil }
-        guard shuffle else {
-            let j = i + delta
-            if j >= 0 && j < list.count { return j }
-            guard repeatAll else { return nil }
-            return j < 0 ? list.count - 1 : 0
-        }
-        if delta < 0 {
-            // Walk back through what shuffle actually played.
-            while let previous = shuffleHistory.popLast() {
-                if previous != i && previous < list.count { return previous }
-            }
-            return nil
-        }
-        shuffleHistory.append(i)
-        // Don't repeat anything from the recent past until the pool runs dry.
-        let window = min(list.count - 1, 50)
-        let recent = Set(shuffleHistory.suffix(window) + [i])
-        let pool = list.indices.filter { !recent.contains($0) }
-        if let pick = pool.randomElement() { return pick }
-        // Everything's been played: start over if repeating, else stop.
+        let j = i + delta
+        if j >= 0 && j < list.count { return j }
         guard repeatAll else { return nil }
-        shuffleHistory.removeAll()
-        return list.indices.filter { $0 != i }.randomElement()
+        return j < 0 ? list.count - 1 : 0
     }
 
     private func playRow(_ index: Int) {

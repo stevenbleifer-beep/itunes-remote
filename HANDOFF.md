@@ -1284,3 +1284,23 @@ The one bug the first capture showed: a `: .white` row background the
 sed did not match (pattern was `background: .white`) left every other
 track row white with white text; fixed at the call site. Verified with
 live captures in dark and light.
+
+## Shuffle as an order; Play when stopped (2026-09-05)
+
+Steven: "I played music from a playlist and it played a random song."
+`togglePlay` called `player.playPause()`, which with nothing of ours
+playing sent `playpause` to iTunes, and iTunes — its own shuffle on —
+played a random song from whatever it last had. Now `togglePlay` with no
+current track starts our own context: the selected row, else row 0, or a
+random row when the app's shuffle is on.
+
+Shuffle used to pick a random next track each step (`shuffleHistory`), so
+Up Next could show nothing for it. Now `shuffleOrder: [Int]` is a
+permutation of the context built by `rebuildShuffleOrder(startingWith:)`
+(current song first) whenever playback starts with a context, or shuffle
+is toggled; `shuffleCursor` follows the playing song; `step` walks the
+order (Repeat All deals a new one at the end, avoiding an immediate
+repeat); `playInContext` moves the cursor when something is played out
+of order; `upcomingTracks` returns the order after the cursor and the
+panel's header says "(shuffled)". `--shuffle-preview` prints the first
+five of an order (it restores the shuffle preference afterwards).

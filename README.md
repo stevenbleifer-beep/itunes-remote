@@ -94,6 +94,16 @@ through iTunes itself, never to the files behind its back.
   staging away; a second Apply while one runs is refused instead of
   starting over; and the device page does not try to read the iPod while
   the rebuild holds iTunes, which used to time out and re-enable Apply.
+- **Shuffle is an order you can see.** Turning shuffle on, or starting a
+  list with it on, decides the whole shuffled order there and then, with
+  the current song first; Next and Previous walk it, Up Next shows what is
+  coming under "Continuing from … (shuffled)", and playing something from
+  the panel moves the shuffle along to it. Repeat All deals a new order
+  when the round ends.
+- **Play with nothing playing starts the list on screen** — the selected
+  song, or the first (a random one with shuffle on) — instead of handing
+  the click to iTunes, whose queue was whatever it last had and, with its
+  own shuffle on, a random song out of it.
 - **Up Next survives a relaunch.**
 - **Find iPod…** (Controls menu, and a button on the page of a device
   iTunes has not opened): the daemon looks at the USB bus afresh and at
