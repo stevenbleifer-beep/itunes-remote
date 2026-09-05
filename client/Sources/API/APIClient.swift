@@ -397,6 +397,12 @@ final class APIClient {
         return w.lyrics.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
     }
 
+    /// Deletes songs from the library. The files stay; the entries go.
+    func deleteTracks(ids: [String]) async throws -> PatchResult {
+        let data = try await request("DELETE", "/api/tracks", body: ["ids": ids], timeout: 120)
+        return try JSONDecoder().decode(PatchResult.self, from: data)
+    }
+
     func setArtwork(ids: [String], image: Data) async throws -> PatchResult {
         let data = try await request("PUT", "/api/tracks/artwork",
                                      body: ["ids": ids, "image": image.base64EncodedString()], timeout: 120)

@@ -22,7 +22,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 swiftc -O -o "$BIN" \
     Sources/Aqua/*.swift Sources/API/*.swift Sources/App/*.swift \
-    -framework Cocoa -framework MediaPlayer
+    -framework Cocoa -framework MediaPlayer -framework MusicKit
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -36,7 +36,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>CFBundleVersion</key><string>1</string>
-  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <!-- Apple Music catalogue search, on the Apple Music library only. -->
+  <key>NSAppleMusicUsageDescription</key><string>Searches Apple Music and adds what you pick to your library.</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>NSHighResolutionCapable</key><true/>

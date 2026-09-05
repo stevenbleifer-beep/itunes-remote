@@ -13,6 +13,10 @@ final class SearchPopup: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         case artist(String)
         case album(AlbumEntry)
         case song(Track)
+        /// From Apple Music's catalogue, with the row's screen rect so the
+        /// owner can drop an action menu under it.
+        case catalogSong(AppleMusicCatalog.SongHit, NSRect)
+        case catalogAlbum(AppleMusicCatalog.AlbumHit, NSRect)
     }
 
     private enum Row {
@@ -20,6 +24,8 @@ final class SearchPopup: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         case artist(FacetEntry)
         case album(AlbumEntry)
         case song(Track)
+        case catalogSong(AppleMusicCatalog.SongHit)
+        case catalogAlbum(AppleMusicCatalog.AlbumHit)
     }
 
     let panel: NSPanel
@@ -85,6 +91,10 @@ final class SearchPopup: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             out.append(.header("SONGS"))
             out.append(contentsOf: songs.prefix(6).map { .song($0) })
         }
+        place(out, below: field)
+    }
+
+    private func place(_ out: [Row], below field: NSView) {
         rows = out
         guard !rows.isEmpty, let window = field.window else { hide(); return }
         table.reloadData()
@@ -101,6 +111,24 @@ final class SearchPopup: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             window.addChildWindow(panel, ordered: .above)
             panel.orderFront(nil)
         }
+    }
+
+    /// Apple Music's answer for the text: albums, then songs. On the Apple
+    /// Music library the popup is the catalogue, not the library — the
+    /// list underneath still filters the library as it always did.
+    func update(catalogSongs: [AppleMusicCatalog.SongHit], catalogAlbums: [AppleMusicCatalog.AlbumHit],
+                note: String?, below field: NSView) {
+        var out: [Row] = []
+        if let note = note { out.append(.header(note)) }
+        if !catalogAlbums.isEmpty {
+            out.append(.header("APPLE MUSIC ALBUMS"))
+            out.append(contentsOf: catalogAlbums.prefix(3).map { .catalogAlbum($0) })
+        }
+        if !catalogSongs.isEmpty {
+            out.append(.header("APPLE MUSIC SONGS"))
+            out.append(contentsOf: catalogSongs.prefix(6).map { .catalogSong($0) })
+        }
+        place(out, below: field)
     }
 
     func hide() {
@@ -129,7 +157,7 @@ final class SearchPopup: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     func activateSelection() {
         var i = table.selectedRow
         if i < 0 {
-            i = rows.firstIndex { if case .song = $0 { return true }; return false }
+            i = rows.firstIndex { if case .song = $0 { return true }; if case .catalogSong = $0 { return true }; return false }
                 ?? rows.firstIndex { !isHeaderRow($0) } ?? -1
         }
         guard i >= 0, i < rows.count else { return }
@@ -145,8 +173,17 @@ final class SearchPopup: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         case .artist(let a): onPick(.artist(a.name))
         case .album(let a): onPick(.album(a))
         case .song(let t): onPick(.song(t))
+        case .catalogSong(let s): onPick(.catalogSong(s, rowRect(i)))
+        case .catalogAlbum(let a): onPick(.catalogAlbum(a, rowRect(i)))
         }
         hide()
+    }
+
+    /// The row on screen, for a menu that should hang off it.
+    private func rowRect(_ i: Int) -> NSRect {
+        let r = table.rect(ofRow: i)
+        let inWindow = table.convert(r, to: nil)
+        return panel.convertToScreen(inWindow)
     }
 
     @objc private func clicked(_ sender: Any?) {
@@ -173,6 +210,10 @@ final class SearchPopup: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             cell.textField?.attributedStringValue = twoTone(a.title, a.artistName, grey)
         case .song(let t):
             cell.textField?.attributedStringValue = twoTone(t.name, t.artist, grey)
+        case .catalogSong(let s):
+            cell.textField?.attributedStringValue = twoTone(s.name, s.artist + (s.album.isEmpty ? "" : " · " + s.album), grey)
+        case .catalogAlbum(let a):
+            cell.textField?.attributedStringValue = twoTone(a.name, a.artist + (a.year.map { " · \($0)" } ?? ""), grey)
         }
         return cell
     }

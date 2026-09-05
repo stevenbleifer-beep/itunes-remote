@@ -95,7 +95,12 @@ class AppleScript(object):
             raise AppleScriptError(
                 "an iPod is mounted at %s; eject it before launching iTunes" % IPOD_MOUNT
             )
-        subprocess.run(["open", "-a", self.app], check=False)
+        if self.app == "Music":
+            # Music runs only because scripting needs it: in the background,
+            # hidden, so nothing comes to the front on this Mac.
+            subprocess.run(["open", "-g", "-j", "-a", self.app], check=False)
+        else:
+            subprocess.run(["open", "-a", self.app], check=False)
 
     def quit_itunes(self, wait=30):
         """Asks iTunes to quit and waits for it to go. iTunes 12.9.5's device

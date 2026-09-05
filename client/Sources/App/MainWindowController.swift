@@ -986,6 +986,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         remove.attributedTitle = NSAttributedString(string: "Remove from Playlist", attributes: [.font: Aqua.font(13)])
         menu.addItem(remove)
         removeFromPlaylistItem = remove
+        let erase = NSMenuItem(title: "Delete from Library…", action: #selector(deleteFromLibrary(_:)), keyEquivalent: "")
+        erase.target = self
+        erase.attributedTitle = NSAttributedString(string: "Delete from Library…", attributes: [.font: Aqua.font(13)])
+        menu.addItem(erase)
         menu.addItem(.separator())
         let addPod = NSMenuItem(title: "Add to iPod", action: nil, keyEquivalent: "")
         addPod.attributedTitle = NSAttributedString(string: "Add to iPod", attributes: [.font: Aqua.font(13)])
@@ -2524,6 +2528,43 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
+    /// Right-click ▸ Delete from Library…: the song leaves the library on
+    /// the far end (the file stays on its disk). iTunes has no undo for it,
+    /// so it asks, and names what is going.
+    @objc func deleteFromLibrary(_ sender: Any?) {
+        guard let api = controller.api, let window = window else { return }
+        let selected = selectedTracks
+        let ids = selected.map { $0.persistentId }
+        guard !ids.isEmpty else { return }
+        let alert = NSAlert()
+        if ids.count == 1 {
+            alert.messageText = "Delete “\(selected[0].name)” from your library?"
+        } else {
+            alert.messageText = "Delete these \(ids.count) songs from your library?"
+        }
+        alert.informativeText = "\(ServerSettings.appName) forgets the song\(ids.count == 1 ? "" : "s") and takes "
+            + "\(ids.count == 1 ? "it" : "them") out of every playlist. The file\(ids.count == 1 ? "" : "s") stay\(ids.count == 1 ? "s" : "") on the disk. There is no undo."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self = self else { return }
+            Task { @MainActor in
+                do {
+                    let r = try await api.deleteTracks(ids: ids)
+                    self.artworkChanged(ids)
+                    self.flashStatus("Deleted \(r.updated) song\(r.updated == 1 ? "" : "s") from the library"
+                                     + (r.failed > 0 ? "; \(r.failed) failed." : "."))
+                    await self.reloadPlaylists()
+                    self.controller.reload()
+                    if self.curatorOpen { self.loadCuratorLibrary() }
+                } catch {
+                    self.flashStatus("Delete failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     private func reloadPlaylists() async {
         guard let api = controller.api else { return }
         if let playlists = try? await api.playlists() {
@@ -3001,6 +3042,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func firstLoadDone() {
         restoreUpNext()
         if CommandLine.arguments.contains("--find-ipod") { findIPod(nil) }
+        // `--catalog-search TERM`: one Apple Music lookup, printed, for testing.
+        if let i = CommandLine.arguments.firstIndex(of: "--catalog-search"), i + 1 < CommandLine.arguments.count {
+            let term = CommandLine.arguments[i + 1]
+            Task { @MainActor in
+                do {
+                    let (songs, albums) = try await AppleMusicCatalog.search(term)
+                    print("catalog: \(songs.count) songs, \(albums.count) albums; " + songs.prefix(3).map { "\($0.name) — \($0.artist)" }.joined(separator: "; "))
+                } catch {
+                    print("catalog: error: \(error.localizedDescription)")
+                }
+                fflush(stdout)
+            }
+        }
         if openMissingArtwork { showMissingArtwork(nil) }
         if let want = likeAlbum, let api = controller.api {
             let parts = want.split(separator: "|", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
@@ -3447,6 +3501,28 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         guard q.count >= 2, let api = controller.api else { searchPopup?.hide(); return }
         suggestGeneration += 1
         let gen = suggestGeneration
+        // The Apple Music library: the popup searches Apple Music itself,
+        // songs you do not have; the list underneath keeps filtering the
+        // library you do.
+        if ServerSettings.isMusic {
+            Task { @MainActor in
+                var songs: [AppleMusicCatalog.SongHit] = []
+                var albums: [AppleMusicCatalog.AlbumHit] = []
+                var note: String?
+                do {
+                    (songs, albums) = try await AppleMusicCatalog.search(q)
+                    if songs.isEmpty && albums.isEmpty { note = "NOTHING ON APPLE MUSIC FOR “\(q.uppercased())”" }
+                } catch {
+                    note = "APPLE MUSIC: " + error.localizedDescription.uppercased()
+                }
+                guard gen == suggestGeneration,
+                      searchField.stringValue.trimmingCharacters(in: .whitespaces) == q else { return }
+                let popup = searchPopup ?? makeSearchPopup()
+                searchPopup = popup
+                popup.update(catalogSongs: songs, catalogAlbums: albums, note: note, below: searchField)
+            }
+            return
+        }
         let filter = TrackFilter(q: q)
         Task { @MainActor in
             async let artists = api.facet("artist", filter: filter)
@@ -3477,9 +3553,108 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             case .song(let t):
                 self.startPlayback(t, playlist: nil)
                 self.flashStatus("Playing “\(t.name)”.")
+            case .catalogSong(let s, let rect):
+                self.catalogMenu(songIDs: [s.id], title: "\(s.name) — \(s.artist)", play: { try await AppleMusicCatalog.play(s.song) }, at: rect)
+            case .catalogAlbum(let a, let rect):
+                self.catalogMenu(albumID: a.id, title: "\(a.name) — \(a.artist)", play: { try await AppleMusicCatalog.play(a.album) }, at: rect)
             }
         }
         return p
+    }
+
+    // MARK: Apple Music catalogue actions
+
+    /// What can be done with something found on Apple Music: play it, put
+    /// it in the library, put it in a playlist, start a playlist with it.
+    private func catalogMenu(songIDs: [String] = [], albumID: String? = nil, title: String,
+                             play: @escaping () async throws -> Void, at rect: NSRect) {
+        let menu = NSMenu()
+        menu.font = Aqua.font(13)
+        let head = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        head.isEnabled = false
+        menu.addItem(head)
+        menu.addItem(.separator())
+        func item(_ name: String, _ work: @escaping () async throws -> String) {
+            let it = NSMenuItem(title: name, action: #selector(catalogAction(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = CatalogWork(run: work)
+            menu.addItem(it)
+        }
+        item("Play on Apple Music") { try await play(); return "Playing “\(title)” on Apple Music." }
+        if let album = albumID {
+            item("Add Album to Library") {
+                try await AppleMusicCatalog.addToLibrary(albumIDs: [album])
+                return "Added “\(title)” to the library. It shows here once Music has written it down."
+            }
+        } else {
+            item("Add to Library") {
+                try await AppleMusicCatalog.addToLibrary(songIDs: songIDs)
+                return "Added “\(title)” to the library. It shows here once Music has written it down."
+            }
+            let sub = NSMenu()
+            let subItem = NSMenuItem(title: "Add to Playlist", action: nil, keyEquivalent: "")
+            subItem.submenu = sub
+            menu.addItem(subItem)
+            let loading = NSMenuItem(title: "Loading…", action: nil, keyEquivalent: "")
+            loading.isEnabled = false
+            sub.addItem(loading)
+            Task { @MainActor in
+                let lists = (try? await AppleMusicCatalog.playlists()) ?? []
+                sub.removeAllItems()
+                if lists.isEmpty {
+                    let none = NSMenuItem(title: "No playlists", action: nil, keyEquivalent: "")
+                    none.isEnabled = false
+                    sub.addItem(none)
+                }
+                for pl in lists {
+                    let it = NSMenuItem(title: pl.name, action: #selector(self.catalogAction(_:)), keyEquivalent: "")
+                    it.target = self
+                    it.representedObject = CatalogWork { 
+                        try await AppleMusicCatalog.add(songIDs: songIDs, toPlaylist: pl.id)
+                        return "Added “\(title)” to \(pl.name)."
+                    }
+                    sub.addItem(it)
+                }
+            }
+            item("New Playlist with This…") { [weak self] in
+                guard let self = self, let window = self.window else { return "" }
+                let name: String? = await withCheckedContinuation { cont in
+                    let prompt = NamePrompt(title: "New Playlist", prompt: "Name for the playlist:",
+                                            placeholder: "Untitled Playlist", acceptTitle: "Create")
+                    prompt.onAccept = { name, done in done(nil); cont.resume(returning: name) }
+                    prompt.onCancel = { cont.resume(returning: nil) }
+                    prompt.present(in: window)
+                    self.namePrompt = prompt
+                }
+                guard let name = name, !name.isEmpty else { return "" }
+                try await AppleMusicCatalog.createPlaylist(named: name, songIDs: songIDs)
+                return "Made “\(name)” with “\(title)”."
+            }
+        }
+        // Under the row it came from, so it reads as part of the popup.
+        let origin = NSPoint(x: rect.minX + 16, y: rect.minY)
+        menu.popUp(positioning: nil, at: window?.convertPoint(fromScreen: origin) ?? .zero, in: window?.contentView)
+    }
+
+    private final class CatalogWork {
+        let run: () async throws -> String
+        init(run: @escaping () async throws -> String) { self.run = run }
+    }
+
+    @objc private func catalogAction(_ sender: NSMenuItem) {
+        guard let work = sender.representedObject as? CatalogWork, let api = controller.api else { return }
+        flashStatus("Asking Apple Music…")
+        Task { @MainActor in
+            do {
+                let said = try await work.run()
+                if !said.isEmpty { flashStatus(said) }
+                // The library reader picks the change up on its own; this
+                // just asks it not to wait.
+                _ = try? await api.refreshLibrary()
+            } catch {
+                flashStatus("Apple Music: \(error.localizedDescription)")
+            }
+        }
     }
 
     /// Clears the search and narrows the library to one artist, or one

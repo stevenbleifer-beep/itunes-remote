@@ -59,7 +59,11 @@ final class NamePrompt: NSObject {
         panel.initialFirstResponder = field
     }
 
+    /// Called when the sheet is dismissed without a name.
+    var onCancel: () -> Void = {}
+
     @objc private func cancel() {
+        onCancel()
         panel.sheetParent?.endSheet(panel, returnCode: .cancel)
     }
 

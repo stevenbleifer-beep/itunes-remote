@@ -567,6 +567,23 @@ class Library(object):
             out.append(g)
         return out
 
+    def remove_tracks(self, pids):
+        """Drops tracks from the library and from every playlist. `order` and
+        each playlist's items are rebuilt and rebound, never edited in place,
+        for the same reason patch_many never sorts in place: readers on other
+        threads hold no lock."""
+        gone = set(p for p in pids if p in self.tracks)
+        if not gone:
+            return []
+        self.order = [t for t in self.order if t.persistent_id not in gone]
+        for p in self.playlists:
+            if any(pid in gone for pid in p["items"]):
+                p["items"] = [pid for pid in p["items"] if pid not in gone]
+                p["count"] = len(p["items"])
+        for pid in gone:
+            del self.tracks[pid]
+        return sorted(gone)
+
     def playlist_summaries(self):
         return [
             {k: v for k, v in p.items() if k != "items"} for p in self.playlists
@@ -685,6 +702,7 @@ class LibraryStore(object):
         self._lib = None
         self._journal = []  # (timestamp, persistent_id, fields)
         self._playlist_journal = []  # (timestamp, op, playlist_id, track_ids, name, extra)
+        self._removed_journal = []  # (timestamp, persistent_id): deleted through the daemon
         self._reloading = False
         self._stop = threading.Event()
         self._thread = None
@@ -807,6 +825,12 @@ class LibraryStore(object):
                     log.warning("playlist journal replay skipped: %s", e)
             self._playlist_journal = [j for j in self._playlist_journal if j[0] > new.xml_date]
 
+            # Tracks deleted through the daemon that an older XML still lists.
+            gone = [pid for ts, pid in self._removed_journal if ts > new.xml_date]
+            if gone:
+                new.remove_tracks(gone)
+            self._removed_journal = [j for j in self._removed_journal if j[0] > new.xml_date]
+
             self._lib = new
             self._stamp = stamp
         self._reloading = False
@@ -824,6 +848,16 @@ class LibraryStore(object):
             for pid, fields in patches.items():
                 self._journal.append((now, pid, dict(fields)))
         return old
+
+    def remove_tracks(self, pids):
+        """Deleted in iTunes: gone here too, and kept gone across a reload of
+        an XML that predates the deletion."""
+        with self._lock:
+            gone = self._lib.remove_tracks(pids)
+            now = time.time()
+            for pid in gone:
+                self._removed_journal.append((now, pid))
+        return gone
 
     # -- playlist membership, journaled the same way as field patches ------
 

@@ -1194,3 +1194,36 @@ and creates `…/iTunes Remote/Apple Music/curator` beside the iTunes one.
 The DMG's Read Me mentions the switch. The separate
 `/Applications/Apple Music Remote.app` from the other session is now
 redundant; left in place for Steven to remove.
+
+## Apple Music catalogue, Delete from Library (2026-09-05, small hours)
+
+`AppleMusicCatalog.swift` wraps MusicKit: `MusicAuthorization`,
+`MusicCatalogSearchRequest` (songs + albums, 8 each), `ApplicationMusicPlayer`
+for Play, `MusicLibraryRequest<MusicKit.Playlist>` for the playlist list
+(the app has its own `Playlist` type — say `MusicKit.Playlist` or the
+generic will not resolve), and `MusicDataRequest` for the three things
+MusicKit has no macOS API for: add to library (`POST /v1/me/library?ids[songs]=`),
+add to a playlist (`POST /v1/me/library/playlists/{id}/tracks`) and
+create a playlist (`POST /v1/me/library/playlists`). `MusicLibrary.shared.add`
+and `createPlaylist` are marked unavailable on macOS — the probe in
+`/tmp/mk2.swift` said so — hence the data requests. Wired in
+`MainWindowController.suggest` (Music profile only), `SearchPopup` rows
+`.catalogSong/.catalogAlbum` returning the row's screen rect, and
+`catalogMenu` popping an NSMenu under the row. `--catalog-search TERM`
+prints one lookup. `LSMinimumSystemVersion` is now 14.0 (the player API),
+build.sh links MusicKit and sets `NSAppleMusicUsageDescription`.
+
+**Not verified end to end**: the MusicKit token needs the App ID's
+MusicKit service enabled in Steven's developer account, which only he can
+do; until then `explain()` turns `developerTokenRequestFailed` into that
+instruction in the popup's header row.
+
+**Delete.** `DELETE /api/tracks {ids}` → `tracks_delete.applescript`
+(`delete t` on a library-playlist track; file untouched) → `Library.remove_tracks`
+(rebinds `order` and each playlist's `items`, never in place) and a
+`_removed_journal` replayed on reload so an older XML cannot resurrect
+them. Client: track menu "Delete from Library…" with a confirm sheet. The
+route's 404 path is verified on both daemons; no real track was deleted.
+
+**Music hidden.** `AppleScript.launch_itunes` uses `open -g -j -a Music`
+on the Music backend so scripting never brings Music to the front.

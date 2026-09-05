@@ -254,6 +254,7 @@ class Api(object):
             ("GET", r"/api/outputs", self.get_outputs),
             ("POST", r"/api/outputs", self.post_outputs),
             ("PATCH", r"/api/tracks", self.patch_tracks),
+            ("DELETE", r"/api/tracks", self.delete_tracks),
             ("PUT", r"/api/tracks/artwork", self.put_artwork),
             ("DELETE", r"/api/tracks/artwork", self.delete_artwork),
             ("POST", r"/api/playlists", self.post_playlist),
@@ -2182,6 +2183,41 @@ class Api(object):
         return out
 
     # -- metadata writes -------------------------------------------------
+
+    def delete_tracks(self, params, query, body):
+        """Deletes tracks from the library in iTunes (or Music). The file on
+        disk is left where it is; only the library entry goes. Not undoable
+        on the far end, so the app asks first."""
+        pids = self._track_ids(body)
+        missing = [p for p in pids if p not in self.store.lib.tracks]
+        if missing:
+            raise ApiError(404, "no such track: %s" % missing[0])
+        results, ok = [], []
+        for start in range(0, len(pids), self.WRITE_CHUNK):
+            chunk = pids[start:start + self.WRITE_CHUNK]
+            try:
+                out = self._script("tracks_delete", *chunk, timeout=30 + 1.0 * len(chunk))
+            except ApiError as e:
+                state = "unknown" if e.status == 504 else "error"
+                for p in chunk:
+                    results.append({"persistentId": p, "result": state, "detail": e.message})
+                continue
+            for record in self.itunes.records(out):
+                if len(record) >= 2 and record[1] == "ok":
+                    ok.append(record[0])
+                    results.append({"persistentId": record[0], "result": "ok"})
+                else:
+                    results.append({"persistentId": record[0], "result": "error",
+                                    "detail": record[2] if len(record) > 2 else "unknown error"})
+        if ok:
+            self.store.remove_tracks(ok)
+            with self.artwork_lock:
+                for p in ok:
+                    self.artwork_cache.pop(p, None)
+        if self.write_log:
+            self.write_log.record_batch("tracks-delete", len(pids), None,
+                                        "%d ok, %d failed" % (len(ok), len(pids) - len(ok)))
+        return {"requested": len(pids), "changed": len(ok), "failed": len(pids) - len(ok), "results": results}
 
     def _script_value(self, internal_name, value):
         """The text form handed to AppleScript as an argv item."""

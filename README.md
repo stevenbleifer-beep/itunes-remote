@@ -136,6 +136,30 @@ file-based artwork. The same source also builds a stand-alone "Apple
 Music Remote" (`ITR_VARIANT=music`), which is the same thing without the
 switch.
 
+## On the Apple Music side: the catalogue, and deleting
+
+With the Apple Music library active, the search field's drop-down searches
+**Apple Music itself** — songs and albums you do not have — while the list
+underneath keeps filtering the library you do. Pick a result and a menu
+offers Play on Apple Music, Add to Library (or Add Album to Library), Add
+to Playlist ▸ one of your playlists, and New Playlist with This…. The
+lookups and adds go through MusicKit, signed with a token it makes for
+this app; that needs the app's identifier
+(`local.stevenbleifer.itunesremote`) to have the **MusicKit** service
+enabled in the Apple Developer account (Certificates, Identifiers &
+Profiles ▸ Identifiers ▸ App Services), an Apple Music subscription on the
+Mac, and a one-time "may use Apple Music" permission. Adds show up in the
+app once Music has written them into its library, usually within a minute.
+
+**Delete from Library…** on the track menu (both libraries) removes songs
+from the library on the far end and from every playlist. The files stay
+where they are. There is no undo, so it asks first.
+
+Music does not have to be open. Reading the library goes through its
+library file, and playing files on this Mac never touches it. Playing
+through Music, or changing anything in it, does — and the daemon launches
+it hidden, in the background, when that happens.
+
 ## Turning the AI off
 
 **View ▸ AI Features** is one switch for everything that runs a model: the
