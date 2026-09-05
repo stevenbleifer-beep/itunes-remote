@@ -83,6 +83,15 @@ through iTunes itself, never to the files behind its back.
   off the list. The curator page and its conversation are unchanged —
   this is another way in, and you can still say what to change.
 - **Up Next survives a relaunch.**
+- **Find iPod…** (Controls menu, and a button on the page of a device
+  iTunes has not opened): the daemon looks at the USB bus afresh and at
+  what iTunes has open, and says which of three states the iPod is in —
+  not plugged in, open in iTunes, or on the bus with iTunes ignoring it.
+  For the third it offers the one cure software has, a restart of iTunes,
+  and waits up to a minute for the iPod to appear. When even that fails
+  the iPod itself is not offering its disk (the storage driver is attached
+  but publishes no medium, and asking it to re-probe returns
+  "unsupported"), so the app says to replug or reset the iPod.
 - **Notifications** when the song changes and the window is out of sight
   (app in the background, window hidden or minimised, mini player up):
   title, artist, album, and the cover. Controls ▸ Notify on Song Change

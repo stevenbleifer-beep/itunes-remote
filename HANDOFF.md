@@ -944,3 +944,29 @@ name*, which for the bundled app is "iTunes Remote" (with the space), and
 prints every on-screen window of that process with its title; grep the
 title you want. It cannot see sheets; `--get-info` prints the sheet's
 window number for `screencapture -l`.
+
+## Find iPod (2026-09-04, later)
+
+"Sometimes when I plug the iPod in it still doesn't mount — a button that
+searches for it and mounts it?" There is now `POST /api/devices/find`
+(`post_devices_find`): clears the USB cache, reads `system_profiler`, reads
+iTunes' sources, and answers `state` = `open` | `absent` | `wedged` with a
+sentence. With `{"restart": true}` the wedged case quits and relaunches
+iTunes (same steps as `post_itunes_restart`) and polls the sources every
+5 s for 75 s. Client: `api.findIPod(restart:)`, `MainWindowController.
+findIPod` (Controls ▸ Find iPod…, `--find-ipod` prints the state), the
+sheet `offerITunesRestart`, and a Find iPod button on the device page in
+Sync's place when `unavailableReason` is set.
+
+What I learned testing it, with the iPod actually wedged at the time
+(plugged 21:11, serial 000A270013356E00): the iTunes restart did **not**
+clear it this time, unlike 2026-09-03. The ioreg tree was complete down to
+`IOBlockStorageDriver` with **no IOMedia child**; `Bus Power Available` was
+normal; the kernel log had only the USBMSC enumeration line. I tried
+`IOServiceRequestProbe` (a ctypes script, no root) on the iPodSBC nub, the
+SCSI logical unit and the block storage driver: every call returned
+0xe00002c7, kIOReturnUnsupported. So when the iPod does not offer its
+medium there is nothing user-space on the Pro can do; the message says to
+replug or reset the iPod (Menu + centre until the Apple logo) and to let
+it charge if the battery is low. Nothing in the app can mount what the
+device is not presenting, and the feature is honest about that.

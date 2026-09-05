@@ -19,6 +19,8 @@ final class DevicePageView: NSView {
     var onPlanEdit: (DeviceMusicView.Row, Bool) -> Void = { _, _ in }
     /// Writes the plan into the playlist iTunes syncs — iTunes' own Apply.
     var onApplyPlan: () -> Void = {}
+    /// The Find iPod button, shown for a device iTunes has not opened.
+    var onFind: () -> Void = {}
     /// Asks for the tracks in one of the device's playlists.
     var loadTracks: (String, @escaping ([DeviceTrack]) -> Void) -> Void = { _, done in done([]) }
     var loadImage: (@escaping (NSImage?) -> Void) -> Void = { done in done(nil) }
@@ -42,6 +44,7 @@ final class DevicePageView: NSView {
     private let capacity = CapacityBarView()
     private let applyButton = AquaPushButton(title: "Apply")
     private let syncButton = AquaPushButton(title: "Sync")
+    private let findButton = AquaPushButton(title: "Find iPod")
     private let doneButton = AquaPushButton(title: "Done", isDefault: true)
     /// Apply lights up once a tick has moved, as it does in iTunes.
     private var planDirty = false { didSet { applyButton.isEnabled = planDirty } }
@@ -64,6 +67,11 @@ final class DevicePageView: NSView {
         statusLabel.lineBreakMode = .byTruncatingTail
         syncButton.target = self
         syncButton.action = #selector(sync(_:))
+        findButton.target = self
+        findButton.action = #selector(find(_:))
+        findButton.isHidden = true
+        findButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(findButton)
         applyButton.target = self
         applyButton.action = #selector(apply(_:))
         applyButton.isEnabled = false
@@ -122,6 +130,8 @@ final class DevicePageView: NSView {
             doneButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -pad),
             syncButton.trailingAnchor.constraint(equalTo: doneButton.leadingAnchor, constant: -8),
             syncButton.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
+            findButton.trailingAnchor.constraint(equalTo: doneButton.leadingAnchor, constant: -8),
+            findButton.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
             applyButton.trailingAnchor.constraint(equalTo: syncButton.leadingAnchor, constant: -8),
             applyButton.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
             // Lined up with the capacity bar above it, not with the window
@@ -217,6 +227,8 @@ final class DevicePageView: NSView {
         }
     }
 
+    @objc private func find(_ sender: Any?) { onFind() }
+
     @objc private func sync(_ sender: Any?) { onSync() }
     @objc private func apply(_ sender: Any?) { onApplyPlan() }
 
@@ -299,6 +311,9 @@ final class DevicePageView: NSView {
             loadImage { [weak self] image in self?.header.image = image }
         }
         syncButton.isEnabled = d.syncable
+        // A device iTunes has not opened gets Find iPod where Sync would be.
+        findButton.isHidden = d.unavailableReason == nil
+        syncButton.isHidden = !findButton.isHidden
         header.canEject = d.itunesSource
         if let reason = d.unavailableReason {
             summaryLine = reason

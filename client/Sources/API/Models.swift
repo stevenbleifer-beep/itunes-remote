@@ -466,3 +466,18 @@ struct SyncProgress: Decodable, Equatable {
         return min(1, max(0, Double(d) / Double(t)))
     }
 }
+
+/// What POST /api/devices/find found: the iPod is open in iTunes, absent
+/// from the USB bus, or on the bus with iTunes ignoring it ("wedged").
+struct IPodSearch: Decodable {
+    struct USB: Decodable {
+        let name: String
+        let product: String
+        let mountPoint: String?
+    }
+    let state: String        // open | absent | wedged
+    let source: String?
+    let restarted: Bool
+    let message: String
+    let usb: [USB]
+}

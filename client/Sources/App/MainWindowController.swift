@@ -400,6 +400,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         devicePage.onPlanEdit = { [weak self] row, on in self?.editDevicePlan(row, on) }
         devicePage.onApplyPlan = { [weak self] in self?.applyDevicePlan() }
         devicePage.onEject = { [weak self] in self?.ejectOpenDevice() }
+        devicePage.onFind = { [weak self] in self?.findIPod(nil) }
         devicePage.onDone = { [weak self] in
             self?.closeDevicePage()
             self?.selectSourceRow(forLibrary: true)
@@ -1052,6 +1053,74 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         mediaKeys.onSeek = { [weak self] seconds in self?.player.seek(to: seconds) }
         mediaKeys.start()
         updateStatus()
+    }
+
+    // MARK: Finding the iPod
+
+    /// Controls ▸ Find iPod…, and the button on the page of a device iTunes
+    /// has not opened. Asks the daemon to look at the USB bus and at iTunes;
+    /// when the iPod is there but iTunes is ignoring it, offers the one cure,
+    /// a restart of iTunes, and waits for the iPod to appear.
+    @objc func findIPod(_ sender: Any?) {
+        guard let api = controller.api else { return }
+        flashStatus("Looking for the iPod on the \(ServerSettings.name)…")
+        Task { @MainActor in
+            do {
+                let found = try await api.findIPod(restart: false)
+                if CommandLine.arguments.contains("--find-ipod") { print("find-ipod: \(found.state): \(found.message)"); fflush(stdout) }
+                switch found.state {
+                case "open":
+                    flashStatus(found.message)
+                    loadDevices()
+                case "wedged":
+                    offerITunesRestart(for: found)
+                default:
+                    flashStatus("No iPod found.")
+                    let alert = NSAlert()
+                    alert.messageText = "No iPod on the \(ServerSettings.name)"
+                    alert.informativeText = found.message
+                    alert.addButton(withTitle: "OK")
+                    if let window = window { alert.beginSheetModal(for: window) { _ in } }
+                }
+            } catch {
+                flashStatus("Could not look: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func offerITunesRestart(for found: IPodSearch) {
+        guard let api = controller.api, let window = window else { return }
+        let name = found.usb.first?.product ?? "The iPod"
+        let alert = NSAlert()
+        alert.messageText = "\(name) is plugged in, but iTunes has not opened it"
+        alert.informativeText = "The \(ServerSettings.name) sees it on USB but the iPod is not offering its disk. Usually that is iTunes' "
+            + "device handling stuck, which a restart of iTunes clears: playback there stops for about half a minute, and the app then "
+            + "waits up to a minute for the iPod to appear. If it still does not, unplug it and plug it back in, or reset the iPod "
+            + "(hold Menu and the centre button until the Apple logo)."
+        alert.addButton(withTitle: "Restart iTunes and Look Again")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self = self else { return }
+            self.flashStatus("Restarting iTunes on the \(ServerSettings.name) and looking for the iPod…")
+            Task { @MainActor in
+                do {
+                    let again = try await api.findIPod(restart: true)
+                    self.flashStatus(again.message)
+                    self.loadDevices()
+                    await self.player.refresh()
+                    if again.state != "open" {
+                        let a = NSAlert()
+                        a.messageText = "Still no iPod"
+                        a.informativeText = again.message
+                        a.addButton(withTitle: "OK")
+                        a.beginSheetModal(for: window) { _ in }
+                    }
+                } catch {
+                    self.flashStatus("Could not restart iTunes: \(error.localizedDescription)")
+                }
+            }
+        }
     }
 
     // MARK: Restarting iTunes
@@ -2832,6 +2901,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func firstLoadDone() {
         restoreUpNext()
+        if CommandLine.arguments.contains("--find-ipod") { findIPod(nil) }
         if openMissingArtwork { showMissingArtwork(nil) }
         if let want = likeAlbum, let api = controller.api {
             let parts = want.split(separator: "|", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces).lowercased() }

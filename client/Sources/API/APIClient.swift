@@ -154,6 +154,14 @@ final class APIClient {
         _ = try await request("POST", "/api/itunes/launch")
     }
 
+    /// Looks for the iPod on the other Mac's USB bus and in iTunes. With
+    /// `restart`, an iPod iTunes is ignoring gets iTunes restarted and up to
+    /// a minute's wait for it to be opened, so the timeout is long.
+    func findIPod(restart: Bool) async throws -> IPodSearch {
+        let data = try await request("POST", "/api/devices/find", body: ["restart": restart], timeout: restart ? 180 : 60)
+        return try JSONDecoder().decode(IPodSearch.self, from: data)
+    }
+
     /// Quits and relaunches iTunes on the MacBook Pro. Takes up to half a
     /// minute on the far end, so the timeout is generous.
     func restartITunes() async throws {

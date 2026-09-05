@@ -237,6 +237,7 @@ class Api(object):
             ("POST", r"/api/sync/rebuild", self.post_sync_rebuild),
             ("GET", r"/api/sync/progress", self.get_sync_progress),
             ("GET", r"/api/devices", self.get_devices),
+            ("POST", r"/api/devices/find", self.post_devices_find),
             ("GET", r"/api/devices/(?P<name>[^/]+)", self.get_device),
             ("GET", r"/api/devices/(?P<name>[^/]+)/image", self.get_device_image),
             ("GET", r"/api/devices/(?P<name>[^/]+)/tracks", self.get_device_tracks),
@@ -1243,6 +1244,75 @@ class Api(object):
                             itunesSource=False,
                             syncable=False))
         return {"devices": out}
+
+    def post_devices_find(self, params, query, body):
+        """The "Find iPod" button. Looks at the USB bus afresh and at what
+        iTunes has opened, and says which of the three states the iPod is in:
+        not plugged in, open in iTunes, or on the bus with iTunes ignoring it
+        (the wedge that follows an eject that timed out). With `restart` in
+        the body, the third case restarts iTunes and waits for the source."""
+        restart = bool((body or {}).get("restart"))
+        self._usb_cache = None
+        usb = self._usb_devices()
+        apple = [u for u in usb if any(k in (u.get("productName") or "").lower() for k in self.APPLE_DEVICE_NAMES)]
+
+        def open_source():
+            try:
+                sources = self.get_sources(params, None, None)["sources"]
+            except ApiError:
+                return None
+            for src in sources:
+                if src["kind"] in self.DEVICE_KINDS:
+                    return src["name"]
+            return None
+
+        source = open_source()
+        out = {
+            "usb": [{"name": u.get("volumeName") or u["productName"], "product": u["productName"],
+                     "serialNumber": u.get("serialNumber"), "mountPoint": u.get("mountPoint")} for u in apple],
+            "source": source,
+            "restarted": False,
+        }
+        if source:
+            out["state"] = "open"
+            out["message"] = "iTunes has %s open." % source
+            return out
+        if not apple:
+            out["state"] = "absent"
+            out["message"] = ("Nothing of Apple's is on the USB bus of %s. Check the cable and the port; "
+                              "try unplugging it and plugging it back in." % computer_name())
+            return out
+        name = apple[0]["productName"]
+        if not restart:
+            out["state"] = "wedged"
+            out["message"] = ("%s is on the USB bus but iTunes has not opened it. This is iTunes' device "
+                              "handling stuck, which a restart of iTunes clears." % name)
+            return out
+        # The wedge: restart iTunes and give it a minute to notice the device.
+        if self.itunes is None:
+            raise ApiError(501, "AppleScript is not configured")
+        self._progress_end()
+        self._pod_cache = None
+        if not self.itunes.quit_itunes():
+            raise ApiError(504, "iTunes did not quit within 30 seconds")
+        time.sleep(2)
+        self.itunes.launch_itunes(force=True)
+        out["restarted"] = True
+        deadline = time.time() + 75
+        while time.time() < deadline:
+            time.sleep(5)
+            source = open_source()
+            if source:
+                out["state"] = "open"
+                out["source"] = source
+                out["message"] = "iTunes restarted and opened %s." % source
+                return out
+        out["state"] = "wedged"
+        out["message"] = ("iTunes restarted but still has not opened %s after a minute. The Mac sees it on USB "
+                          "and its disk driver is attached, but the iPod is not offering its disk, which nothing on the Mac "
+                          "can force. Unplug it and plug it back in; if that fails, reset the iPod (hold Menu and the centre "
+                          "button until the Apple logo) and let it charge a while first if the battery is low." % name)
+        return out
 
     @staticmethod
     def _match_usb(source_name, usb, claimed):

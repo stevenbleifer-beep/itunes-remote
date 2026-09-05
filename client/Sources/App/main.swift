@@ -219,6 +219,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controlsMenu.addItem(withTitle: "Train Curator on My Edits…",
                              action: #selector(MainWindowController.showTraining(_:)), keyEquivalent: "")
         controlsMenu.addItem(.separator())
+        controlsMenu.addItem(withTitle: "Find iPod…",
+                             action: #selector(MainWindowController.findIPod(_:)), keyEquivalent: "")
         controlsMenu.addItem(withTitle: "Restart iTunes on the \(ServerSettings.name)…",
                              action: #selector(MainWindowController.restartITunes(_:)), keyEquivalent: "")
         let controlsItem = NSMenuItem()
