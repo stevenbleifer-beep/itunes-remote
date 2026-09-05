@@ -63,7 +63,7 @@ class Track(object):
         "genre", "composer", "year", "track_number", "track_count",
         "disc_number", "disc_count", "total_time", "kind", "size", "bit_rate",
         "compilation", "enabled", "rating", "play_count", "grouping", "bpm",
-        "date_added", "date_modified", "play_date", "location", "artwork_count", "search", "sort_key",
+        "date_added", "date_modified", "play_date", "location", "artwork_count", "cloud", "search", "sort_key",
         "sort_name", "sort_artist", "sort_album", "sort_album_artist",
         "browse_artist", "group_keys", "artist_display_key",
     )
@@ -130,6 +130,9 @@ class Track(object):
         self.sort_album_artist = _text(raw.get("Sort Album Artist"))
         self.location = _posix_path(raw.get("Location"))
         self.artwork_count = raw.get("Artwork Count") or 0
+        # An Apple Music track that lives in iCloud rather than on disk. The
+        # Music.app dump says so outright; iTunes' XML marks these "Remote".
+        self.cloud = bool(raw.get("Cloud", False)) or raw.get("Track Type") == "Remote"
         self.reindex()
 
     def reindex(self):
@@ -210,6 +213,7 @@ class Track(object):
             "dateAdded": self.date_added,
             "dateModified": self.date_modified,
             "lastPlayed": self.play_date,
+            "cloud": self.cloud,
         }
 
     def apply(self, fields):
@@ -289,7 +293,10 @@ def _posix_path(url):
 
 
 def _is_audio_file(raw):
-    if raw.get("Track Type") != "File":
+    # "File" is a track on disk; "Remote" is an Apple Music track streamed
+    # from iCloud, which the Music.app dump writes for most of a
+    # subscriber's library. Both play; only the local one has a Location.
+    if raw.get("Track Type") not in ("File", "Remote"):
         return False
     if raw.get("Podcast"):
         return False
@@ -660,9 +667,19 @@ class LibraryStore(object):
     """Owns the current Library, reloads it in the background, and journals
     patches so they survive a reload of an XML that predates them."""
 
-    def __init__(self, path, poll_interval=5.0):
+    def __init__(self, path, poll_interval=5.0, source_path=None, refresh=None):
+        """`path` is the plist that gets parsed. With iTunes that is the XML
+        it writes itself. With Music.app there is no XML: `refresh` is
+        called to write `path` from Music's database (see musiclibdump),
+        and `source_path` is the database file whose changes mean it is
+        time to call it again. Without a source path the refresh runs on
+        a five-minute timer instead."""
         self.path = path
         self.poll_interval = poll_interval
+        self.source_path = source_path
+        self.refresh = refresh
+        self._stamp = None          # (mtime, size) of the watched file at the last load
+        self._timed_refresh_at = 0.0
         self._lock = threading.Lock()
         self._reload_lock = threading.Lock()   # one reparse at a time
         self._lib = None
@@ -679,13 +696,26 @@ class LibraryStore(object):
 
     def load(self):
         """Blocking initial load. Raises if the XML is missing or unreadable."""
-        if not os.path.exists(self.path):
+        if self.refresh is not None:
+            self.refresh()
+        elif not os.path.exists(self.path):
             raise FileNotFoundError(
                 "%s does not exist. In iTunes, open Preferences > Advanced and "
                 "enable 'Share iTunes Library XML with other applications', "
                 "then restart the daemon." % self.path
             )
+        self._stamp = self._watched_stamp()
         self._lib = Library(self.path)
+
+    def _watched_stamp(self):
+        """(mtime, size) of the file whose change means a reload, or None."""
+        target = self.source_path or self.path
+        try:
+            st = os.stat(target)
+        except OSError as e:
+            self.last_error = str(e)
+            return None
+        return (st.st_mtime, st.st_size)
 
     def start_watcher(self):
         self._thread = threading.Thread(target=self._watch, name="xml-watcher", daemon=True)
@@ -694,40 +724,42 @@ class LibraryStore(object):
     def stop(self):
         self._stop.set()
 
+    TIMED_REFRESH = 300.0
+
     def _watch(self):
-        pending_mtime = None
-        pending_size = None
+        pending = None
         while not self._stop.wait(self.poll_interval):
-            try:
-                st = os.stat(self.path)
-            except OSError as e:
-                self.last_error = str(e)
-                continue
-            if st.st_mtime == self._lib.mtime and st.st_size == self._lib.file_size:
-                pending_mtime = None
-                continue
-            # Wait for the file to sit still for one poll before parsing, so a
-            # half-written XML is not picked up.
-            if pending_mtime != st.st_mtime or pending_size != st.st_size:
-                pending_mtime, pending_size = st.st_mtime, st.st_size
-                continue
+            if self.refresh is not None and self.source_path is None:
+                # Nothing to watch: re-dump on a timer.
+                if time.time() - self._timed_refresh_at < self.TIMED_REFRESH:
+                    continue
+                self._timed_refresh_at = time.time()
+                stamp = None
+            else:
+                stamp = self._watched_stamp()
+                if stamp is None:
+                    continue
+                if stamp == self._stamp:
+                    pending = None
+                    continue
+                # Wait for the file to sit still for one poll before parsing, so a
+                # half-written XML is not picked up.
+                if pending != stamp:
+                    pending = stamp
+                    continue
             if self._reload_lock.acquire(blocking=False):
                 try:
                     self._reload()
                 finally:
                     self._reload_lock.release()
-            pending_mtime = None
+            pending = None
 
     def check_now(self):
         """The Refresh button: look at the XML this instant and reparse if it
         differs from what was read, without the watcher's wait for it to sit
         still. Returns True when a reload happened."""
-        try:
-            st = os.stat(self.path)
-        except OSError as e:
-            self.last_error = str(e)
-            return False
-        if st.st_mtime == self._lib.mtime and st.st_size == self._lib.file_size:
+        stamp = self._watched_stamp()
+        if stamp is None or stamp == self._stamp:
             return False
         if not self._reload_lock.acquire(blocking=False):
             return False   # the watcher is already on it
@@ -740,6 +772,9 @@ class LibraryStore(object):
     def _reload(self):
         self._reloading = True
         try:
+            if self.refresh is not None:
+                self.refresh()
+            stamp = self._watched_stamp()
             new = Library(self.path)
         except Exception as e:  # half-written file, or worse
             self.last_error = "reload failed: %s" % e
@@ -773,6 +808,7 @@ class LibraryStore(object):
             self._playlist_journal = [j for j in self._playlist_journal if j[0] > new.xml_date]
 
             self._lib = new
+            self._stamp = stamp
         self._reloading = False
         self.last_error = None
         log.info("swapped in reloaded library (%d journal entries replayed)", replayed)

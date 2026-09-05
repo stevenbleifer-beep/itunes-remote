@@ -31,6 +31,15 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
     private let nextButton = AquaPushButton(title: "Continue", isDefault: true)
 
     private let browser = DaemonBrowser()
+    /// The rows of the finder table: this Mac's own Music.app library
+    /// first, when Music is here, then every daemon found on the network.
+    private enum Row { case thisMac, found(DaemonBrowser.Found) }
+    /// Only Apple Music Remote offers this Mac's own library, and each app
+    /// lists only daemons of its own kind, so the two stay apart.
+    private var offersThisMac: Bool { AppIdentity.isAppleMusic && LocalDaemon.available }
+    private var rows: [Row] {
+        (offersThisMac ? [.thisMac] : []) + browser.found.filter { $0.backend == AppIdentity.backend }.map { .found($0) }
+    }
     private var step: Step = .find
     private var chosen: DaemonBrowser.Found?
     private var pairing: PairResult?
@@ -54,7 +63,7 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
         content.gradientTop = NSColor(white: 0.93, alpha: 1)
         content.gradientBottom = NSColor(white: 0.88, alpha: 1)
         window = NSWindow(contentRect: content.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = "Set Up iTunes Remote"
+        window.title = "Set Up \(AppIdentity.name)"
         window.contentView = content
         window.isReleasedWhenClosed = false
         super.init()
@@ -225,8 +234,10 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
         nextButton.isEnabled = true
         switch s {
         case .find:
-            titleLabel.stringValue = "Find the Mac that runs iTunes"
-            bodyLabel.stringValue = "On that Mac, double-click “Install iTunes Remote Daemon.command” from the download. It prints a six-digit pairing code. Then choose it here — it appears on its own when both Macs are on the same network."
+            titleLabel.stringValue = offersThisMac ? "Choose a library" : "Find the Mac that runs iTunes"
+            bodyLabel.stringValue = offersThisMac
+                ? "“This Mac” uses the Apple Music library in the Music app here; nothing else to install. For an iTunes library on another Mac, double-click “Install iTunes Remote Daemon.command” from the download on that Mac; it prints a six-digit pairing code, and the Mac appears here on its own when both are on the same network."
+                : "On that Mac, double-click “Install iTunes Remote Daemon.command” from the download. It prints a six-digit pairing code. Then choose it here — it appears on its own when both Macs are on the same network."
             tableScroll.isHidden = false
             manualLabel.isHidden = false
             manualHost.isHidden = false
@@ -275,9 +286,11 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
             Task { await checkOllama() }
         case .done:
             titleLabel.stringValue = "All set"
-            var lines = ["Home: \(draft.lanHost), port \(draft.port)."]
+            var lines = draft.lanHost == LocalDaemon.host
+                ? ["This Mac: the Apple Music library in Music \(LocalDaemon.musicVersion), port \(draft.port)."]
+                : ["Home: \(draft.lanHost), port \(draft.port)."]
             if draft.host != draft.lanHost { lines.append("Away: \(draft.host) through Tailscale.") }
-            lines.append(pulled ? "Curator: ready." : "Curator: not set up; File ▸ Set Up iTunes Remote… any time.")
+            lines.append(pulled ? "Curator: ready." : "Curator: not set up; File ▸ Set Up \(AppIdentity.name)… any time.")
             bodyLabel.stringValue = lines.joined(separator: "\n") + "\n\nThe settings are kept on this Mac; run the setup again from the File menu if the other Mac changes."
         }
     }
@@ -353,12 +366,16 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
 
     private func confirmDaemon() async {
         let typed = manualHost.stringValue.trimmingCharacters(in: .whitespaces)
+        if typed.isEmpty, table.selectedRow >= 0, table.selectedRow < rows.count, case .thisMac = rows[table.selectedRow] {
+            await useThisMac()
+            return
+        }
         if !typed.isEmpty {
             let port = Int(manualPort.stringValue) ?? 8765
             setBusy(true, "Asking \(typed)…")
             do {
                 let h = try await APIClient.hello(host: typed, port: port)
-                chosen = DaemonBrowser.Found(name: h.name, host: typed, address: typed, port: h.port, itunesVersion: h.itunesVersion)
+                chosen = DaemonBrowser.Found(name: h.name, host: typed, address: typed, port: h.port, itunesVersion: h.itunesVersion, backend: h.backend)
             } catch {
                 setBusy(false, "No iTunes Remote daemon answered at \(typed):\(port). Is the installer done on that Mac, and are both Macs on the same network?")
                 return
@@ -366,14 +383,51 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
             setBusy(false)
         } else {
             let row = table.selectedRow
-            guard row >= 0, row < browser.found.count else {
+            guard row >= 0, row < rows.count, case .found(let f) = rows[row] else {
                 statusLabel.stringValue = "Choose a Mac from the list, or type its address."
                 return
             }
-            chosen = browser.found[row]
+            chosen = f
         }
         browser.stop()
         show(.pair)
+    }
+
+    /// The Apple Music library on this Mac: install the bundled daemon if
+    /// it is not already answering, then take its token from its own
+    /// config — same user, same Mac, so there is nothing to pair.
+    private func useThisMac() async {
+        var hello = try? await APIClient.hello(host: LocalDaemon.host, port: LocalDaemon.port)
+        if hello == nil {
+            setBusy(true, "Installing the daemon on this Mac… If macOS asks whether “Python” may control “Music”, click OK.")
+            do {
+                _ = try await LocalDaemon.install()
+            } catch {
+                setBusy(false, "The daemon could not be installed: \(error.localizedDescription)")
+                return
+            }
+            hello = await LocalDaemon.waitForHello(seconds: 90)
+            guard hello != nil else {
+                setBusy(false, "The daemon was installed but has not answered yet. Logs are in ~/Library/Logs/iTunesRemote.")
+                return
+            }
+        }
+        guard let h = hello, let token = LocalDaemon.token else {
+            setBusy(false, "The daemon is running but its config has no token (\(LocalDaemon.configPath)).")
+            return
+        }
+        browser.stop()
+        chosen = DaemonBrowser.Found(name: h.name, host: LocalDaemon.host, address: LocalDaemon.host, port: h.port,
+                                     itunesVersion: h.itunesVersion, backend: h.backend)
+        pairing = PairResult(token: token, name: h.name, tailscaleName: "")
+        draft.lanHost = LocalDaemon.host
+        draft.host = LocalDaemon.host
+        draft.port = h.port
+        draft.token = token
+        draft.name = h.name
+        draft.backend = h.backend
+        setBusy(false)
+        show(.curator)       // no "away" page: the library is on this Mac
     }
 
     // MARK: Pair
@@ -408,6 +462,7 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
         draft.host = r.tailscaleName.isEmpty ? homeHost : r.tailscaleName
         draft.port = c.port
         draft.token = r.token
+        draft.backend = c.backend
         if !r.name.isEmpty { draft.name = r.name }
         setBusy(false)
         show(.away)
@@ -476,14 +531,18 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
 
     // MARK: Table
 
-    func numberOfRows(in tableView: NSTableView) -> Int { browser.found.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard row < browser.found.count else { return nil }
-        let f = browser.found[row]
+        guard row < rows.count else { return nil }
         let cell = AquaTables.labelCell(tableView, id: "found", size: 12)
-        let v = f.itunesVersion.isEmpty ? "" : "  —  iTunes \(f.itunesVersion)"
-        cell.textField?.stringValue = "\(f.name)\(v)   (\(f.host))"
+        switch rows[row] {
+        case .thisMac:
+            cell.textField?.stringValue = "This Mac  —  Apple Music library in Music \(LocalDaemon.musicVersion)"
+        case .found(let f):
+            let v = f.itunesVersion.isEmpty ? "" : "  —  \(f.backend) \(f.itunesVersion)"
+            cell.textField?.stringValue = "\(f.name)\(v)   (\(f.host))"
+        }
         return cell
     }
 

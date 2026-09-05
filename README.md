@@ -82,6 +82,18 @@ through iTunes itself, never to the files behind its back.
   toward them and their artists join the plan; the songs themselves stay
   off the list. The curator page and its conversation are unchanged —
   this is another way in, and you can still say what to change.
+- **Syncs show on the display whoever started them.** The daemon watches
+  the iPod's disk write counter, so a sync iTunes starts on its own (the
+  iPod plugged in, or a synced playlist changed) appears on the LCD with
+  the bytes copied so far, not only the ones started from the app.
+- **Apply is safe to cancel.** The sync playlist is built in a staging
+  playlist ("… (writing)") and moved into the real one in a single step at
+  the end, so iTunes never sees a half-written list (it syncs a connected
+  iPod as soon as a synced playlist changes, which would have stripped the
+  iPod). A Cancel button beside Apply stops the build and throws the
+  staging away; a second Apply while one runs is refused instead of
+  starting over; and the device page does not try to read the iPod while
+  the rebuild holds iTunes, which used to time out and re-enable Apply.
 - **Up Next survives a relaunch.**
 - **Find iPod…** (Controls menu, and a button on the page of a device
   iTunes has not opened): the daemon looks at the USB bus afresh and at

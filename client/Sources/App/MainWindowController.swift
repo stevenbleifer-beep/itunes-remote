@@ -164,7 +164,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         super.init(window: window)
-        window.title = "iTunes Remote"
+        window.title = AppIdentity.name
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.minSize = NSSize(width: 900, height: 560)
@@ -223,7 +223,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
         display.frame = NSRect(x: round((W - 440) / 2), y: round(midY - 22), width: 440, height: 44)
         display.autoresizingMask = [.minXMargin, .maxXMargin]
-        display.primary = "iTunes Remote"
+        display.primary = AppIdentity.name
         display.onSeek = { [weak self] seconds in self?.player.seek(to: seconds) }
         display.onPlayPause = { [weak self] in self?.player.playPause() }
         display.onAirPlay = { [weak self] sender in self?.showOutputMenu(sender) }
@@ -267,7 +267,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         emboss.shadowBlurRadius = 0
         let centred = NSMutableParagraphStyle()
         centred.alignment = .center
-        titleLabel.attributedStringValue = NSAttributedString(string: "iTunes Remote", attributes: [
+        titleLabel.attributedStringValue = NSAttributedString(string: AppIdentity.name, attributes: [
             .font: Aqua.font(13, bold: true), .foregroundColor: NSColor(white: 0.30, alpha: 1),
             .shadow: emboss, .paragraphStyle: centred,
         ])
@@ -399,6 +399,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         devicePage.onSync = { [weak self] in self?.syncOpenDevice() }
         devicePage.onPlanEdit = { [weak self] row, on in self?.editDevicePlan(row, on) }
         devicePage.onApplyPlan = { [weak self] in self?.applyDevicePlan() }
+        devicePage.onCancelApply = { [weak self] in self?.cancelDevicePlan() }
         devicePage.onEject = { [weak self] in self?.ejectOpenDevice() }
         devicePage.onFind = { [weak self] in self?.findIPod(nil) }
         devicePage.onDone = { [weak self] in
@@ -1140,7 +1141,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     @objc func restartITunes(_ sender: Any?) {
         guard let api = controller.api, let window = window else { return }
         let alert = NSAlert()
-        alert.messageText = "Restart iTunes on the \(ServerSettings.name)?"
+        alert.messageText = "Restart \(ServerSettings.appName) on the \(ServerSettings.name)?"
         alert.informativeText = "Use this when the iPod is plugged in but never appears. Playback on the \(ServerSettings.name) stops; it takes about half a minute to come back."
         alert.addButton(withTitle: "Restart iTunes")
         alert.addButton(withTitle: "Cancel")
@@ -1323,9 +1324,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         closeAlertSheet()
         shownAlert = alert
         let sheet = NSAlert()
-        sheet.messageText = "iTunes on the \(ServerSettings.name) is asking something"
+        sheet.messageText = "\(ServerSettings.appName) on the \(ServerSettings.name) is asking something"
         sheet.informativeText = alert.message.isEmpty
-            ? "iTunes is showing a dialog with no text." : alert.message
+            ? "\(ServerSettings.appName) is showing a dialog with no text." : alert.message
         sheet.alertStyle = .warning
         // The dialog's own buttons, in its own order, so clicking one here
         // does exactly what clicking it there would.
@@ -1353,6 +1354,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func loadDevices() {
         guard let api = controller.api else { return }
+        if ServerSettings.isMusic {
+            // Music.app has no device sources; Finder syncs devices now.
+            if !devices.isEmpty { devices = []; reloadSourceList() }
+            syncButton.isHidden = true
+            ejectButton.isHidden = true
+            return
+        }
         Task { @MainActor in
             // /api/devices, not /api/sources: it also reports an iPhone or
             // iPad sitting on the USB bus that iTunes has not opened as a
@@ -1475,13 +1483,24 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     /// iTunes' Apply: writes the plan into the playlist the iPod syncs. This
     /// rewrites that one playlist and touches nothing else in the library.
+    /// True from Apply until the daemon answers. The device page is not
+    /// re-read meanwhile: the read waits on iTunes behind the rebuild,
+    /// timed out, and its failure path re-enabled Apply mid-run.
+    private var applyInFlight = false
+
     private func applyDevicePlan() {
-        guard let api = controller.api else { return }
+        guard let api = controller.api, !applyInFlight else { return }
         let device = devicePlan?.device
+        applyInFlight = true
         devicePage.setBusy(true)
+        devicePage.setApplying(true)
         devicePage.setStatus("Writing the sync playlist in iTunes… this takes a few minutes for a large selection.")
         player.watchSync()
         Task { @MainActor in
+            defer {
+                self.applyInFlight = false
+                self.devicePage.setApplying(false)
+            }
             do {
                 let reply = try await api.syncRebuild(device: device)
                 self.devicePlan = reply.plan ?? self.devicePlan
@@ -1500,8 +1519,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
+    /// Cancel beside Apply: the daemon stops after the chunk it is on.
+    private func cancelDevicePlan() {
+        guard let api = controller.api, applyInFlight else { return }
+        devicePage.setStatus("Stopping after the selection being written…")
+        Task { @MainActor in
+            _ = try? await api.cancelRebuild()
+        }
+    }
+
     private func refreshDevicePage() {
-        guard let name = openDevice, let api = controller.api, !deviceReadInFlight else { return }
+        guard let name = openDevice, let api = controller.api, !deviceReadInFlight, !applyInFlight else { return }
         deviceReadInFlight = true
         Task { @MainActor in
             defer { self.deviceReadInFlight = false }
@@ -2529,7 +2557,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 let n = NumberFormatter()
                 n.numberStyle = .decimal
                 let count = n.string(from: NSNumber(value: info.trackCount)) ?? "\(info.trackCount)"
-                display.secondary = "\(count) songs in iTunes \(info.itunesVersion ?? info.applicationVersion)"
+                display.secondary = "\(count) songs in \(ServerSettings.appName) \(info.itunesVersion ?? info.applicationVersion)"
             } else {
                 display.secondary = controller.api == nil ? "Not connected" : "Loading…"
             }
@@ -2734,11 +2762,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             syncViewTimer = nil
             if p.kind == "rebuild" {
                 display.syncTitle = "Writing the sync playlist for “\(label)”…"
-                display.syncDetail = "\(p.done ?? 0) of \(p.total ?? 0) selections"
-                    + (tracks.map { " — \($0) tracks so far" } ?? "")
+                if p.committing == true {
+                    display.syncDetail = "Moving \(tracks ?? "the") tracks into the sync playlist…"
+                } else if p.cancelling == true {
+                    display.syncDetail = "Stopping after the selection being written…"
+                } else {
+                    display.syncDetail = "\(p.done ?? 0) of \(p.total ?? 0) selections"
+                        + (tracks.map { " — \($0) tracks so far" } ?? "")
+                }
             } else {
                 display.syncTitle = "Syncing “\(label)”…"
-                display.syncDetail = tracks.map { "\($0) songs on the iPod" } ?? "Waiting for iTunes"
+                let copied = p.bytes.map { StatusFormat.size($0) + " copied" }
+                display.syncDetail = [tracks.map { "\($0) songs on the iPod" }, copied].compactMap { $0 }.joined(separator: " — ")
+                if display.syncDetail.isEmpty { display.syncDetail = "Waiting for iTunes" }
             }
             display.syncFraction = p.fraction
             let wasOffered = display.modes.contains(.sync)
@@ -2756,7 +2792,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 display.syncDetail = tracks.map { "\($0) tracks — sync the iPod to send them" } ?? "Done"
             } else {
                 display.syncTitle = "Sync finished"
-                display.syncDetail = tracks.map { "\($0) songs on “\(label)”" } ?? "Done"
+                let copied = p.bytes.map { StatusFormat.size($0) + " copied to “\(label)”" }
+                display.syncDetail = tracks.map { "\($0) songs on “\(label)”" } ?? copied ?? "Done"
             }
             display.syncFraction = 1
             guard display.modes.contains(.sync) else { return }
@@ -2834,13 +2871,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         menu.addItem(.separator())
         // iTunes 12.9.5 cannot AirPlay to a modern Mac (error -15022), so this
-        // streams the file from the daemon and plays it here instead.
-        let mine = NSMenuItem(title: "Play on This Mac", action: #selector(playHere(_:)), keyEquivalent: "")
-        mine.target = self
-        mine.state = player.mode == .local ? .on : .off
-        mine.attributedTitle = NSAttributedString(string: "Play on This Mac", attributes: [.font: Aqua.font(13)])
-        mine.toolTip = "Play through this Mac's speakers; the file streams from the \(ServerSettings.name)"
-        menu.addItem(mine)
+        // streams the file from the daemon and plays it here instead. With
+        // Music.app the daemon is on this Mac and its first output *is* this
+        // Mac, so the item would only duplicate that row.
+        if !ServerSettings.isMusic {
+            let mine = NSMenuItem(title: "Play on This Mac", action: #selector(playHere(_:)), keyEquivalent: "")
+            mine.target = self
+            mine.state = player.mode == .local ? .on : .off
+            mine.attributedTitle = NSAttributedString(string: "Play on This Mac", attributes: [.font: Aqua.font(13)])
+            mine.toolTip = "Play through this Mac's speakers; the file streams from the \(ServerSettings.name)"
+            menu.addItem(mine)
+        }
         let refresh = NSMenuItem(title: "Refresh Devices", action: #selector(refreshOutputs(_:)), keyEquivalent: "")
         refresh.target = self
         refresh.attributedTitle = NSAttributedString(string: "Refresh Devices", attributes: [.font: Aqua.font(13)])

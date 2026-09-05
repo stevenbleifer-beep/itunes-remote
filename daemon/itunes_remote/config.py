@@ -16,7 +16,15 @@ DEFAULTS = {
     # Six digits the installer prints; the app trades it for the token over
     # POST /api/pair, so nobody types a 32-character token by hand.
     "pairing_code": "",
+    # Which player this Mac has. "iTunes" (12.9.5 on Mojave, read through
+    # its XML) or "Music" (Catalina and later, read through musiclibdump).
+    # "auto" picks iTunes when /Applications/iTunes.app exists, else Music.
+    "app": "auto",
     "xml_path": "~/Music/iTunes/iTunes Music Library.xml",
+    # Music.app only: where musiclibdump writes the library plist, and the
+    # database file whose change means it is time to write it again.
+    "music_library_path": "~/Library/Caches/iTunesRemote/music-library.plist",
+    "music_db_path": "~/Music/Music/Music Library.musiclibrary/Library.musicdb",
     "log_dir": "~/Library/Logs/iTunesRemote",
     "poll_interval": 5,
     "applescript_timeout": 120,
@@ -40,7 +48,10 @@ class Config(object):
         self.port = int(merged["port"])
         self.token = merged["token"]
         self.pairing_code = str(merged.get("pairing_code") or "")
+        self.app = resolve_app(merged.get("app") or "auto")
         self.xml_path = os.path.expanduser(merged["xml_path"])
+        self.music_library_path = os.path.expanduser(merged["music_library_path"])
+        self.music_db_path = os.path.expanduser(merged["music_db_path"])
         self.log_dir = os.path.expanduser(merged["log_dir"])
         self.poll_interval = float(merged["poll_interval"])
         self.applescript_timeout = float(merged["applescript_timeout"])
@@ -50,6 +61,33 @@ class Config(object):
         self.sync_plan_path = os.path.expanduser(merged["sync_plan_path"])
         if not self.token:
             raise ValueError("config has no token; run with --init-config first")
+
+
+ITUNES_APP = "/Applications/iTunes.app"
+MUSIC_APPS = ("/System/Applications/Music.app", "/Applications/Music.app")
+
+
+def resolve_app(value):
+    """'iTunes', 'Music', or what this Mac has for 'auto'."""
+    value = (value or "auto").strip()
+    if value.lower() == "itunes":
+        return "iTunes"
+    if value.lower() == "music":
+        return "Music"
+    if os.path.isdir(ITUNES_APP):
+        return "iTunes"
+    if any(os.path.isdir(p) for p in MUSIC_APPS):
+        return "Music"
+    return "iTunes"
+
+
+def app_info_plist(app):
+    if app == "Music":
+        for p in MUSIC_APPS:
+            if os.path.isdir(p):
+                return os.path.join(p, "Contents", "Info.plist")
+        return os.path.join(MUSIC_APPS[0], "Contents", "Info.plist")
+    return os.path.join(ITUNES_APP, "Contents", "Info.plist")
 
 
 def new_pairing_code():

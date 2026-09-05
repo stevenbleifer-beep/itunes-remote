@@ -12,6 +12,8 @@ final class DaemonBrowser {
         let address: String     // the IP it answered on, in case .local does not resolve
         let port: Int
         let itunesVersion: String
+        /// "iTunes" or "Music".
+        let backend: String
     }
 
     private(set) var found: [Found] = []
@@ -79,7 +81,8 @@ final class DaemonBrowser {
         let f = Found(name: obj["name"] as? String ?? serviceName,
                       host: obj["host"] as? String ?? address,
                       address: address, port: obj["port"] as? Int ?? port,
-                      itunesVersion: obj["itunesVersion"] as? String ?? "")
+                      itunesVersion: obj["itunesVersion"] as? String ?? "",
+                      backend: obj["backend"] as? String ?? "iTunes")
         if !found.contains(f) {
             found.append(f)
             onChange(found)

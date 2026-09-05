@@ -1,4 +1,11 @@
--- argv: <managed playlist name> <spec file> [replace|append]
+-- argv: <managed playlist name> <spec file> [replace|append|commit|discard]
+--
+-- The selection is built in a staging playlist, "<name> (writing)", and
+-- moved into the real one in a single step at the end ("commit"). iTunes
+-- syncs a connected iPod as soon as a synced playlist changes, so writing
+-- the real playlist chunk by chunk left a window where a half-written
+-- list could be synced, and a cancel would have stripped the iPod. Now
+-- the real playlist changes once, and "discard" throws the staging away.
 --
 -- Rewrites one app-owned playlist to exactly the user's selection, so that a
 -- device set to sync only this playlist syncs exactly what the app says.
@@ -29,26 +36,54 @@ on run argv
     if (count of argv) > 2 then set mode to (item 3 of argv) as text
     -- Read outside the iTunes tell block: `POSIX file` gets dispatched to
     -- iTunes inside one and fails.
-    set specText to my readUTF8(specPath)
     -- `lines` is a reserved word (a property of text), as are `kind`,
     -- `missing` and `removed`. `paragraphs` splits on line breaks properly.
-    set specLines to paragraphs of specText
+    set specLines to {}
+    if mode is "replace" or mode is "append" then
+        set specText to my readUTF8(specPath)
+        set specLines to paragraphs of specText
+    end if
     set added to 0
+    set stagingName to plName & " (writing)"
     tell application "iTunes"
         set lib to library playlist 1
-        set target to missing value
+        -- Held by id, never by position: `user playlists` is in sidebar
+        -- order, so making "X" moves "X (writing)" down one slot, and a
+        -- reference taken from the loop would then point at the wrong
+        -- playlist (the commit copied nothing and deleted the new one).
+        set realTarget to missing value
+        set staging to missing value
         repeat with p in user playlists
-            if (name of p) is plName then set target to p
+            if (name of p) is plName then set realTarget to (user playlist id (id of p))
+            if (name of p) is stagingName then set staging to (user playlist id (id of p))
         end repeat
-        if target is missing value then
-            set target to (make new user playlist with properties {name:plName})
+        if mode is "discard" then
+            if staging is not missing value then delete staging
+            return "0"
+        end if
+        if mode is "commit" then
+            if staging is missing value then error "nothing staged for " & plName
+            if realTarget is missing value then
+                set realTarget to (make new user playlist with properties {name:plName})
+                set realTarget to (user playlist id (id of realTarget))
+            end if
+            try
+                delete every track of realTarget
+            end try
+            duplicate (every track of staging) to realTarget
+            set added to (count of tracks of realTarget)
+            delete staging
+            return (added as text)
         end if
         if mode is "replace" then
-            -- Start from empty so the playlist ends up exactly the selection.
-            try
-                delete every track of target
-            end try
+            -- Start from an empty staging list so it ends up exactly the selection.
+            if staging is not missing value then delete staging
+            set staging to (make new user playlist with properties {name:stagingName})
+            set staging to (user playlist id (id of staging))
+        else if staging is missing value then
+            error "nothing staged for " & plName & "; start with replace"
         end if
+        set target to staging
         repeat with ln in specLines
             set cols to my splitText(ln as text, tab)
             if (count of cols) > 1 then

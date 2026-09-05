@@ -62,6 +62,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let p = arg("--port"), let n = Int(p) { settings.port = n; overridden = true }
         if let t = arg("--token") { settings.token = t; overridden = true }
 
+        // `--pair host[:port] --pair-code NNNNNN`: pairs with a daemon without
+        // the assistant, saves the settings (the token into this app's own
+        // keychain item) and connects. For re-pairing from a script.
+        if let target = arg("--pair"), let code = arg("--pair-code") {
+            let parts = target.split(separator: ":", maxSplits: 1).map(String.init)
+            let host = parts[0]
+            let port = parts.count > 1 ? (Int(parts[1]) ?? 8765) : 8765
+            Task { @MainActor in
+                do {
+                    let r = try await APIClient.pair(host: host, port: port, code: code)
+                    var chosen = ServerSettings(host: r.tailscaleName.isEmpty ? host : r.tailscaleName,
+                                                lanHost: host, port: port, token: r.token)
+                    chosen.name = r.name.isEmpty ? host : r.name
+                    chosen.backend = AppIdentity.backend
+                    chosen.save()
+                    print("pair: ok, \(chosen.name) at \(chosen.lanHost):\(chosen.port), away via \(chosen.host)")
+                    fflush(stdout)
+                    self.connect(with: chosen)
+                } catch {
+                    print("pair: failed: \(error.localizedDescription)")
+                    fflush(stdout)
+                }
+            }
+            return
+        }
         if let code = arg("--setup-demo") {
             let assistant = SetupAssistant(settings: settings)
             assistant.onFinish = { [weak self] chosen in
@@ -72,6 +97,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setup = assistant
             assistant.run()
             assistant.demo(code: code)
+            return
+        }
+        if CommandLine.arguments.contains("--setup-this-mac") {
+            // Headless first run for Apple Music Remote: exactly what the
+            // assistant's "This Mac" does, without the window. Falls back to
+            // the assistant when the local daemon is not answering.
+            Task { @MainActor in
+                var s = settings
+                if let h = try? await APIClient.hello(host: LocalDaemon.host, port: LocalDaemon.port),
+                   let token = LocalDaemon.token {
+                    s.lanHost = LocalDaemon.host
+                    s.host = LocalDaemon.host
+                    s.port = h.port
+                    s.token = token
+                    s.name = h.name
+                    s.backend = h.backend
+                    s.save()
+                    print("set up with this Mac: \(h.name), \(h.backend) \(h.itunesVersion)"); fflush(stdout)
+                    self.connect(with: s)
+                } else {
+                    self.runSetup(settings)
+                }
+            }
             return
         }
         if settings.token.isEmpty && !overridden {
@@ -126,9 +174,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let mainMenu = NSMenu()
 
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About iTunes Remote", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About \(AppIdentity.name)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit iTunes Remote", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit \(AppIdentity.name)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         let appItem = NSMenuItem()
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
@@ -138,7 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Find Missing Artwork…", action: #selector(MainWindowController.showMissingArtwork(_:)), keyEquivalent: "")
         fileMenu.addItem(.separator())
-        fileMenu.addItem(withTitle: "Set Up iTunes Remote…", action: #selector(showSetup(_:)), keyEquivalent: "")
+        fileMenu.addItem(withTitle: "Set Up \(AppIdentity.name)…", action: #selector(showSetup(_:)), keyEquivalent: "")
         fileMenu.addItem(withTitle: "Connect…", action: #selector(showConnectPanel(_:)), keyEquivalent: "k")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -219,9 +267,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controlsMenu.addItem(withTitle: "Train Curator on My Edits…",
                              action: #selector(MainWindowController.showTraining(_:)), keyEquivalent: "")
         controlsMenu.addItem(.separator())
-        controlsMenu.addItem(withTitle: "Find iPod…",
-                             action: #selector(MainWindowController.findIPod(_:)), keyEquivalent: "")
-        controlsMenu.addItem(withTitle: "Restart iTunes on the \(ServerSettings.name)…",
+        if !ServerSettings.isMusic {
+            controlsMenu.addItem(withTitle: "Find iPod…",
+                                 action: #selector(MainWindowController.findIPod(_:)), keyEquivalent: "")
+        }
+        controlsMenu.addItem(withTitle: "Restart \(ServerSettings.appName) on the \(ServerSettings.name)…",
                              action: #selector(MainWindowController.restartITunes(_:)), keyEquivalent: "")
         let controlsItem = NSMenuItem()
         controlsItem.submenu = controlsMenu

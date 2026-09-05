@@ -92,7 +92,7 @@ final class OllamaClient {
     /// ~/Library/Logs/iTunesRemote/curator.log: every prompt and reply, so
     /// a bad playlist can be traced to what the model was shown and said.
     static func log(_ line: String) {
-        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/iTunesRemote")
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/\(AppIdentity.logFolder)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("curator.log")
         let stamp = ISO8601DateFormatter().string(from: Date())
@@ -289,7 +289,7 @@ final class CuratorEngine {
             return
         }
         guard await hasModel(CuratorEngine.embedModel) else {
-            onStatus("The search model is not downloaded yet — File ▸ Set Up iTunes Remote… fetches it.")
+            onStatus("The search model is not downloaded yet — File ▸ Set Up \(AppIdentity.name)… fetches it.")
             return
         }
         var done = 0
@@ -466,7 +466,7 @@ final class CuratorEngine {
             throw CuratorError("No model server could be started. Check ~/Library/Logs/iTunesRemote/ollama.log.")
         }
         guard await hasModel(model) else {
-            throw CuratorError("The model \(model) is not downloaded yet. File ▸ Set Up iTunes Remote… fetches it (about 3.5 GB).")
+            throw CuratorError("The model \(model) is not downloaded yet. File ▸ Set Up \(AppIdentity.name)… fetches it (about 3.5 GB).")
         }
         asking = true
         defer { asking = false }

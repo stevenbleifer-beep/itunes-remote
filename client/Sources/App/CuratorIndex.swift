@@ -25,7 +25,7 @@ final class CuratorIndex {
 
     init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        dir = base.appendingPathComponent("iTunes Remote/curator", isDirectory: true)
+        dir = base.appendingPathComponent("\(AppIdentity.supportFolder)/curator", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         load()
     }

@@ -21,6 +21,10 @@ CONFIG = os.path.expanduser("~/Library/Application Support/iTunesRemote/config.j
 XML = os.path.expanduser("~/Music/iTunes/iTunes Music Library.xml")
 PLIST = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LABEL)
 ITUNES_INFO = "/Applications/iTunes.app/Contents/Info.plist"
+MUSIC_INFO = next((p for p in ("/System/Applications/Music.app/Contents/Info.plist",
+                               "/Applications/Music.app/Contents/Info.plist") if os.path.exists(p)), "")
+# Which player this Mac has, the way config.resolve_app decides it.
+APP = "iTunes" if os.path.exists(ITUNES_INFO) else ("Music" if MUSIC_INFO else "iTunes")
 
 results = []
 
@@ -44,44 +48,54 @@ def run(cmd, timeout=20):
 def main():
     # 1. Interpreter
     v = sys.version_info
-    check("Python 3.13 or newer", (v.major, v.minor) >= (3, 13), platform.python_version())
-    check("Python is the python.org build", sys.executable.startswith("/Library/Frameworks/Python.framework")
-          or sys.executable.startswith("/usr/local/bin"), sys.executable)
+    if APP == "iTunes":
+        check("Python 3.13 or newer", (v.major, v.minor) >= (3, 13), platform.python_version())
+        check("Python is the python.org build", sys.executable.startswith("/Library/Frameworks/Python.framework")
+              or sys.executable.startswith("/usr/local/bin"), sys.executable)
+    else:
+        check("Python 3.9 or newer", (v.major, v.minor) >= (3, 9), platform.python_version())
 
-    # 2. iTunes
+    # 2. The player
     version = ""
     try:
-        with open(ITUNES_INFO, "rb") as f:
+        with open(ITUNES_INFO if APP == "iTunes" else MUSIC_INFO, "rb") as f:
             version = plistlib.load(f).get("CFBundleShortVersionString", "")
     except (OSError, ValueError):
         pass
-    check("iTunes present", bool(version), version or "no /Applications/iTunes.app")
-    check("iTunes is 12.9.5", version.startswith("12.9.5"), version)
-    rc, _, _ = run(["pgrep", "-x", "iTunes"])
+    check("%s present" % APP, bool(version), version or "neither /Applications/iTunes.app nor Music.app")
+    if APP == "iTunes":
+        check("iTunes is 12.9.5", version.startswith("12.9.5"), version)
+    rc, _, _ = run(["pgrep", "-x", APP])
     running = rc == 0
-    check("iTunes is running", running, "launch it, or the daemon returns 503 for player and writes")
+    check("%s is running" % APP, running, "launch it, or the daemon returns 503 for player and writes")
 
-    # 3. Library XML
-    exists = os.path.exists(XML)
-    check("Library XML exists", exists, XML if exists else "enable Preferences > Advanced > Share iTunes Library XML")
-    if exists:
-        age = time.time() - os.path.getmtime(XML)
-        check("Library XML written recently", age < 7 * 86400, "%.1f hours old" % (age / 3600))
+    # 3. The library: iTunes' XML, or the musiclibdump tool for Music
+    if APP == "iTunes":
+        exists = os.path.exists(XML)
+        check("Library XML exists", exists, XML if exists else "enable Preferences > Advanced > Share iTunes Library XML")
+        if exists:
+            age = time.time() - os.path.getmtime(XML)
+            check("Library XML written recently", age < 7 * 86400, "%.1f hours old" % (age / 3600))
+    else:
+        tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "musiclibdump")
+        check("musiclibdump present", os.access(tool, os.X_OK), tool if os.path.exists(tool) else "run daemon/tools/build.sh")
 
     # 4. Automation permission (TCC). -1743 means the user denied it.
     if running:
-        rc, out, err = run(["osascript", "-e", 'tell application "iTunes" to get version'], timeout=30)
+        rc, out, err = run(["osascript", "-e", 'tell application "%s" to get version' % APP], timeout=30)
         if rc == 0:
-            check("Automation permission for iTunes", True, "iTunes reports " + out)
+            check("Automation permission for %s" % APP, True, "%s reports %s" % (APP, out))
         elif "-1743" in err:
-            check("Automation permission for iTunes", False,
+            check("Automation permission for %s" % APP, False,
                   "denied; allow Python under Security & Privacy > Privacy > Automation")
         else:
-            check("Automation permission for iTunes", False, err[:120])
+            check("Automation permission for %s" % APP, False, err[:120])
 
-    # 5. Accessibility, needed only to read and dismiss iTunes' own dialogs
+    # 5. Accessibility, needed only to read and dismiss the player's own dialogs
     if running:
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "alert_read.applescript")
+        if APP != "iTunes":
+            script = os.path.expanduser("~/Library/Caches/iTunesRemote/scripts-%s/alert_read.applescript" % APP)
         rc, out, err = run(["osascript", script], timeout=25)
         ok = rc == 0
         app = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(sys.executable))),
@@ -91,8 +105,9 @@ def main():
               if not ok else "can read iTunes dialogs")
 
     # 6. iPod hazard
-    check("No iPod volume mounted", not os.path.ismount("/Volumes/iPod"),
-          "an iPod in disk mode has hung iTunes at launch before")
+    if APP == "iTunes":
+        check("No iPod volume mounted", not os.path.ismount("/Volumes/iPod"),
+              "an iPod in disk mode has hung iTunes at launch before")
 
     # 7. Config
     cfg = None

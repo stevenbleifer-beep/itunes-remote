@@ -1,4 +1,5 @@
-"""The only path to iTunes: osascript running a script file with arguments.
+"""The only path to iTunes (or Music.app): osascript running a script file
+with arguments.
 
 Scripts live in daemon/scripts/*.applescript and take their inputs through
 `on run argv`, never by string building. Every call is serialized behind
@@ -6,7 +7,13 @@ one lock, has a timeout, and refuses to run when iTunes is not up so that
 AppleScript can never auto-launch it in the middle of a request.
 
 Scripts return text. Records are separated by ASCII 30, fields by ASCII 31.
+
+The scripts are written against iTunes. Music.app's dictionary is the same
+one, so when the daemon drives Music the scripts are copied with the
+application name swapped (see `_generated_scripts`); nothing else differs.
 """
+
+import re
 
 import logging
 import os
@@ -48,8 +55,13 @@ class ITunesNotRunning(Exception):
 
 
 class AppleScript(object):
-    def __init__(self, scripts_dir, timeout=120.0):
-        self.scripts_dir = scripts_dir
+    # The application the scripts talk to: "iTunes" or "Music". A class
+    # attribute because `itunes_running` is asked at class level too.
+    app = "iTunes"
+
+    def __init__(self, scripts_dir, timeout=120.0, app="iTunes"):
+        AppleScript.app = app
+        self.scripts_dir = scripts_dir if app == "iTunes" else _generated_scripts(scripts_dir, app)
         self.timeout = timeout
         self.lock = threading.Lock()
 
@@ -66,7 +78,7 @@ class AppleScript(object):
         now = time.time()
         if now - at < 2.0:
             return was
-        r = subprocess.run(["pgrep", "-x", "iTunes"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        r = subprocess.run(["pgrep", "-x", cls.app], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         cls._running = (now, r.returncode == 0)
         return cls._running[1]
 
@@ -79,11 +91,11 @@ class AppleScript(object):
         has hung iTunes at launch on this machine before — unless `force`,
         which a restart uses: there the iPod being mounted is the normal
         state, and the point is to make iTunes pick it up again."""
-        if self.ipod_mounted() and not force:
+        if self.app == "iTunes" and self.ipod_mounted() and not force:
             raise AppleScriptError(
                 "an iPod is mounted at %s; eject it before launching iTunes" % IPOD_MOUNT
             )
-        subprocess.run(["open", "-a", "iTunes"], check=False)
+        subprocess.run(["open", "-a", self.app], check=False)
 
     def quit_itunes(self, wait=30):
         """Asks iTunes to quit and waits for it to go. iTunes 12.9.5's device
@@ -92,7 +104,7 @@ class AppleScript(object):
         iTunes clears it. Quit is a plain Apple Event; no script file needed,
         and it is not serialized behind the lock because the whole point may
         be that iTunes is not answering scripts."""
-        subprocess.run(["osascript", "-e", 'tell application "iTunes" to quit'],
+        subprocess.run(["osascript", "-e", 'tell application "%s" to quit' % self.app],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
         for _ in range(wait):
             if not self.itunes_running():
@@ -114,7 +126,7 @@ class AppleScript(object):
         require_running = kw.get("require_running", True)
         serialize = kw.get("serialize", True)
         if require_running and not self.itunes_running():
-            raise ITunesNotRunning("iTunes is not running on %s" % _computer_name())
+            raise ITunesNotRunning("%s is not running on %s" % (self.app, _computer_name()))
         path = os.path.join(self.scripts_dir, name + ".applescript")
         cmd = ["osascript", path] + [str(a) for a in args]
         guard = self.lock if serialize else _NoLock()
@@ -140,6 +152,26 @@ class AppleScript(object):
     @staticmethod
     def fields(text):
         return text.split(US)
+
+
+_APP_REF = re.compile(r'(application|process) "iTunes"')
+
+
+def _generated_scripts(scripts_dir, app):
+    """A copy of the scripts addressed to `app` instead of iTunes, under the
+    cache directory. Rewritten at every start, so an edited script is
+    picked up like any other and nothing stale can linger."""
+    out = os.path.expanduser("~/Library/Caches/iTunesRemote/scripts-%s" % app)
+    os.makedirs(out, exist_ok=True)
+    for name in os.listdir(scripts_dir):
+        if not name.endswith(".applescript"):
+            continue
+        with open(os.path.join(scripts_dir, name), "r", encoding="utf-8") as f:
+            text = f.read()
+        text = _APP_REF.sub(lambda m: '%s "%s"' % (m.group(1), app), text)
+        with open(os.path.join(out, name), "w", encoding="utf-8") as f:
+            f.write(text)
+    return out
 
 
 _name_cache = None

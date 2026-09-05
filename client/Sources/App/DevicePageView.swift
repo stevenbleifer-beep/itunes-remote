@@ -19,6 +19,8 @@ final class DevicePageView: NSView {
     var onPlanEdit: (DeviceMusicView.Row, Bool) -> Void = { _, _ in }
     /// Writes the plan into the playlist iTunes syncs — iTunes' own Apply.
     var onApplyPlan: () -> Void = {}
+    /// Cancel, in Apply's place while the playlist is being written.
+    var onCancelApply: () -> Void = {}
     /// The Find iPod button, shown for a device iTunes has not opened.
     var onFind: () -> Void = {}
     /// Asks for the tracks in one of the device's playlists.
@@ -43,6 +45,7 @@ final class DevicePageView: NSView {
     private let trackTable = SimpleTable(columns: [("Name", 300), ("Artist", 200), ("Album", 200), ("Time", 60)])
     private let capacity = CapacityBarView()
     private let applyButton = AquaPushButton(title: "Apply")
+    private let cancelButton = AquaPushButton(title: "Cancel")
     private let syncButton = AquaPushButton(title: "Sync")
     private let findButton = AquaPushButton(title: "Find iPod")
     private let doneButton = AquaPushButton(title: "Done", isDefault: true)
@@ -67,6 +70,11 @@ final class DevicePageView: NSView {
         statusLabel.lineBreakMode = .byTruncatingTail
         syncButton.target = self
         syncButton.action = #selector(sync(_:))
+        cancelButton.target = self
+        cancelButton.action = #selector(cancelApply(_:))
+        cancelButton.isHidden = true
+        cancelButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(cancelButton)
         findButton.target = self
         findButton.action = #selector(find(_:))
         findButton.isHidden = true
@@ -134,6 +142,8 @@ final class DevicePageView: NSView {
             findButton.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
             applyButton.trailingAnchor.constraint(equalTo: syncButton.leadingAnchor, constant: -8),
             applyButton.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
+            cancelButton.trailingAnchor.constraint(equalTo: applyButton.leadingAnchor, constant: -8),
+            cancelButton.centerYAnchor.constraint(equalTo: doneButton.centerYAnchor),
             // Lined up with the capacity bar above it, not with the window
             // edge: under the sidebar it read as a stray caption.
             statusLabel.leadingAnchor.constraint(equalTo: listScroll.trailingAnchor, constant: pad),
@@ -228,6 +238,17 @@ final class DevicePageView: NSView {
     }
 
     @objc private func find(_ sender: Any?) { onFind() }
+
+    @objc private func cancelApply(_ sender: Any?) {
+        cancelButton.isEnabled = false
+        onCancelApply()
+    }
+
+    /// While Apply runs: a Cancel button beside the disabled Apply.
+    func setApplying(_ on: Bool) {
+        cancelButton.isHidden = !on
+        cancelButton.isEnabled = on
+    }
 
     @objc private func sync(_ sender: Any?) { onSync() }
     @objc private func apply(_ sender: Any?) { onApplyPlan() }

@@ -11,6 +11,10 @@ struct LibraryInfo: Decodable {
     let itunesVersion: String?
     let reloading: Bool
     let lastError: String?
+    /// "iTunes" or "Music": which player the daemon drives.
+    var backend: String? = nil
+    /// The daemon's Mac, as its System Settings names it.
+    var name: String? = nil
     /// Edits made through the daemon that the XML has not caught up with.
     var journalLength: Int? = nil
     var playlistJournalLength: Int? = nil
@@ -457,6 +461,14 @@ struct SyncProgress: Decodable, Equatable {
     var done: Int? = nil
     var total: Int? = nil
     var tracks: Int? = nil
+    /// Bytes copied to the iPod so far, from its disk's write counter.
+    var bytes: Int? = nil
+    /// "itunes" when iTunes started the sync itself (plugging the iPod in).
+    var source: String? = nil
+    /// A cancel is in, and the rebuild stops after the chunk in progress.
+    var cancelling: Bool? = nil
+    /// The selection is built; it is being moved into the real playlist.
+    var committing: Bool? = nil
     var endedAt: Double? = nil
     var error: String? = nil
 

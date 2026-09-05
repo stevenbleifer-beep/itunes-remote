@@ -43,7 +43,7 @@ final class CuratorMemory {
 
     init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = base.appendingPathComponent("iTunes Remote/curator", isDirectory: true)
+        let dir = base.appendingPathComponent("\(AppIdentity.supportFolder)/curator", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         url = dir.appendingPathComponent("memory.json")
         trainingURL = dir.appendingPathComponent("training.jsonl")

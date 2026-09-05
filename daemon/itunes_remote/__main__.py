@@ -36,6 +36,7 @@ def main(argv=None):
     ap.add_argument("--init-config", action="store_true",
                     help="write a config file with a fresh token and exit")
     ap.add_argument("--xml", help="override xml_path from the config")
+    ap.add_argument("--app", choices=["iTunes", "Music", "auto"], help="override app from the config")
     ap.add_argument("--port", type=int, help="override port from the config")
     ap.add_argument("--host", help="override host from the config")
     ap.add_argument("--no-log-file", action="store_true")
@@ -64,6 +65,8 @@ def main(argv=None):
         return 1
     if args.xml:
         cfg.xml_path = os.path.expanduser(args.xml)
+    if args.app:
+        cfg.app = config_mod.resolve_app(args.app)
     if args.port:
         cfg.port = args.port
     if args.host:
@@ -75,20 +78,28 @@ def main(argv=None):
     setup_logging(None if args.no_log_file else cfg.log_dir)
     log = logging.getLogger("itunes_remote")
 
-    store = LibraryStore(cfg.xml_path, poll_interval=cfg.poll_interval)
+    daemon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if cfg.app == "Music":
+        log.info("driving Music.app; library read through musiclibdump")
+        store = LibraryStore(cfg.music_library_path, poll_interval=cfg.poll_interval,
+                             source_path=cfg.music_db_path if os.path.exists(cfg.music_db_path) else None,
+                             refresh=music_refresher(daemon_dir, cfg.music_library_path))
+    else:
+        store = LibraryStore(cfg.xml_path, poll_interval=cfg.poll_interval)
     try:
         store.load()
-    except FileNotFoundError as e:
+    except (FileNotFoundError, RuntimeError) as e:
         log.error(str(e))
         return 2
     store.start_watcher()
 
-    scripts_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
-    itunes = AppleScript(scripts_dir, timeout=cfg.applescript_timeout)
+    scripts_dir = os.path.join(daemon_dir, "scripts")
+    itunes = AppleScript(scripts_dir, timeout=cfg.applescript_timeout, app=cfg.app)
     if not itunes.itunes_running():
-        log.warning("iTunes is not running; player and write requests will return 503 until it is")
+        log.warning("%s is not running; player and write requests will return 503 until it is", cfg.app)
     api = Api(store, cfg, itunes, WriteLog(cfg.log_dir))
     api.start_artwork_warmer()
+    api.start_sync_sensor()
     server = make_server(api)
     log.info("listening on http://%s:%d/", cfg.host, cfg.port)
     bonjour = advertise(cfg.port)
@@ -102,6 +113,27 @@ def main(argv=None):
         if bonjour is not None:
             bonjour.terminate()
     return 0
+
+
+def music_refresher(daemon_dir, out_path):
+    """A callable that writes Music.app's library to `out_path` with the
+    bundled musiclibdump tool (built by tools/build.sh into bin/)."""
+    tool = os.path.join(daemon_dir, "bin", "musiclibdump")
+    log = logging.getLogger("itunes_remote")
+
+    def refresh():
+        if not os.path.isfile(tool):
+            raise RuntimeError("%s is missing; run daemon/tools/build.sh" % tool)
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        try:
+            r = subprocess.run([tool, "dump", out_path], capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("musiclibdump did not finish within five minutes")
+        if r.returncode != 0:
+            raise RuntimeError("musiclibdump failed: %s" % (r.stderr.strip() or r.stdout.strip()))
+        log.info("musiclibdump: %s", r.stdout.strip())
+
+    return refresh
 
 
 def advertise(port):

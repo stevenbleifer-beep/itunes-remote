@@ -114,7 +114,10 @@ final class PlayerController {
 
     private func tick() {
         tickCount += 1
-        if watchingSync || tickCount % 10 == 0 {
+        // A sync iTunes starts on its own (the iPod plugged in) is found by
+        // the daemon's sensor; asking every five seconds puts it on the LCD
+        // soon enough.
+        if watchingSync || tickCount % 5 == 0 {
             Task { await pollSyncProgress() }
         }
         if away && mode == .remote && tickCount % 3 != 0 {

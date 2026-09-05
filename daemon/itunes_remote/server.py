@@ -185,6 +185,9 @@ class Api(object):
         # an iPod sync), read by the client once a second.
         self.progress_lock = threading.Lock()
         self.sync_progress = {"active": False}
+        # One rebuild at a time, and a way to stop it between chunks.
+        self.rebuild_lock = threading.Lock()
+        self.rebuild_cancel = threading.Event()
         self.artwork_disk = artwork_mod.DiskCache(getattr(config, "artwork_cache_dir", ""))
         # When the last request was served, so the warmer can stay out of the
         # way while someone is actually using the app.
@@ -235,6 +238,7 @@ class Api(object):
             ("PUT", r"/api/sync", self.put_sync_plan),
             ("POST", r"/api/sync/toggle", self.post_sync_toggle),
             ("POST", r"/api/sync/rebuild", self.post_sync_rebuild),
+            ("POST", r"/api/sync/cancel", self.post_sync_cancel),
             ("GET", r"/api/sync/progress", self.get_sync_progress),
             ("GET", r"/api/devices", self.get_devices),
             ("POST", r"/api/devices/find", self.post_devices_find),
@@ -336,24 +340,29 @@ class Api(object):
 
     # -- library reads --------------------------------------------------
 
-    ITUNES_INFO_PLIST = "/Applications/iTunes.app/Contents/Info.plist"
     _itunes_version = None
 
-    @classmethod
-    def itunes_version(cls):
-        """iTunes' marketing version (12.9.5), not the XML's build string (12.9.5.5)."""
-        if cls._itunes_version is None:
+    @property
+    def app(self):
+        """"iTunes" or "Music": which player this daemon drives."""
+        return getattr(self.config, "app", "iTunes")
+
+    def itunes_version(self):
+        """The player's marketing version (12.9.5, or Music's 1.6.6), not the
+        library's build string (12.9.5.5)."""
+        if self._itunes_version is None:
             try:
-                with open(cls.ITUNES_INFO_PLIST, "rb") as f:
-                    cls._itunes_version = plistlib.load(f).get("CFBundleShortVersionString", "")
+                with open(config_mod.app_info_plist(self.app), "rb") as f:
+                    self._itunes_version = plistlib.load(f).get("CFBundleShortVersionString", "")
             except (OSError, ValueError):
-                cls._itunes_version = ""
-        return cls._itunes_version
+                self._itunes_version = ""
+        return self._itunes_version
 
     def get_library(self, params, query, body):
         info = self.store.lib.info()
         info.update(self.store.status())
         info["itunesVersion"] = self.itunes_version() or info.get("applicationVersion", "")
+        info["backend"] = self.app
         info["name"] = computer_name()
         info["tailscaleName"] = tailscale_name()
         return info
@@ -374,6 +383,7 @@ class Api(object):
         return {
             "app": "iTunes Remote",
             "protocol": 1,
+            "backend": self.app,
             "name": computer_name(),
             "host": local_host_name(),
             "port": self.config.port,
@@ -883,6 +893,10 @@ class Api(object):
     # -- sources (read-only; sync is gated on the section 7 probe) --------
 
     def get_sources(self, params, query, body):
+        if self.app != "iTunes":
+            # Music.app has no device sources: Finder syncs devices now, and
+            # nothing in Music's dictionary reaches them.
+            return {"sources": []}
         recs = self.itunes.records(self._script("sources_list", timeout=20))
         out = []
         for r in recs:
@@ -1083,6 +1097,84 @@ class Api(object):
                 p["error"] = error
             self.sync_progress = p
 
+    # -- the sync sensor ----------------------------------------------------
+    #
+    # iTunes syncs the iPod on its own when it is plugged in, and the app had
+    # no way to know: the progress above is only kept for syncs the app
+    # started. The iPod's block driver keeps a byte counter, though, and
+    # nothing but a sync writes to the iPod in bulk. Sampled every few
+    # seconds with ioreg (no Apple Events, no touching the volume), so it
+    # sees every sync whoever started it.
+
+    SENSOR_INTERVAL = 5           # seconds between samples
+    SENSOR_START_BYTES = 512 * 1024   # a sample this busy is a sync copying
+    SENSOR_QUIET_SAMPLES = 6      # this many quiet samples ends it (30 s)
+
+    def start_sync_sensor(self):
+        t = threading.Thread(target=self._sensor_loop, name="sync-sensor", daemon=True)
+        t.start()
+
+    @staticmethod
+    def _ipod_bytes_written():
+        """The iPod's block-driver write counter, or None without an iPod."""
+        try:
+            r = subprocess.run(["ioreg", "-r", "-n", "iPod", "-w0", "-l"],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        m = re.search(r'"Bytes \(Write\)"=(\d+)', r.stdout.decode("utf-8", "replace"))
+        return int(m.group(1)) if m else None
+
+    def _sensor_loop(self):
+        last = None
+        busy = 0
+        quiet = 0
+        mine = False          # this sensor started the progress entry
+        copied = 0
+        while True:
+            time.sleep(self.SENSOR_INTERVAL)
+            now = self._ipod_bytes_written()
+            if now is None or last is None or now < last:
+                # No iPod, or a fresh one: start counting again.
+                if mine:
+                    self._progress_update(bytes=copied)
+                    self._progress_end()
+                    mine = False
+                last, busy, quiet, copied = now, 0, 0, 0
+                continue
+            delta = now - last
+            last = now
+            with self.progress_lock:
+                active = bool(self.sync_progress.get("active"))
+                kind = self.sync_progress.get("kind")
+            if delta >= self.SENSOR_START_BYTES:
+                busy += 1
+                quiet = 0
+                copied += delta
+                if active and kind in ("sync", "ipod_sync"):
+                    # The app's own sync watcher owns the entry; add the bytes.
+                    self._progress_update(bytes=copied)
+                elif not active and busy >= 2:
+                    label = "iPod"
+                    for u in self._usb_devices():
+                        if u.get("volumeName"):
+                            label = u["volumeName"]
+                            break
+                    self._progress_start("sync", label)
+                    self._progress_update(bytes=copied, source="itunes")
+                    mine = True
+            else:
+                busy = 0
+                if mine:
+                    quiet += 1
+                    if quiet >= self.SENSOR_QUIET_SAMPLES:
+                        self._progress_update(bytes=copied)
+                        self._progress_end()
+                        mine = False
+                        copied = 0
+                elif not active:
+                    copied = 0
+
     def get_sync_progress(self, params, query, body):
         """What is being written right now: a plan rebuild (chunks done of
         total, tracks so far) or an iPod sync (songs on the device so far;
@@ -1091,8 +1183,9 @@ class Api(object):
             p = dict(self.sync_progress)
         if not p.get("active"):
             return {"active": False, "endedAt": p.get("endedAt"), "kind": p.get("kind"),
-                    "label": p.get("label"), "tracks": p.get("tracks"), "error": p.get("error")}
-        return {k: p.get(k) for k in ("active", "kind", "label", "done", "total", "tracks", "startedAt")}
+                    "label": p.get("label"), "tracks": p.get("tracks"), "bytes": p.get("bytes"),
+                    "source": p.get("source"), "error": p.get("error")}
+        return {k: p.get(k) for k in ("active", "kind", "label", "done", "total", "tracks", "bytes", "source", "cancelling", "committing", "startedAt")}
 
     def post_sync_rebuild(self, params, query, body):
         """Writes a device's plan to its playlist in iTunes. The only call here
@@ -1107,9 +1200,18 @@ class Api(object):
         lines = plan.spec_lines()
         total = 0
         done = 0
+        # A second Apply while one runs used to start over from zero (the
+        # progress went 0, 150, 0, 300); now it is refused.
+        if not self.rebuild_lock.acquire(blocking=False):
+            raise ApiError(409, "the sync playlist is already being written; wait for it, or cancel it")
+        self.rebuild_cancel.clear()
         self._progress_start("rebuild", plan.label, total=len(lines))
         try:
             for start in range(0, len(lines), self.REBUILD_CHUNK):
+                if self.rebuild_cancel.is_set():
+                    self._discard_staging(plan.playlist_name)
+                    raise ApiError(409, "stopped after %d of %d selections. The sync playlist is as it was; "
+                                        "Apply again to start over." % (done, len(lines)))
                 chunk = lines[start:start + self.REBUILD_CHUNK]
                 fd, spec = tempfile.mkstemp(prefix="itr-sync-", suffix=".tsv")
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -1131,18 +1233,51 @@ class Api(object):
                         os.unlink(spec)
                     except OSError:
                         pass
+            # Everything staged: one change to the real playlist.
+            self._progress_update(committing=True)
+            try:
+                out = self._script("sync_rebuild", plan.playlist_name, "-", "commit", timeout=900)
+                total = int(self._num(out.strip(), 0))
+            except ApiError as e:
+                self._discard_staging(plan.playlist_name)
+                raise ApiError(e.status, "the selection was built but could not be moved into the sync "
+                                         "playlist, which is as it was: %s" % e.message)
         except ApiError as e:
             self._progress_end(error=e.message)
             raise
         except Exception as e:
+            self._discard_staging(plan.playlist_name)
             self._progress_end(error=str(e))
             raise
+        finally:
+            self.rebuild_lock.release()
         self._progress_end()
         if self.write_log:
             self.write_log.record("sync-rebuild", plan.playlist_name, None, None, "ok",
                                   "%d tracks" % total)
         return {"plan": plan.to_dict(), "status": self._plan_status(plan),
                 "rebuilt": {"playlist": plan.playlist_name, "trackCount": total}}
+
+    def _discard_staging(self, playlist_name):
+        """Throws the staging playlist away after a cancel or a failure."""
+        try:
+            self._script("sync_rebuild", playlist_name, "-", "discard", timeout=120)
+        except ApiError as e:
+            log.warning("could not discard the staging playlist for %s: %s", playlist_name, e.message)
+
+    def post_sync_cancel(self, params, query, body):
+        """Stops a running rebuild after the chunk in progress. The playlist
+        keeps what was written so far; Apply again finishes it."""
+        with self.progress_lock:
+            active = bool(self.sync_progress.get("active")) and self.sync_progress.get("kind") == "rebuild"
+        if active:
+            self.rebuild_cancel.set()
+            self._progress_update(cancelling=True)
+        return {"cancelling": active}
+
+    def _rebuild_active(self):
+        with self.progress_lock:
+            return bool(self.sync_progress.get("active")) and self.sync_progress.get("kind") == "rebuild"
 
     # -- devices --------------------------------------------------------
 
@@ -1217,6 +1352,8 @@ class Api(object):
         """Every device iTunes can see, plus any Apple device on the USB bus
         that iTunes has not picked up, so the page can explain the difference
         rather than showing an empty list."""
+        if self.app != "iTunes":
+            return {"devices": []}
         try:
             sources = self.get_sources(params, None, None)["sources"]
         except ApiError as e:
@@ -1581,6 +1718,10 @@ class Api(object):
         playlists. Everything here is read from iTunes or the USB tree; nothing
         is estimated."""
         name = unquote(params["name"])
+        # Reading the device means Apple Events, and the rebuild holds that
+        # lock for minutes: the page used to wait, time out, and say so.
+        if self._rebuild_active():
+            raise ApiError(503, "iTunes is writing the sync playlist; the page fills in when it is done")
         devices = self.get_devices({}, None, None)["devices"]
         base = next((d for d in devices if d["name"] == name), None)
         if base is None:

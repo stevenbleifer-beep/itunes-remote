@@ -326,6 +326,13 @@ final class APIClient {
         return try JSONDecoder().decode(SyncPlanReply.self, from: data)
     }
 
+    /// Stops a rebuild after its current chunk; the playlist keeps what
+    /// was written and Apply again finishes it.
+    func cancelRebuild() async throws -> Bool {
+        let data = try await request("POST", "/api/sync/cancel", body: [:])
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["cancelling"] as? Bool ?? false
+    }
+
     /// Polled once a second while something is being written.
     func syncProgress() async throws -> SyncProgress {
         let data = try await request("GET", "/api/sync/progress", timeout: 10)
@@ -540,6 +547,8 @@ struct DaemonHello {
     let host: String
     let port: Int
     let itunesVersion: String
+    /// "iTunes" or "Music".
+    let backend: String
 }
 
 /// The result of a successful pairing: the token, plus the daemon's names.
@@ -564,7 +573,8 @@ extension APIClient {
             throw APIError(status: (resp as? HTTPURLResponse)?.statusCode ?? 0, message: "that is not an iTunes Remote daemon")
         }
         return DaemonHello(name: obj["name"] as? String ?? host, host: obj["host"] as? String ?? host,
-                           port: obj["port"] as? Int ?? port, itunesVersion: obj["itunesVersion"] as? String ?? "")
+                           port: obj["port"] as? Int ?? port, itunesVersion: obj["itunesVersion"] as? String ?? "",
+                           backend: obj["backend"] as? String ?? "iTunes")
     }
 
     /// POST /api/pair with the six-digit code the installer printed.
@@ -591,6 +601,7 @@ struct ServerSettings {
     static let portKey = "serverPort"
     static let tokenKey = "serverToken"
     static let nameKey = "serverName"
+    static let backendKey = "serverBackend"
 
     /// The host used when the LAN one does not answer — the Tailscale name.
     var host: String
@@ -601,12 +612,31 @@ struct ServerSettings {
     /// The other Mac's name as its System Preferences shows it, learned at
     /// pairing. Every message that names the other machine uses it.
     var name: String = ServerSettings.name
+    /// "iTunes" or "Music": what the daemon drives, learned at pairing and
+    /// confirmed from /api/library on every connection.
+    var backend: String = ServerSettings.backend
 
     /// The paired Mac's name, for messages, without loading the rest.
     static var name: String {
-        let n = UserDefaults.standard.string(forKey: nameKey) ?? ""
-        return n.isEmpty ? "MacBook Pro" : n
+        get {
+            let n = UserDefaults.standard.string(forKey: nameKey) ?? ""
+            return n.isEmpty ? "MacBook Pro" : n
+        }
+        set { UserDefaults.standard.set(newValue, forKey: nameKey) }
     }
+
+    static var backend: String {
+        get {
+            let b = UserDefaults.standard.string(forKey: backendKey) ?? ""
+            return b.isEmpty ? "iTunes" : b
+        }
+        set { UserDefaults.standard.set(newValue, forKey: backendKey) }
+    }
+    /// The daemon drives Music.app: no devices, no iPod, and the audio
+    /// already plays on the Mac it runs on.
+    static var isMusic: Bool { backend == "Music" }
+    /// The player's name for messages: "iTunes" or "Music".
+    static var appName: String { isMusic ? "Music" : "iTunes" }
 
     static func load() -> ServerSettings {
         let d = UserDefaults.standard
@@ -635,6 +665,7 @@ struct ServerSettings {
         d.set(lanHost, forKey: Self.lanHostKey)
         d.set(port, forKey: Self.portKey)
         d.set(name, forKey: Self.nameKey)
+        d.set(backend, forKey: Self.backendKey)
         if TokenStore.enabled && TokenStore.write(token) {
             d.removeObject(forKey: Self.tokenKey)
         } else {
@@ -659,7 +690,7 @@ struct ServerSettings {
 /// signed app made (and the signed app one for an item the dev build made),
 /// so development builds stay on UserDefaults, or on `--token`.
 enum TokenStore {
-    static let service = "local.stevenbleifer.itunesremote"
+    static let service = AppIdentity.bundleId
     static let account = "daemon-token"
 
     /// Off for `--token` runs, and for anything not signed by a team.
@@ -698,7 +729,7 @@ enum TokenStore {
         if status == errSecItemNotFound {
             var add = base
             add[kSecValueData as String] = data
-            add[kSecAttrLabel as String] = "iTunes Remote daemon token"
+            add[kSecAttrLabel as String] = "\(AppIdentity.name) daemon token"
             status = SecItemAdd(add as CFDictionary, nil)
         }
         return status == errSecSuccess

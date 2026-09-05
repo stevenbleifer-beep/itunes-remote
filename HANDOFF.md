@@ -993,3 +993,163 @@ at /Volumes/iPod, iTunes opened "iPod classic", and the log had no
 DADiskEject. The key is documented for the login window; it covers the
 lock screen too. The daemon and iTunes came back on their own after the
 reboot (LaunchAgent, 93,156 tracks loaded in 27 s).
+
+## Apple Music on this Mac (2026-09-04, evening: the first step)
+
+Steven asked for a version that uses his Apple Music library instead of
+the iTunes library on the Pro, same interface, minus the other Mac. The
+spike is built and verified on the Air; it is NOT installed for him yet
+(nothing in /Applications changed, no LaunchAgent added on the Air).
+
+**How it works.** The daemon now drives Music.app when there is no
+iTunes.app (`app` in config.json: `auto` / `iTunes` / `Music`;
+`--app` overrides). Music no longer writes the XML, so
+`daemon/tools/musiclibdump` (Swift, Apple's iTunesLibrary framework,
+built by `daemon/tools/build.sh` into the untracked `daemon/bin/`)
+writes the library as a binary plist in the *exact* iTunes XML shape
+(`Tracks` dict, `Playlists` array, same keys), and `library.py` parses
+it with the same code: all the browser, sort and grouping rules carry
+over untouched. `LibraryStore` takes `refresh` (run the dump) and
+`source_path` (`Library.musicdb`; its mtime is the reload trigger).
+The AppleScripts are copied to `~/Library/Caches/iTunesRemote/scripts-Music`
+with `application "iTunes"` / `process "iTunes"` rewritten; nothing
+else in them changed, because Music's dictionary is iTunes'.
+`/api/hello` and `/api/library` carry `backend`; the client stores it
+(`ServerSettings.backend`, `isMusic`, `appName`) and hides devices,
+Sync/Eject, Find iPod and "Play on This Mac" when it is Music.
+
+**Measured on the Air:** 13,920 media items, 13,272 songs; dump 1.1 s,
+10 MB; parse 0.3 s; 13,246 tracks after de-duplication, 2,410 artists,
+102 genres, 4,144 albums, 58 playlists. All of it Apple Music cloud
+tracks bar 88 local files.
+
+**Verified against Music 1.6.6:** every read endpoint; artwork of a
+cloud track via `raw data of artwork 1` (JPEG, 388 KB); the full
+AirPlay list (HomePods, Apple TV, TVs, this Mac); rating write 0→40→0
+through `PATCH /api/tracks`, read back from Music each time. Playback
+was NOT tested (it would have played out loud here).
+
+**Setup: "This Mac".** The assistant's first page lists "This Mac —
+Apple Music library in Music 1.6.6" above the network finds when Music
+is installed. Choosing it: if `127.0.0.1:8765/api/hello` answers, take
+the token straight from `~/Library/Application Support/iTunesRemote/config.json`
+(same user, so no pairing); otherwise run the bundled installer
+(`Contents/Resources/daemon/Install iTunes Remote Daemon.command --quiet`,
+with `musiclibdump` in `Contents/Helpers`), wait for hello, then the
+same. `build.sh` bundles the daemon; the installer accepts Music, finds
+the dumper beside itself or in the app's Helpers, and `--quiet` skips
+its "Press Return" pauses. `check.py` is app-aware. This flow is
+written but was not run end to end (it installs a LaunchAgent on the
+Air; Steven should be the one to click it). The dev run used
+`--host 127.0.0.1 --port 8766 --token …` against a scratch config.
+
+**Traps found.**
+- `tell application "iTunes"` does NOT alias to Music on macOS 26; the
+  script rewrite is required.
+- Music's main window has AX subrole `AXDialog` with three unnamed
+  buttons, so `alert_read.applescript` reported a phantom dialog and the
+  app showed a "missing value" sheet. It now ignores any window without
+  a named button. `named` is a reserved word in AppleScript.
+- 3,681 songs are in playlists but not in the library ("Spotify Liked
+  Songs" and other imported lists; no Date Added). `library playlist 1
+  whose persistent ID is …` cannot see them; `track of playlist "X"
+  whose persistent ID is …` can. Field writes and artwork exports on
+  those fail with a clear Music error today. The sample checked was an
+  Apple Music item "no longer available".
+- `musiclibdump artwork OUTDIR < PIDS` writes covers through the
+  framework (`ITLibArtwork.imageData`), ~0.8 s per process including the
+  library load; not wired in, because the AppleScript export works.
+- Same-machine dev run: `lanHost` stays the Pro's, so the badge says
+  "Away via Tailscale". The real setup sets both hosts to 127.0.0.1.
+
+**Not done / next.** Install for Steven via the assistant; test
+playback and AirPlay switching through Music; reach playlist-only
+tracks by playlist in set_fields/artwork/playlist scripts; a second
+"profile" so the app can keep the Pro and the Air both paired instead
+of one replacing the other; drop the "Compilations"-row and other
+iTunes-12-specific browser rules only if Music turns out to group
+differently (not checked).
+
+## Syncs on the LCD, and a rebuild that can be cancelled (2026-09-04, late night)
+
+**Sync sensor.** `Api.start_sync_sensor` (started from `__main__`) samples
+the iPod's block-driver write counter every 5 s: `ioreg -r -n iPod -w0 -l`,
+regex `"Bytes (Write)"=N`. Two busy samples (≥ 512 KB each) with no
+progress entry active start a `kind: "sync"` entry with `source: "itunes"`
+and `bytes`; six quiet samples (30 s) end it. When the app's own sync
+watcher owns the entry (`kind` "sync" or "ipod_sync") the sensor only
+adds `bytes`. Verified live: an iTunes auto-sync after an Apply showed
+1.1 GB copied over three minutes, at 6–11 MB/s (USB 2 to the iPod's
+hard drive — the copy speed is the iPod's, not ours). The client now polls
+`/api/sync/progress` every 5 ticks when idle and shows "N MB copied".
+
+**What Steven saw.** Apply pressed while a rebuild was running restarted
+it from zero (the progress read 0, 150, 0, 300); the device page's read
+of the iPod waited on iTunes behind the rebuild, timed out with "Could
+not read iPod classic", and its failure path re-enabled Apply mid-run;
+and the LCD stayed on "Sync playlist written" through the auto-sync
+that followed. Fixes: `rebuild_lock` (a second Apply gets 409),
+`get_device` answers 503 at once while a rebuild is active
+("iTunes is writing the sync playlist…"), `applyInFlight` stops the page
+re-reading during Apply, and `POST /api/sync/cancel`.
+
+**Staging.** `sync_rebuild.applescript` now takes modes
+`replace | append | commit | discard`. replace/append build
+"<name> (writing)"; commit deletes the real playlist's tracks, duplicates
+every track of the staging into it in one Apple Event (238 tracks in
+0.8 s) and deletes the staging; discard deletes the staging. The daemon
+commits after the last chunk and discards on cancel or error, so the
+real playlist changes exactly once — which matters because iTunes syncs
+the connected iPod the moment a synced playlist changes.
+
+**Trap found while testing (no damage; the 72 playlists were compared
+before and after).** `user playlists` is in sidebar order, so making
+"X" shifts "X (writing)" down one slot, and a reference taken from
+`repeat with p in user playlists` is positional: the first commit copied
+nothing and `delete staging` deleted the *new* real playlist instead.
+Every playlist reference in the script is now `user playlist id (id of p)`.
+
+**Deploy trap, second one tonight.** `rsync -a` skips a file with the same
+size and mtime, and `alert_read.applescript` on the Pro was an older
+version with the same size and mtime as the new one — the Pro kept the
+version that reports a window's three unnamed buttons as "missing value",
+which is the "iTunes is asking something" sheet Steven saw. Deploy with
+`rsync -ac` (checksums) from now on.
+
+## Two sessions in one tree (2026-09-04, 22:00–22:30)
+
+A second Claude session was building the Apple Music variant in this same
+working tree while this one was doing the sync work. What went wrong and
+what was done about it, so nobody repeats it:
+
+- My `post_sync_cancel` edit dropped the `def` line, so the daemon crashed
+  at startup on its route table. I deployed that at 22:03 (the Pro
+  crash-looped 23 times and my cancel test got empty answers); the other
+  session found it, restored the line, and redeployed at 22:14. The tree
+  now has exactly one `def post_sync_cancel`; `python3 -m unittest
+  discover` passes; both app variants compile.
+- The other session reinstalled /Applications/iTunes Remote.app pointed
+  at its local Music daemon (127.0.0.1, backend Music), so Steven's app
+  was no longer paired with the Pro. Fixed with a new launch flag,
+  `--pair host[:port] --pair-code NNNNNN`, which pairs, saves (token into
+  the app's own keychain item, so the ACL is the app's), and connects.
+  The code came from `python3 -m itunes_remote --pairing-code` on the
+  Pro. Verified: the installed app shows 93,156 songs in iTunes 12.9.5
+  and the iPod in the sidebar.
+- The DMG's Daemon folder picked up `daemon/bin/musiclibdump` (unsigned,
+  no hardened runtime) and notarization came back Invalid. `package.sh`
+  now excludes `bin` and `tools` from the DMG; the Mojave Mac never needs
+  that tool.
+- The Air now also runs `local.itunesremote.daemon` (Music backend, port
+  8765) from ~/Library/Application Support/iTunesRemote, for the other
+  app. Both daemons advertise the same Bonjour type; the assistant
+  filters by `backend`.
+- Review of the other session's daemon changes for the iTunes path:
+  `_is_audio_file` also accepts Track Type "Remote" (no change in count
+  on the Pro: 93,156 before and after); `LibraryStore` watches a
+  (mtime, size) stamp, sets `_stamp` after each swap, and `check_now`
+  still reparses only on a changed stamp; `AppleScript` rewrites scripts
+  only when `app != "iTunes"`. Nothing there changes behaviour on the Pro.
+
+**Rule from tonight: one session per working tree.** If two must run,
+the second works in a git worktree.

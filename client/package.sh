@@ -17,7 +17,7 @@ STAGE="$DIST/iTunes Remote"
 rm -rf "$DIST"
 mkdir -p "$STAGE/Daemon"
 cp -R "build/iTunes Remote.app" "$STAGE/"
-rsync -a --exclude __pycache__ --exclude tests --exclude probe_ipod.sh --exclude setup.sh ../daemon/ "$STAGE/Daemon/"
+rsync -a --exclude __pycache__ --exclude tests --exclude bin --exclude tools --exclude probe_ipod.sh --exclude setup.sh ../daemon/ "$STAGE/Daemon/"
 chmod +x "$STAGE/Daemon/Install iTunes Remote Daemon.command"
 cat > "$STAGE/Read Me.txt" <<TXT
 iTunes Remote $VERSION

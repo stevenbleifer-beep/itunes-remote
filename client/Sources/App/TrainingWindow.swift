@@ -311,7 +311,7 @@ final class TrainingWindow: NSObject, NSWindowDelegate {
         a.addButton(withTitle: "Cancel")
         guard a.runModal() == .alertFirstButtonReturn else { return }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        try? FileManager.default.removeItem(at: base.appendingPathComponent("iTunes Remote/curator/training.jsonl"))
+        try? FileManager.default.removeItem(at: base.appendingPathComponent("\(AppIdentity.supportFolder)/curator/training.jsonl"))
         Task { await refresh() }
     }
 

@@ -28,7 +28,7 @@ final class MiniPlayerWindowController: NSWindowController, NSWindowDelegate {
                               styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         super.init(window: window)
-        window.title = "iTunes Remote"
+        window.title = AppIdentity.name
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
@@ -92,7 +92,7 @@ final class MiniPlayerWindowController: NSWindowController, NSWindowDelegate {
             display.secondary = parts.joined(separator: " — ")
         } else {
             display.duration = nil
-            display.primary = "iTunes Remote"
+            display.primary = AppIdentity.name
             display.secondary = player.itunesRunning ? "Nothing playing" : (player.lastError ?? "")
         }
         if let v = state?.volume, !volumeSlider.isDragging {

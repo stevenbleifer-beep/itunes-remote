@@ -7,3 +7,4 @@ config.json
 /client/.build/
 /client/DerivedData/
 xcuserdata/
+/daemon/bin/

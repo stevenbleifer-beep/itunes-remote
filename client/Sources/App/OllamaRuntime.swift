@@ -36,6 +36,8 @@ final class OllamaRuntime {
     /// The models the embedded server keeps, beside the curator's index.
     static var embeddedModelsDir: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        // Shared by both apps on purpose: the models are not library-specific
+        // and the picker alone is 3.4 GB.
         return base.appendingPathComponent("iTunes Remote/ollama/models", isDirectory: true)
     }
 
@@ -79,7 +81,7 @@ final class OllamaRuntime {
         }
         let models = OllamaRuntime.embeddedModelsDir
         try? FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
-        let logDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/iTunesRemote")
+        let logDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/\(AppIdentity.logFolder)")
         try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
         let logURL = logDir.appendingPathComponent("ollama.log")
         if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil) }

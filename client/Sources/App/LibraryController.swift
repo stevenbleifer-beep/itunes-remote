@@ -122,6 +122,13 @@ final class LibraryController {
         do {
             info = try await api.libraryInfo()
             api.libraryVersion = info?.version ?? ""
+            // A daemon from before this field is an iTunes one; never let a
+            // stale "Music" from another connection outlive the answer.
+            let backend = info?.backend ?? "iTunes"
+            if backend != ServerSettings.backend { ServerSettings.backend = backend }
+            if let name = info?.name, !name.isEmpty, name != ServerSettings.name {
+                ServerSettings.name = name
+            }
             playlists = try await api.playlists()
             lastError = nil
             loadRetry?.invalidate()
