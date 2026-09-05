@@ -117,6 +117,25 @@ through iTunes itself, never to the files behind its back.
   other's keychain item). Messages name the paired Mac by its own name,
   learned at pairing, instead of "the MacBook Pro".
 
+## Two libraries: iTunes over there, Apple Music here
+
+**File ▸ Library** switches the app between iTunes on the other Mac and
+the Apple Music library in Music.app on this one. They are never mixed:
+each has its own connection and token, its own Up Next, its own curator
+index, lessons and training (under `Application Support/iTunes Remote`
+and `…/iTunes Remote/Apple Music`), and switching quits and reopens the
+app so nothing carries across. The Apple Music side needs no pairing —
+the app bundles the daemon and its library reader (`musiclibdump`,
+which reads Music's library through the iTunesLibrary framework into
+the same shape as iTunes' XML) and installs them as a LaunchAgent on
+first use. What works there: everything but the iPod. Music syncs
+devices through the Finder and exposes none of it, so the device page,
+sync plan, Find iPod and the restart command are gone; songs that are
+Apple Music streams rather than files have no local playback or
+file-based artwork. The same source also builds a stand-alone "Apple
+Music Remote" (`ITR_VARIANT=music`), which is the same thing without the
+switch.
+
 ## Turning the AI off
 
 **View ▸ AI Features** is one switch for everything that runs a model: the

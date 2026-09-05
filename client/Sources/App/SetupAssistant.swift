@@ -36,7 +36,7 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
     private enum Row { case thisMac, found(DaemonBrowser.Found) }
     /// Only Apple Music Remote offers this Mac's own library, and each app
     /// lists only daemons of its own kind, so the two stay apart.
-    private var offersThisMac: Bool { AppIdentity.isAppleMusic && LocalDaemon.available }
+    private var offersThisMac: Bool { (AppIdentity.isAppleMusic || ServerSettings.isMusicProfile) && LocalDaemon.available }
     private var rows: [Row] {
         (offersThisMac ? [.thisMac] : []) + browser.found.filter { $0.backend == AppIdentity.backend }.map { .found($0) }
     }

@@ -2235,7 +2235,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     /// Shows a result line in the status bar for a few seconds.
-    private func flashStatus(_ text: String) {
+    func flashStatus(_ text: String) {
         statusOverride = text
         statusOverrideTimer?.invalidate()
         statusOverrideTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
@@ -2685,14 +2685,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// that decision the user gets to make directly.
     private var upNext: [Track] = [] {
         // Kept across launches: what was queued is still queued tomorrow.
-        didSet { UserDefaults.standard.set(upNext.map { $0.defaultsDict }, forKey: "upNextQueue") }
+        didSet { UserDefaults.standard.set(upNext.map { $0.defaultsDict }, forKey: ServerSettings.key("upNextQueue")) }
     }
     private var upNextPanel: UpNextPanel?
 
     /// The queue as it was when the app last ran.
     private func restoreUpNext() {
         guard upNext.isEmpty,
-              let saved = UserDefaults.standard.array(forKey: "upNextQueue") as? [[String: Any]] else { return }
+              let saved = UserDefaults.standard.array(forKey: ServerSettings.key("upNextQueue")) as? [[String: Any]] else { return }
         let queue = saved.compactMap { Track(defaults: $0) }
         guard !queue.isEmpty else { return }
         upNext = queue

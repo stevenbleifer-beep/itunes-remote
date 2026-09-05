@@ -36,6 +36,12 @@ one you sit at.
 3. Optional, on the way through setup: Tailscale on both Macs makes it work
    away from home; Ollama on this Mac turns on the Playlist Curator.
 
+One Mac, with the Music app: File > Library > Apple Music on This Mac reads
+the Apple Music library here instead. Nothing to install on the way in: the
+app carries its own library reader and sets it up the first time. The two
+libraries are kept apart, each with its own connection, queue and curator,
+and File > Library switches between them.
+
 Everything stays on your own machines. Nothing is sent anywhere else.
 TXT
 DMG="$DIST/iTunes Remote $VERSION.dmg"

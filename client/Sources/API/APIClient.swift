@@ -603,6 +603,28 @@ struct ServerSettings {
     static let nameKey = "serverName"
     static let backendKey = "serverBackend"
 
+    // MARK: Two libraries, kept apart
+
+    /// Which library the app is using: "itunes" (iTunes on another Mac) or
+    /// "music" (the Apple Music library in Music.app on this Mac). Each has
+    /// its own settings, token, curator index and queue, under keys and
+    /// folders of its own, so nothing from one ever shows in the other.
+    /// Switching relaunches the app, which is what keeps that true.
+    static let profileKey = "activeLibrary"
+    static var profile: String {
+        get { UserDefaults.standard.string(forKey: profileKey) == "music" ? "music" : "itunes" }
+        set { UserDefaults.standard.set(newValue, forKey: profileKey) }
+    }
+    static var isMusicProfile: Bool { profile == "music" }
+    /// The iTunes Mac's name whichever library is active, for the menu.
+    static var itunesName: String {
+        let n = UserDefaults.standard.string(forKey: nameKey) ?? ""
+        return n.isEmpty ? "MacBook Pro" : n
+    }
+    /// The defaults key for this profile: the iTunes keys are the original
+    /// ones, so an existing pairing carries on untouched.
+    static func key(_ base: String) -> String { isMusicProfile ? base + ".music" : base }
+
     /// The host used when the LAN one does not answer — the Tailscale name.
     var host: String
     /// The host on the home network, probed first; used whenever it answers.
@@ -619,18 +641,18 @@ struct ServerSettings {
     /// The paired Mac's name, for messages, without loading the rest.
     static var name: String {
         get {
-            let n = UserDefaults.standard.string(forKey: nameKey) ?? ""
-            return n.isEmpty ? "MacBook Pro" : n
+            let n = UserDefaults.standard.string(forKey: key(nameKey)) ?? ""
+            return n.isEmpty ? (isMusicProfile ? "This Mac" : "MacBook Pro") : n
         }
-        set { UserDefaults.standard.set(newValue, forKey: nameKey) }
+        set { UserDefaults.standard.set(newValue, forKey: key(nameKey)) }
     }
 
     static var backend: String {
         get {
-            let b = UserDefaults.standard.string(forKey: backendKey) ?? ""
-            return b.isEmpty ? "iTunes" : b
+            let b = UserDefaults.standard.string(forKey: key(backendKey)) ?? ""
+            return b.isEmpty ? (isMusicProfile ? "Music" : "iTunes") : b
         }
-        set { UserDefaults.standard.set(newValue, forKey: backendKey) }
+        set { UserDefaults.standard.set(newValue, forKey: key(backendKey)) }
     }
     /// The daemon drives Music.app: no devices, no iPod, and the audio
     /// already plays on the Mac it runs on.
@@ -643,33 +665,34 @@ struct ServerSettings {
         // The token lives in the keychain. One kept in UserDefaults by an
         // earlier version, or by a save the keychain refused, moves over
         // the first time the keychain takes it.
-        var token = d.string(forKey: tokenKey) ?? ""
+        var token = d.string(forKey: key(tokenKey)) ?? ""
         if TokenStore.enabled {
             if !token.isEmpty {
-                if TokenStore.write(token) { d.removeObject(forKey: tokenKey) }
+                if TokenStore.write(token) { d.removeObject(forKey: key(tokenKey)) }
             } else {
                 token = TokenStore.read() ?? ""
             }
         }
+        let defaultHost = isMusicProfile ? "127.0.0.1" : "Stevens-MacBook-Pro.local"
         return ServerSettings(
-            host: d.string(forKey: hostKey) ?? "Stevens-MacBook-Pro.local",
-            lanHost: d.string(forKey: lanHostKey) ?? "Stevens-MacBook-Pro.local",
-            port: d.integer(forKey: portKey) == 0 ? 8765 : d.integer(forKey: portKey),
+            host: d.string(forKey: key(hostKey)) ?? defaultHost,
+            lanHost: d.string(forKey: key(lanHostKey)) ?? defaultHost,
+            port: d.integer(forKey: key(portKey)) == 0 ? 8765 : d.integer(forKey: key(portKey)),
             token: token
         )
     }
 
     func save() {
         let d = UserDefaults.standard
-        d.set(host, forKey: Self.hostKey)
-        d.set(lanHost, forKey: Self.lanHostKey)
-        d.set(port, forKey: Self.portKey)
-        d.set(name, forKey: Self.nameKey)
-        d.set(backend, forKey: Self.backendKey)
+        d.set(host, forKey: Self.key(Self.hostKey))
+        d.set(lanHost, forKey: Self.key(Self.lanHostKey))
+        d.set(port, forKey: Self.key(Self.portKey))
+        d.set(name, forKey: Self.key(Self.nameKey))
+        d.set(backend, forKey: Self.key(Self.backendKey))
         if TokenStore.enabled && TokenStore.write(token) {
-            d.removeObject(forKey: Self.tokenKey)
+            d.removeObject(forKey: Self.key(Self.tokenKey))
         } else {
-            d.set(token, forKey: Self.tokenKey)
+            d.set(token, forKey: Self.key(Self.tokenKey))
         }
     }
 
@@ -691,7 +714,8 @@ struct ServerSettings {
 /// so development builds stay on UserDefaults, or on `--token`.
 enum TokenStore {
     static let service = AppIdentity.bundleId
-    static let account = "daemon-token"
+    /// One item per library, so the two tokens never share a slot.
+    static var account: String { ServerSettings.isMusicProfile ? "daemon-token.music" : "daemon-token" }
 
     /// Off for `--token` runs, and for anything not signed by a team.
     nonisolated(unsafe) static var enabled: Bool = signedWithTeam

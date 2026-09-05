@@ -1169,3 +1169,28 @@ closed and the library row selected, a training run is cancelled and
 without touching the saved preference: `-aiFeatures NO` on the command
 line (NSUserDefaults argument domain). The existing View ▸ Playlist
 Curator toggle stays, for hiding just the sidebar section.
+
+## File ▸ Library: both libraries in one app, never mixed (2026-09-04, after midnight)
+
+Steven wanted the Apple Music side folded into iTunes Remote as a switch,
+with the two libraries never combined. Design: **profiles + relaunch**.
+`ServerSettings.profile` (defaults `activeLibrary`, "itunes" | "music");
+`ServerSettings.key(_:)` suffixes every settings key with `.music` for the
+Music profile (the iTunes keys are the original ones, so the existing
+pairing carried on untouched); `TokenStore.account` is `daemon-token`
+or `daemon-token.music`; `AppIdentity.supportFolder` is "iTunes Remote"
+or "iTunes Remote/Apple Music" (curator index, memory, training);
+`AppIdentity.backend` follows the profile; the Up Next key is per
+profile. `AppDelegate.switchLibrary(to:)` confirms, sets the profile,
+spawns `sh -c 'sleep 1; open -n <bundle>'` and terminates — the relaunch
+is the guarantee: engine, caches, queue and connection all start from
+the other profile's own state. `setupThisMac` (shared with
+`--setup-this-mac`) runs on a Music-profile launch with no token:
+installs the bundled daemon if `/api/hello` on 127.0.0.1 does not
+answer, reads the token from the local daemon's config, saves, connects.
+Verified: `-activeLibrary music` on the dev build loads the Air's
+Music library (13,246 songs in Music 1.6.6) with no DEVICES section,
+and creates `…/iTunes Remote/Apple Music/curator` beside the iTunes one.
+The DMG's Read Me mentions the switch. The separate
+`/Applications/Apple Music Remote.app` from the other session is now
+redundant; left in place for Steven to remove.

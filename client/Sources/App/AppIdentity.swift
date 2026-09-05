@@ -14,9 +14,11 @@ enum AppIdentity {
     static let isAppleMusic: Bool =
         (Bundle.main.object(forInfoDictionaryKey: "ITRVariant") as? String) == "music"
     /// The daemon backend this app is for; the setup assistant lists only those.
-    static var backend: String { isAppleMusic ? "Music" : "iTunes" }
+    static var backend: String { isAppleMusic || ServerSettings.isMusicProfile ? "Music" : "iTunes" }
     /// ~/Library/Application Support/<supportFolder>/… — curator index, memory, training.
-    static var supportFolder: String { name }
+    /// The Apple Music library inside iTunes Remote keeps its curator index,
+    /// lessons and training in a folder of its own, beside the iTunes one.
+    static var supportFolder: String { !isAppleMusic && ServerSettings.isMusicProfile ? name + "/Apple Music" : name }
     /// ~/Library/Logs/<logFolder>/
     static var logFolder: String { isAppleMusic ? "AppleMusicRemote" : "iTunesRemote" }
 }

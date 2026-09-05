@@ -99,27 +99,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             assistant.demo(code: code)
             return
         }
-        if CommandLine.arguments.contains("--setup-this-mac") {
-            // Headless first run for Apple Music Remote: exactly what the
-            // assistant's "This Mac" does, without the window. Falls back to
-            // the assistant when the local daemon is not answering.
-            Task { @MainActor in
-                var s = settings
-                if let h = try? await APIClient.hello(host: LocalDaemon.host, port: LocalDaemon.port),
-                   let token = LocalDaemon.token {
-                    s.lanHost = LocalDaemon.host
-                    s.host = LocalDaemon.host
-                    s.port = h.port
-                    s.token = token
-                    s.name = h.name
-                    s.backend = h.backend
-                    s.save()
-                    print("set up with this Mac: \(h.name), \(h.backend) \(h.itunesVersion)"); fflush(stdout)
-                    self.connect(with: s)
-                } else {
-                    self.runSetup(settings)
-                }
-            }
+        // The Apple Music library on this Mac needs no pairing: the daemon
+        // runs as the same user, so its token is read from its own config.
+        // First use installs the daemon (bundled) when it is not answering.
+        if CommandLine.arguments.contains("--setup-this-mac") || (ServerSettings.isMusicProfile && settings.token.isEmpty && !overridden) {
+            setupThisMac(settings)
             return
         }
         if settings.token.isEmpty && !overridden {
@@ -134,6 +118,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func showSetup(_ sender: Any?) {
         runSetup(ServerSettings.load())
+    }
+
+    /// Exactly what the assistant's "This Mac" row does, without the
+    /// window: installs the bundled daemon if none answers, reads its token,
+    /// saves the settings for the Apple Music library and connects.
+    private func setupThisMac(_ settings: ServerSettings) {
+        Task { @MainActor in
+            var hello = try? await APIClient.hello(host: LocalDaemon.host, port: LocalDaemon.port)
+            if hello == nil, LocalDaemon.available {
+                self.main.flashStatus("Installing the library reader for Music on this Mac… If macOS asks whether “Python” may control “Music”, click OK.")
+                if (try? await LocalDaemon.install()) != nil {
+                    hello = await LocalDaemon.waitForHello(seconds: 90)
+                }
+            }
+            if let h = hello, let token = LocalDaemon.token {
+                var s = settings
+                s.lanHost = LocalDaemon.host
+                s.host = LocalDaemon.host
+                s.port = h.port
+                s.token = token
+                s.name = h.name
+                s.backend = h.backend
+                s.save()
+                print("set up with this Mac: \(h.name), \(h.backend) \(h.itunesVersion)"); fflush(stdout)
+                self.connect(with: s)
+            } else {
+                self.runSetup(settings)
+            }
+        }
+    }
+
+    // MARK: Switching libraries
+
+    /// File ▸ Library ▸ …: the other library, in a fresh copy of the app.
+    /// Relaunching is what keeps the two apart — the curator index, the
+    /// artwork cache, the queue and the connection all start over from the
+    /// other library's own settings, and nothing is carried across.
+    @objc func useITunesLibrary(_ sender: Any?) { switchLibrary(to: "itunes") }
+    @objc func useMusicLibrary(_ sender: Any?) { switchLibrary(to: "music") }
+
+    private func switchLibrary(to profile: String) {
+        guard profile != ServerSettings.profile else { return }
+        let alert = NSAlert()
+        let target = profile == "music" ? "the Apple Music library on this Mac" : "iTunes on the \(ServerSettings.itunesName)"
+        alert.messageText = "Switch to \(target)?"
+        alert.informativeText = "\(AppIdentity.name) quits and reopens with that library. The two are kept apart: each has its own connection, queue and curator, and nothing from one shows in the other."
+        alert.addButton(withTitle: "Switch")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        ServerSettings.profile = profile
+        UserDefaults.standard.synchronize()
+        let path = Bundle.main.bundlePath
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 1; open -n \"\(path)\""]
+        try? p.run()
+        NSApp.terminate(nil)
+    }
+
+    @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(useITunesLibrary(_:)) { item.state = ServerSettings.isMusicProfile ? .off : .on }
+        if item.action == #selector(useMusicLibrary(_:)) {
+            item.state = ServerSettings.isMusicProfile ? .on : .off
+            return LocalDaemon.available
+        }
+        return true
     }
 
     private func runSetup(_ settings: ServerSettings) {
@@ -188,6 +238,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Set Up \(AppIdentity.name)…", action: #selector(showSetup(_:)), keyEquivalent: "")
         fileMenu.addItem(withTitle: "Connect…", action: #selector(showConnectPanel(_:)), keyEquivalent: "k")
+        fileMenu.addItem(.separator())
+        // Two libraries, never mixed: the app reopens with the one chosen.
+        let libraryMenu = NSMenu(title: "Library")
+        libraryMenu.addItem(withTitle: "iTunes on the \(ServerSettings.itunesName)", action: #selector(useITunesLibrary(_:)), keyEquivalent: "")
+        libraryMenu.addItem(withTitle: "Apple Music on This Mac", action: #selector(useMusicLibrary(_:)), keyEquivalent: "")
+        let libraryItem = NSMenuItem(title: "Library", action: nil, keyEquivalent: "")
+        libraryItem.submenu = libraryMenu
+        fileMenu.addItem(libraryItem)
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         let fileItem = NSMenuItem()
