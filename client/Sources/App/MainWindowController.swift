@@ -1685,7 +1685,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// model server. Off, none of it shows and no model runs; nothing on
     /// disk (the index, the lessons, a trained picker) is touched.
     static var aiEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: "aiFeatures") as? Bool ?? true }
+        // bool(forKey:) reads "NO" from the command line as well as a saved Bool.
+        get { UserDefaults.standard.object(forKey: "aiFeatures") == nil ? true : UserDefaults.standard.bool(forKey: "aiFeatures") }
         set { UserDefaults.standard.set(newValue, forKey: "aiFeatures") }
     }
 
