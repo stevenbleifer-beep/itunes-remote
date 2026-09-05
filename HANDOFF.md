@@ -1227,3 +1227,17 @@ route's 404 path is verified on both daemons; no real track was deleted.
 
 **Music hidden.** `AppleScript.launch_itunes` uses `open -g -j -a Music`
 on the Music backend so scripting never brings Music to the front.
+
+**Verified after Steven enabled MusicKit and ShazamKit on the App ID
+(2026-09-05 ~00:55).** `--catalog-search "abbey road"` through a
+Developer-ID-signed build: 6 songs, 3 albums, Here Comes the Sun first.
+The first try after enabling still failed — Apple's side takes a few
+minutes to notice. Ad-hoc builds never get a token; test with
+`ITR_SIGN_IDENTITY=… ./build.sh` (signed, no notarization, two minutes
+faster than package.sh). `ShazamIdentifier.swift`: microphone via
+AVAudioEngine tap → `SHSession.matchStreamingBuffer`, 12 s timer; or a
+file via `SHSignatureGenerator` (`--shazam-file PATH`), which named
+"Chapel Perilous — Mild High Club" from a library file with the Apple
+Music id attached. Controls ▸ Identify What's Playing… (⌘⇧I). Adds,
+playlist writes and Apple Music playback are wired but were not
+exercised against Steven's real library; the delete route likewise.

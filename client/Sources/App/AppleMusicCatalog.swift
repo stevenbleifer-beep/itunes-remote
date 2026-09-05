@@ -80,6 +80,14 @@ enum AppleMusicCatalog {
         try await player.play()
     }
 
+    /// Plays a catalogue song by id (from Shazam).
+    static func play(songID: String) async throws {
+        try await requireSubscription()
+        let request = MusicCatalogResourceRequest<Song>(matching: \.id, equalTo: MusicItemID(songID))
+        guard let song = try await request.response().items.first else { throw AppleMusicError("Apple Music has no song with that id.") }
+        try await play(song)
+    }
+
     static func play(_ album: Album) async throws {
         try await requireSubscription()
         let player = ApplicationMusicPlayer.shared
@@ -165,6 +173,8 @@ enum AppleMusicCatalog {
     /// MusicKit's errors in words, with the one setup step named.
     private static func explain(_ error: Error) -> String {
         let text = String(describing: error)
+        // The raw error goes to the unified log, for `log show --predicate 'process == "iTunesRemote"'`.
+        NSLog("musickit: %@", text)
         if text.contains("developerTokenRequestFailed") || text.contains("DeveloperToken") {
             return "Apple Music would not issue this app a token. In the Apple Developer account, the identifier \(AppIdentity.bundleId) needs the MusicKit service enabled (Certificates, Identifiers & Profiles ▸ Identifiers ▸ App Services)."
         }

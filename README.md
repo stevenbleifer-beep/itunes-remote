@@ -151,6 +151,13 @@ Profiles ▸ Identifiers ▸ App Services), an Apple Music subscription on the
 Mac, and a one-time "may use Apple Music" permission. Adds show up in the
 app once Music has written them into its library, usually within a minute.
 
+**Controls ▸ Identify What's Playing…** (⌘⇧I) listens to the microphone
+for twelve seconds and asks Shazam what it heard — nothing is recorded,
+only a signature of the sound is sent. The answer offers Find in Library,
+and on the Apple Music side Add to Library and Play on Apple Music. It
+needs the ShazamKit service on the app's identifier and a one-time
+microphone permission.
+
 **Delete from Library…** on the track menu (both libraries) removes songs
 from the library on the far end and from every playlist. The files stay
 where they are. There is no undo, so it asks first.

@@ -3042,6 +3042,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func firstLoadDone() {
         restoreUpNext()
         if CommandLine.arguments.contains("--find-ipod") { findIPod(nil) }
+        // `--shazam-file PATH`: identify a file instead of the microphone, for testing.
+        if let i = CommandLine.arguments.firstIndex(of: "--shazam-file"), i + 1 < CommandLine.arguments.count {
+            shazam.identify(file: URL(fileURLWithPath: CommandLine.arguments[i + 1])) { [weak self] result in
+                if case .failure(let e) = result { print("shazam: error: \(e.localizedDescription)"); fflush(stdout) }
+                if case .success(nil) = result { print("shazam: no match"); fflush(stdout) }
+                self?.identified(result)
+            }
+        }
         // `--catalog-search TERM`: one Apple Music lookup, printed, for testing.
         if let i = CommandLine.arguments.firstIndex(of: "--catalog-search"), i + 1 < CommandLine.arguments.count {
             let term = CommandLine.arguments[i + 1]
@@ -3562,6 +3570,74 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         return p
     }
 
+    // MARK: Identify what's playing (Shazam)
+
+    private let shazam = ShazamIdentifier()
+    private var listeningAlert: NSAlert?
+
+    /// Controls ▸ Identify What's Playing…: twelve seconds of the
+    /// microphone, then a name.
+    @objc func identifyPlaying(_ sender: Any?) {
+        guard let window = window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Listening…"
+        alert.informativeText = "Shazam is listening to the microphone for twelve seconds. Nothing is recorded; only a signature of the sound is sent."
+        alert.addButton(withTitle: "Cancel")
+        listeningAlert = alert
+        alert.beginSheetModal(for: window) { [weak self] _ in
+            guard let self = self, self.listeningAlert === alert else { return }
+            self.listeningAlert = nil
+            self.shazam.stop()
+        }
+        shazam.listen { [weak self] result in self?.identified(result) }
+    }
+
+    private func identified(_ result: Result<ShazamIdentifier.Match?, Error>) {
+        guard let window = window else { return }
+        if let a = listeningAlert {
+            listeningAlert = nil
+            window.endSheet(a.window)
+        }
+        switch result {
+        case .failure(let error):
+            flashStatus("Shazam: \(error.localizedDescription)")
+        case .success(nil):
+            flashStatus("Shazam did not recognise anything.")
+        case .success(let match?):
+            if CommandLine.arguments.contains("--shazam-file") { print("shazam: \(match.title) — \(match.artist) id=\(match.appleMusicID ?? "-")"); fflush(stdout) }
+            let alert = NSAlert()
+            alert.messageText = "\(match.title) — \(match.artist)"
+            alert.informativeText = "Recognised by Shazam."
+            alert.addButton(withTitle: "Find in Library")
+            let canAdd = ServerSettings.isMusic && match.appleMusicID != nil
+            if canAdd {
+                alert.addButton(withTitle: "Add to Library")
+                alert.addButton(withTitle: "Play on Apple Music")
+            }
+            alert.addButton(withTitle: "Done")
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard let self = self else { return }
+                switch response {
+                case .alertFirstButtonReturn:
+                    self.searchField.stringValue = match.title
+                    self.controller.searchText = match.title
+                    self.window?.makeFirstResponder(self.trackTable)
+                case .alertSecondButtonReturn where canAdd:
+                    self.catalogAction(NSMenuItem.with(CatalogWork {
+                        try await AppleMusicCatalog.addToLibrary(songIDs: [match.appleMusicID!])
+                        return "Added “\(match.title)” to the library."
+                    }))
+                case .alertThirdButtonReturn where canAdd:
+                    self.catalogAction(NSMenuItem.with(CatalogWork {
+                        try await AppleMusicCatalog.play(songID: match.appleMusicID!)
+                        return "Playing “\(match.title)” on Apple Music."
+                    }))
+                default: break
+                }
+            }
+        }
+    }
+
     // MARK: Apple Music catalogue actions
 
     /// What can be done with something found on Apple Music: play it, put
@@ -3636,7 +3712,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         menu.popUp(positioning: nil, at: window?.convertPoint(fromScreen: origin) ?? .zero, in: window?.contentView)
     }
 
-    private final class CatalogWork {
+    final class CatalogWork {
         let run: () async throws -> String
         init(run: @escaping () async throws -> String) { self.run = run }
     }
@@ -4032,5 +4108,15 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         // The triangle lives in the header cells, which do not repaint on
         // their own when the descriptor moves to another column.
         tableView.headerView?.needsDisplay = true
+    }
+}
+
+
+extension NSMenuItem {
+    /// A menu item carrying a catalogue action, for reuse from a sheet.
+    static func with(_ work: MainWindowController.CatalogWork) -> NSMenuItem {
+        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        item.representedObject = work
+        return item
     }
 }

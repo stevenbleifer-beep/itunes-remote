@@ -317,6 +317,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let showQueue = controlsMenu.addItem(withTitle: "Show Up Next",
                                              action: #selector(MainWindowController.showUpNext(_:)), keyEquivalent: "u")
         showQueue.keyEquivalentModifierMask = [NSEvent.ModifierFlags.command, NSEvent.ModifierFlags.option]
+        let identify = controlsMenu.addItem(withTitle: "Identify What’s Playing…",
+                                            action: #selector(MainWindowController.identifyPlaying(_:)), keyEquivalent: "i")
+        identify.keyEquivalentModifierMask = [.command, .shift]
         controlsMenu.addItem(withTitle: "Notify on Song Change",
                              action: #selector(MainWindowController.toggleSongNotifications(_:)), keyEquivalent: "")
         controlsMenu.addItem(.separator())
