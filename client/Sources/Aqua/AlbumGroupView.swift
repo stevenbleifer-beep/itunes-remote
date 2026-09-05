@@ -20,7 +20,7 @@ final class AlbumGroupView: NSView {
         title.font = Aqua.font(12, bold: true)
         artist.font = Aqua.font(11)
         detail.font = Aqua.font(10)
-        detail.textColor = NSColor(white: 0.45, alpha: 1)
+        detail.textColor = Theme.ink(0.45)
         for (label, y) in [(title, 42.0), (artist, 26.0), (detail, 11.0)] as [(NSTextField, CGFloat)] {
             label.frame = NSRect(x: 70, y: y, width: 600, height: 16)
             label.lineBreakMode = .byTruncatingTail
@@ -32,9 +32,9 @@ final class AlbumGroupView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.white.setFill()
+        Theme.paper.setFill()
         bounds.fill()
-        NSColor(white: 0.84, alpha: 1).setFill()
+        Theme.ink(0.84).setFill()
         NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
     }
 

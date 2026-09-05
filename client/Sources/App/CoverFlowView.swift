@@ -90,7 +90,7 @@ final class CoverFlowView: NSView, NSDraggingSource {
         titleLayer.foregroundColor = NSColor.white.cgColor
         artistLayer.font = Aqua.font(11)
         artistLayer.fontSize = 11
-        artistLayer.foregroundColor = NSColor(white: 0.72, alpha: 1).cgColor
+        artistLayer.foregroundColor = Theme.ink(0.72).cgColor
 
         scrubber.onChange = { [weak self] fraction in
             guard let self = self, !self.albums.isEmpty else { return }
@@ -188,7 +188,7 @@ final class CoverFlowView: NSView, NSDraggingSource {
         image.name = "image"
         image.contentsGravity = .resizeAspectFill
         image.masksToBounds = true
-        image.backgroundColor = NSColor(white: 0.16, alpha: 1).cgColor
+        image.backgroundColor = Theme.ink(0.16).cgColor
         image.borderColor = NSColor(white: 1, alpha: 0.08).cgColor
         image.borderWidth = 1
         container.addSublayer(image)
@@ -197,7 +197,7 @@ final class CoverFlowView: NSView, NSDraggingSource {
         reflection.name = "reflection"
         reflection.contentsGravity = .resizeAspectFill
         reflection.masksToBounds = true
-        reflection.backgroundColor = NSColor(white: 0.16, alpha: 1).cgColor
+        reflection.backgroundColor = Theme.ink(0.16).cgColor
         reflection.opacity = 0.42
         let mask = CAGradientLayer()
         mask.colors = [NSColor.black.withAlphaComponent(0.9).cgColor, NSColor.clear.cgColor]
@@ -339,7 +339,7 @@ final class CoverFlowView: NSView, NSDraggingSource {
         let side = 256
         let img = NSImage(size: NSSize(width: side, height: side))
         img.lockFocus()
-        NSGradient(starting: NSColor(white: 0.30, alpha: 1), ending: NSColor(white: 0.17, alpha: 1))!
+        NSGradient(starting: Theme.ink(0.30), ending: Theme.ink(0.17))!
             .draw(in: NSRect(x: 0, y: 0, width: side, height: side), angle: -90)
         NSColor(white: 1, alpha: 0.10).setStroke()
         let c = CGFloat(side) / 2
@@ -456,7 +456,7 @@ final class CoverFlowView: NSView, NSDraggingSource {
         let dragItem = NSDraggingItem(pasteboardWriter: item)
         let size = NSSize(width: 72, height: 72)
         let image = dragImage(for: start.index) ?? NSImage(size: size, flipped: false) { r in
-            NSColor(white: 0.82, alpha: 1).setFill()
+            Theme.ink(0.82).setFill()
             r.fill()
             return true
         }
@@ -530,7 +530,7 @@ final class CoverFlowScrubber: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         // End arrows, as iTunes had.
-        NSColor(white: 0.55, alpha: 1).setFill()
+        Theme.ink(0.55).setFill()
         let cy = bounds.midY
         let l = NSBezierPath()
         l.move(to: NSPoint(x: 13, y: cy + 4)); l.line(to: NSPoint(x: 6, y: cy)); l.line(to: NSPoint(x: 13, y: cy - 4)); l.close(); l.fill()
@@ -538,17 +538,17 @@ final class CoverFlowScrubber: NSView {
         r.move(to: NSPoint(x: bounds.width - 13, y: cy + 4)); r.line(to: NSPoint(x: bounds.width - 6, y: cy)); r.line(to: NSPoint(x: bounds.width - 13, y: cy - 4)); r.close(); r.fill()
         let t = trackRect
         let groove = NSBezierPath(roundedRect: t, xRadius: 4, yRadius: 4)
-        NSColor(white: 0.10, alpha: 1).setFill()
+        Theme.ink(0.10).setFill()
         groove.fill()
-        NSColor(white: 0.30, alpha: 1).setStroke()
+        Theme.ink(0.30).setStroke()
         NSBezierPath(roundedRect: t.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4).stroke()
 
         let x = t.minX + (t.width - knobW) * fraction
         let k = NSRect(x: x, y: t.minY - 1, width: knobW, height: t.height + 2)
         let knob = NSBezierPath(roundedRect: k.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5)
-        NSGradient(starting: NSColor(white: 0.62, alpha: 1), ending: NSColor(white: 0.38, alpha: 1))!
+        NSGradient(starting: Theme.ink(0.62), ending: Theme.ink(0.38))!
             .draw(in: knob, angle: -90)
-        NSColor(white: 0.20, alpha: 1).setStroke()
+        Theme.ink(0.20).setStroke()
         knob.stroke()
         // Grip lines
         NSColor(white: 0.25, alpha: 0.9).setFill()
@@ -581,11 +581,11 @@ final class CoverFlowCornerButton: NSView {
         let p = NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4)
         NSGradient(starting: NSColor(white: pressed ? 0.20 : 0.34, alpha: 1), ending: NSColor(white: pressed ? 0.10 : 0.16, alpha: 1))!
             .draw(in: p, angle: -90)
-        NSColor(white: 0.55, alpha: 1).setStroke()
+        Theme.ink(0.55).setStroke()
         p.lineWidth = 1
         p.stroke()
-        NSColor(white: 0.92, alpha: 1).setStroke()
-        NSColor(white: 0.92, alpha: 1).setFill()
+        Theme.ink(0.92).setStroke()
+        Theme.ink(0.92).setFill()
         let c = NSPoint(x: bounds.midX, y: bounds.midY)
         for (dx, dy) in [(-1.0, -1.0), (1.0, 1.0)] as [(CGFloat, CGFloat)] {
             let tip = NSPoint(x: c.x + dx * 6, y: c.y + dy * 5)

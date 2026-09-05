@@ -63,7 +63,7 @@ final class AquaRoundButton: NSView {
         shadow.shadowBlurRadius = 1.5
         shadow.shadowOffset = NSSize(width: 0, height: -1)
         shadow.set()
-        NSColor(white: 0.75, alpha: 1).setFill()
+        Theme.ink(0.75).setFill()
         circle.fill()
         NSGraphicsContext.restoreGraphicsState()
 
@@ -88,7 +88,7 @@ final class AquaRoundButton: NSView {
         inner.stroke()
         NSGraphicsContext.restoreGraphicsState()
 
-        NSColor(white: 0.42, alpha: 1).setStroke()
+        Theme.ink(0.42).setStroke()
         circle.lineWidth = 1
         circle.stroke()
 
@@ -96,7 +96,7 @@ final class AquaRoundButton: NSView {
     }
 
     private func drawGlyph(in r: NSRect, pressed: Bool) {
-        let color = isEnabled ? (Theme.isModern ? Theme.text : Aqua.glyph) : NSColor(white: 0.6, alpha: 1)
+        let color = isEnabled ? (Theme.isModern ? Theme.text : Aqua.glyph) : Theme.ink(0.6)
         color.setFill()
         let cx = r.midX, cy = r.midY
         let s = diameter * 0.36   // glyph height
@@ -202,7 +202,7 @@ final class AquaVolumeSlider: NSView {
             sh.shadowBlurRadius = 2
             sh.shadowOffset = NSSize(width: 0, height: -0.5)
             sh.set()
-            NSColor.white.setFill()
+            Theme.raised.setFill()
             k.fill()
             NSGraphicsContext.restoreGraphicsState()
             Theme.hairline.setStroke()
@@ -213,8 +213,8 @@ final class AquaVolumeSlider: NSView {
         }
         // Groove
         let groove = NSBezierPath(roundedRect: t, xRadius: 2, yRadius: 2)
-        NSGradient(starting: NSColor(white: 0.62, alpha: 1), ending: NSColor(white: 0.80, alpha: 1))!.draw(in: groove, angle: -90)
-        NSColor(white: 0.48, alpha: 1).setStroke()
+        NSGradient(starting: Theme.ink(0.62), ending: Theme.ink(0.80))!.draw(in: groove, angle: -90)
+        Theme.ink(0.48).setStroke()
         groove.lineWidth = 1
         NSBezierPath(roundedRect: t.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2).stroke()
         NSColor(white: 1, alpha: 0.5).setFill()
@@ -230,11 +230,11 @@ final class AquaVolumeSlider: NSView {
         sh.shadowBlurRadius = 1.5
         sh.shadowOffset = NSSize(width: 0, height: -1)
         sh.set()
-        NSColor(white: 0.8, alpha: 1).setFill()
+        Theme.ink(0.8).setFill()
         k.fill()
         NSGraphicsContext.restoreGraphicsState()
-        NSGradient(starting: NSColor(white: 0.98, alpha: 1), ending: NSColor(white: 0.78, alpha: 1))!.draw(in: k, angle: -90)
-        NSColor(white: 0.42, alpha: 1).setStroke()
+        NSGradient(starting: Theme.ink(0.98), ending: Theme.ink(0.78))!.draw(in: k, angle: -90)
+        Theme.ink(0.42).setStroke()
         k.lineWidth = 1
         k.stroke()
 
@@ -243,7 +243,7 @@ final class AquaVolumeSlider: NSView {
     }
 
     private func drawSpeaker(at origin: NSPoint, loud: Bool) {
-        let color = Theme.isModern ? Theme.secondaryText : NSColor(white: 0.35, alpha: 1)
+        let color = Theme.isModern ? Theme.secondaryText : Theme.ink(0.35)
         let body = NSBezierPath()
         let x = origin.x, y = origin.y
         body.move(to: NSPoint(x: x, y: y - 2))

@@ -5,7 +5,7 @@ final class AquaRowView: NSTableRowView {
     enum SelectionStyle { case blue, sidebar }
     var striped = false
     var alternate = false
-    var plainBackground: NSColor = .white
+    var plainBackground: NSColor = Theme.paper
     var selectionStyle: SelectionStyle = .blue
 
     override var interiorBackgroundStyle: NSView.BackgroundStyle {
@@ -24,8 +24,8 @@ final class AquaRowView: NSTableRowView {
         if Theme.isModern {
             let pill = Theme.selectionPill(in: bounds)
             switch selectionStyle {
-            case .blue: (isEmphasized ? Theme.accent : NSColor(white: 0, alpha: 0.10)).setFill()
-            case .sidebar: NSColor(white: 0, alpha: isEmphasized ? 0.10 : 0.07).setFill()
+            case .blue: (isEmphasized ? Theme.accent : Theme.controlFillPressed).setFill()
+            case .sidebar: (isEmphasized ? Theme.controlFillPressed : Theme.controlFill).setFill()
             }
             pill.fill()
             return
@@ -37,10 +37,10 @@ final class AquaRowView: NSTableRowView {
             NSGradient(starting: top, ending: bottom)!.draw(in: bounds, angle: -90)
         case .sidebar:
             // iTunes 10's sidebar bar: the blue gradient with a darker top line.
-            let top = isEmphasized ? NSColor(srgbRed: 0.40, green: 0.58, blue: 0.87, alpha: 1) : NSColor(white: 0.70, alpha: 1)
-            let bottom = isEmphasized ? NSColor(srgbRed: 0.18, green: 0.39, blue: 0.78, alpha: 1) : NSColor(white: 0.56, alpha: 1)
+            let top = isEmphasized ? NSColor(srgbRed: 0.40, green: 0.58, blue: 0.87, alpha: 1) : Theme.ink(0.70)
+            let bottom = isEmphasized ? NSColor(srgbRed: 0.18, green: 0.39, blue: 0.78, alpha: 1) : Theme.ink(0.56)
             NSGradient(starting: top, ending: bottom)!.draw(in: bounds, angle: -90)
-            (isEmphasized ? NSColor(srgbRed: 0.14, green: 0.32, blue: 0.68, alpha: 1) : NSColor(white: 0.48, alpha: 1)).setFill()
+            (isEmphasized ? NSColor(srgbRed: 0.14, green: 0.32, blue: 0.68, alpha: 1) : Theme.ink(0.48)).setFill()
             NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
         }
     }
@@ -67,7 +67,7 @@ final class AquaHeaderCell: NSTableHeaderCell {
         let ascending = sortDirection(controlView)
         let sorted = ascending != nil
         if Theme.isModern {
-            NSColor(white: 0.985, alpha: 1).setFill()
+            Theme.ink(0.985).setFill()
             cellFrame.fill()
             Theme.hairline.setFill()
             NSRect(x: cellFrame.minX, y: cellFrame.minY, width: cellFrame.width, height: 1).fill()
@@ -78,12 +78,12 @@ final class AquaHeaderCell: NSTableHeaderCell {
             }
             return
         }
-        let top = sorted ? NSColor(srgbRed: 0.85, green: 0.90, blue: 0.97, alpha: 1) : NSColor(white: 1.0, alpha: 1)
-        let bottom = sorted ? NSColor(srgbRed: 0.72, green: 0.80, blue: 0.93, alpha: 1) : NSColor(white: 0.87, alpha: 1)
+        let top = sorted ? NSColor(srgbRed: 0.85, green: 0.90, blue: 0.97, alpha: 1) : Theme.ink(1.0)
+        let bottom = sorted ? NSColor(srgbRed: 0.72, green: 0.80, blue: 0.93, alpha: 1) : Theme.ink(0.87)
         NSGradient(starting: top, ending: bottom)!.draw(in: cellFrame, angle: -90)
-        NSColor(white: 0.60, alpha: 1).setFill()
+        Theme.ink(0.60).setFill()
         NSRect(x: cellFrame.minX, y: cellFrame.minY, width: cellFrame.width, height: 1).fill()
-        NSColor(white: 0.70, alpha: 1).setFill()
+        Theme.ink(0.70).setFill()
         NSRect(x: cellFrame.maxX - 1, y: cellFrame.minY + 1, width: 1, height: cellFrame.height - 1).fill()
         drawInterior(withFrame: cellFrame, in: controlView)
         // AppKit only calls drawSortIndicator when the table has been given an
@@ -130,7 +130,7 @@ final class AquaHeaderCell: NSTableHeaderCell {
         tri.line(to: NSPoint(x: x + size, y: baseY))
         tri.line(to: NSPoint(x: x + size / 2, y: apexY))
         tri.close()
-        NSColor(white: 0.25, alpha: 1).setFill()
+        Theme.ink(0.25).setFill()
         tri.fill()
     }
 }
@@ -142,7 +142,7 @@ final class AquaHeaderView: NSTableHeaderView {
 
 enum AquaTables {
     /// Applies the shared look to a table. Callers still supply row views.
-    static func style(_ table: NSTableView, rowHeight: CGFloat = 18, background: NSColor = .white, header: Bool) {
+    static func style(_ table: NSTableView, rowHeight: CGFloat = 18, background: NSColor = Theme.paper, header: Bool) {
         table.style = .plain
         table.rowHeight = rowHeight
         table.intercellSpacing = NSSize(width: 3, height: 0)
@@ -202,7 +202,7 @@ enum AquaTables {
         return cell
     }
 
-    static func rowView(_ table: NSTableView, row: Int, striped: Bool, background: NSColor = .white,
+    static func rowView(_ table: NSTableView, row: Int, striped: Bool, background: NSColor = Theme.paper,
                         selection: AquaRowView.SelectionStyle = .blue) -> AquaRowView {
         let ident = NSUserInterfaceItemIdentifier("row")
         let v = (table.makeView(withIdentifier: ident, owner: nil) as? AquaRowView) ?? AquaRowView()

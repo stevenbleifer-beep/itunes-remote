@@ -66,7 +66,7 @@ final class DevicePageView: NSView {
             addSubview(v)
         }
         statusLabel.font = Aqua.font(11)
-        statusLabel.textColor = NSColor(white: 0.35, alpha: 1)
+        statusLabel.textColor = Theme.ink(0.35)
         statusLabel.lineBreakMode = .byTruncatingTail
         syncButton.target = self
         syncButton.action = #selector(sync(_:))
@@ -165,14 +165,14 @@ final class DevicePageView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(white: 0.96, alpha: 1).setFill()
+        Theme.ink(0.96).setFill()
         bounds.fill()
         // The sidebar's own ground, and the hairline that separates it. It
         // stops below the navigation strip, which spans the whole width.
         let top = bounds.maxY - 36
         Aqua.sidebarBackground.setFill()
         NSRect(x: 0, y: 0, width: 210, height: top).fill()
-        NSColor(white: 0.66, alpha: 1).setFill()
+        Theme.ink(0.66).setFill()
         NSRect(x: 210, y: 0, width: 1, height: top).fill()
     }
 
@@ -496,25 +496,25 @@ final class DeviceHeaderView: NSView {
         }
         let left = box.maxX + 10
         (title as NSString).draw(at: NSPoint(x: left, y: bounds.maxY - 30), withAttributes: [
-            .font: Aqua.font(13, bold: true), .foregroundColor: NSColor(white: 0.12, alpha: 1),
+            .font: Aqua.font(13, bold: true), .foregroundColor: Theme.ink(0.12),
         ])
         if !badge.isEmpty {
             let attrs: [NSAttributedString.Key: Any] = [
-                .font: Aqua.font(10), .foregroundColor: NSColor(white: 0.30, alpha: 1),
+                .font: Aqua.font(10), .foregroundColor: Theme.ink(0.30),
             ]
             let size = (badge as NSString).size(withAttributes: attrs)
             let r = NSRect(x: left, y: bounds.maxY - 50, width: size.width + 12, height: 15)
             let pill = NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3)
             NSColor(white: 1, alpha: 0.75).setFill()
             pill.fill()
-            NSColor(white: 0.62, alpha: 1).setStroke()
+            Theme.ink(0.62).setStroke()
             pill.lineWidth = 1
             pill.stroke()
             (badge as NSString).draw(at: NSPoint(x: r.minX + 6, y: r.minY + 1), withAttributes: attrs)
         }
         guard canEject else { return }
         let e = ejectRect
-        let color = NSColor(white: 0.28, alpha: 1)
+        let color = Theme.ink(0.28)
         color.setFill()
         let t = NSBezierPath()
         t.move(to: NSPoint(x: e.midX - 6, y: e.midY - 1))
@@ -581,7 +581,7 @@ final class DeviceSummaryView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         var y = bounds.maxY
         let titleAttrs: [NSAttributedString.Key: Any] = [
-            .font: Aqua.font(19), .foregroundColor: NSColor(white: 0.10, alpha: 1),
+            .font: Aqua.font(19), .foregroundColor: Theme.ink(0.10),
         ]
         y -= 26
         (title as NSString).draw(at: NSPoint(x: 0, y: y), withAttributes: titleAttrs)
@@ -592,10 +592,10 @@ final class DeviceSummaryView: NSView {
         let box = NSRect(x: 0, y: y - boxH, width: bounds.width, height: boxH)
         DeviceSummaryView.drawBox(box)
         let labelAttrs: [NSAttributedString.Key: Any] = [
-            .font: Aqua.font(12, bold: true), .foregroundColor: NSColor(white: 0.20, alpha: 1),
+            .font: Aqua.font(12, bold: true), .foregroundColor: Theme.ink(0.20),
         ]
         let valueAttrs: [NSAttributedString.Key: Any] = [
-            .font: Aqua.font(12), .foregroundColor: NSColor(white: 0.20, alpha: 1),
+            .font: Aqua.font(12), .foregroundColor: Theme.ink(0.20),
         ]
         var fy = box.maxY - 28
         for (name, value) in left {
@@ -611,14 +611,14 @@ final class DeviceSummaryView: NSView {
             para.lineBreakMode = .byWordWrapping
             ("Read from iTunes' own record of this device. iTunes checks for iPod software updates itself." as NSString)
                 .draw(in: NSRect(x: rx, y: box.minY + 10, width: box.maxX - rx - 18, height: box.maxY - 52 - box.minY),
-                      withAttributes: [.font: Aqua.font(11), .foregroundColor: NSColor(white: 0.35, alpha: 1),
+                      withAttributes: [.font: Aqua.font(11), .foregroundColor: Theme.ink(0.35),
                                        .paragraphStyle: para])
         }
 
         // Options box.
         y = box.minY - 24
         (optionsTitle as NSString).draw(at: NSPoint(x: 0, y: y), withAttributes: [
-            .font: Aqua.font(15), .foregroundColor: NSColor(white: 0.12, alpha: 1),
+            .font: Aqua.font(15), .foregroundColor: Theme.ink(0.12),
         ])
         y -= 10
         let noteHeight = DeviceSummaryView.height(of: note, width: bounds.width - 40)
@@ -627,12 +627,12 @@ final class DeviceSummaryView: NSView {
         DeviceSummaryView.drawBox(obox)
         var oy = obox.maxY - 28
         let dimAttrs: [NSAttributedString.Key: Any] = [
-            .font: Aqua.font(11), .foregroundColor: NSColor(white: 0.50, alpha: 1),
+            .font: Aqua.font(11), .foregroundColor: Theme.ink(0.50),
         ]
         for (name, value, detail) in options {
             DeviceSummaryView.drawMark(at: NSPoint(x: obox.minX + 20, y: oy + 5), value: value)
             let attrs = value == nil ? [NSAttributedString.Key.font: Aqua.font(12),
-                                        .foregroundColor: NSColor(white: 0.45, alpha: 1)] : valueAttrs
+                                        .foregroundColor: Theme.ink(0.45)] : valueAttrs
             (name as NSString).draw(at: NSPoint(x: obox.minX + 38, y: oy), withAttributes: attrs)
             if !detail.isEmpty {
                 let w = (name as NSString).size(withAttributes: attrs).width
@@ -646,7 +646,7 @@ final class DeviceSummaryView: NSView {
         (note as NSString).draw(in: NSRect(x: obox.minX + 20, y: obox.minY + 12,
                                            width: obox.width - 40, height: noteHeight),
                                 withAttributes: [.font: Aqua.font(11),
-                                                 .foregroundColor: NSColor(white: 0.40, alpha: 1),
+                                                 .foregroundColor: Theme.ink(0.40),
                                                  .paragraphStyle: para])
     }
 
@@ -664,9 +664,9 @@ final class DeviceSummaryView: NSView {
 
     static func drawBox(_ r: NSRect) {
         let box = NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5)
-        NSColor(white: 0.925, alpha: 1).setFill()
+        Theme.ink(0.925).setFill()
         box.fill()
-        NSColor(white: 0.78, alpha: 1).setStroke()
+        Theme.ink(0.78).setStroke()
         box.lineWidth = 1
         box.stroke()
     }
@@ -676,7 +676,7 @@ final class DeviceSummaryView: NSView {
     /// and never sets it, so it is drawn rather than being a control.
     static func drawMark(at p: NSPoint, value: Bool?) {
         guard let value = value else {
-            NSColor(white: 0.55, alpha: 1).setFill()
+            Theme.ink(0.55).setFill()
             NSRect(x: p.x - 5, y: p.y - 1, width: 10, height: 1.6).fill()
             return
         }
@@ -688,7 +688,7 @@ final class DeviceSummaryView: NSView {
         let path = NSBezierPath(roundedRect: box.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2)
         NSColor(white: on ? 0.99 : 0.94, alpha: 1).setFill()
         path.fill()
-        NSColor(white: 0.55, alpha: 1).setStroke()
+        Theme.ink(0.55).setStroke()
         path.lineWidth = 1
         path.stroke()
         guard on else { return }
@@ -708,21 +708,21 @@ final class DeviceSummaryView: NSView {
         let w = rect.width * 0.62
         let body = NSRect(x: rect.midX - w / 2, y: rect.minY, width: w, height: rect.height)
         let path = NSBezierPath(roundedRect: body, xRadius: w * 0.10, yRadius: w * 0.10)
-        NSGradient(starting: NSColor(white: 0.32, alpha: 1), ending: NSColor(white: 0.14, alpha: 1))!
+        NSGradient(starting: Theme.ink(0.32), ending: Theme.ink(0.14))!
             .draw(in: path, angle: -90)
-        NSColor(white: 0.08, alpha: 1).setStroke()
+        Theme.ink(0.08).setStroke()
         path.lineWidth = 1
         path.stroke()
         let screen = NSRect(x: body.minX + w * 0.11, y: body.midY + body.height * 0.06,
                             width: w * 0.78, height: body.height * 0.36)
-        NSColor(white: 0.06, alpha: 1).setFill()
+        Theme.ink(0.06).setFill()
         NSBezierPath(roundedRect: screen, xRadius: 2, yRadius: 2).fill()
         let wheelR = w * 0.34
         let cy = body.minY + body.height * 0.24
-        NSColor(white: 0.22, alpha: 1).setFill()
+        Theme.ink(0.22).setFill()
         NSBezierPath(ovalIn: NSRect(x: body.midX - wheelR, y: cy - wheelR, width: wheelR * 2, height: wheelR * 2)).fill()
         let hubR = wheelR * 0.40
-        NSColor(white: 0.34, alpha: 1).setFill()
+        Theme.ink(0.34).setFill()
         NSBezierPath(ovalIn: NSRect(x: body.midX - hubR, y: cy - hubR, width: hubR * 2, height: hubR * 2)).fill()
     }
 }
@@ -752,7 +752,7 @@ final class CapacityBarView: NSView {
         "Tones": NSColor(srgbRed: 0.55, green: 0.78, blue: 0.60, alpha: 1),
     ]
     private static let otherColor = NSColor(srgbRed: 0.96, green: 0.79, blue: 0.26, alpha: 1)
-    private static let freeColor = NSColor(white: 0.91, alpha: 1)
+    private static let freeColor = Theme.ink(0.91)
 
     func show(_ d: DeviceDetail) {
         capacity = d.capacity ?? 0
@@ -797,7 +797,7 @@ final class CapacityBarView: NSView {
             if !text.isEmpty {
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: Aqua.font(11),
-                    .foregroundColor: band.dark ? NSColor(white: 0.30, alpha: 1) : NSColor(white: 0.16, alpha: 1),
+                    .foregroundColor: band.dark ? Theme.ink(0.30) : Theme.ink(0.16),
                 ]
                 let size = (text as NSString).size(withAttributes: attrs)
                 if size.width + 12 < w {
@@ -818,7 +818,7 @@ final class CapacityBarView: NSView {
         NSGradient(starting: NSColor(white: 1, alpha: 0.30), ending: NSColor(white: 1, alpha: 0.0))!
             .draw(in: NSRect(x: bar.minX, y: bar.midY, width: bar.width, height: bar.height / 2), angle: -90)
         NSGraphicsContext.restoreGraphicsState()
-        NSColor(white: 0.58, alpha: 1).setStroke()
+        Theme.ink(0.58).setStroke()
         clip.lineWidth = 1
         clip.stroke()
     }
@@ -940,9 +940,9 @@ final class DeviceNavBar: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSGradient(starting: NSColor(white: 0.94, alpha: 1), ending: NSColor(white: 0.86, alpha: 1))!
+        NSGradient(starting: Theme.ink(0.94), ending: Theme.ink(0.86))!
             .draw(in: bounds, angle: -90)
-        NSColor(white: 0.68, alpha: 1).setFill()
+        Theme.ink(0.68).setFill()
         NSRect(x: 0, y: 0, width: bounds.width, height: 1).fill()
 
         for i in 0...1 {
@@ -950,16 +950,16 @@ final class DeviceNavBar: NSView {
             let enabled = i == 0 ? canGoBack : canGoForward
             let path = NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: 3, yRadius: 3)
             if pressed == i {
-                NSGradient(starting: NSColor(white: 0.66, alpha: 1), ending: NSColor(white: 0.78, alpha: 1))!
+                NSGradient(starting: Theme.ink(0.66), ending: Theme.ink(0.78))!
                     .draw(in: path, angle: -90)
             } else {
-                NSGradient(starting: NSColor(white: 0.99, alpha: 1), ending: NSColor(white: 0.87, alpha: 1))!
+                NSGradient(starting: Theme.ink(0.99), ending: Theme.ink(0.87))!
                     .draw(in: path, angle: -90)
             }
-            NSColor(white: 0.52, alpha: 1).setStroke()
+            Theme.ink(0.52).setStroke()
             path.lineWidth = 1
             path.stroke()
-            (enabled ? NSColor(white: 0.20, alpha: 1) : NSColor(white: 0.66, alpha: 1)).setFill()
+            (enabled ? Theme.ink(0.20) : Theme.ink(0.66)).setFill()
             let a = NSBezierPath()
             let cx = r.midX, cy = r.midY, d: CGFloat = i == 0 ? 1 : -1
             a.move(to: NSPoint(x: cx + 2.5 * d, y: cy + 4.5))
@@ -1083,9 +1083,9 @@ final class DeviceMusicView: NSView {
         heading.font = Aqua.font(19)
         heading.stringValue = "Sync Music"
         count.font = Aqua.font(15)
-        count.textColor = NSColor(white: 0.35, alpha: 1)
+        count.textColor = Theme.ink(0.35)
         caveat.font = Aqua.font(11)
-        caveat.textColor = NSColor(white: 0.42, alpha: 1)
+        caveat.textColor = Theme.ink(0.42)
         caveat.lineBreakMode = .byWordWrapping
         // Wrap to whatever width there is, and never demand width of its own.
         // Capped at two lines, this paragraph asked for 2259 points to fit,
@@ -1265,10 +1265,10 @@ final class SyncOptionsBox: NSView {
     override func draw(_ dirtyRect: NSRect) {
         DeviceSummaryView.drawBox(bounds)
         let text: [NSAttributedString.Key: Any] = [
-            .font: Aqua.font(12), .foregroundColor: NSColor(white: 0.16, alpha: 1),
+            .font: Aqua.font(12), .foregroundColor: Theme.ink(0.16),
         ]
         let dim: [NSAttributedString.Key: Any] = [
-            .font: Aqua.font(12), .foregroundColor: NSColor(white: 0.50, alpha: 1),
+            .font: Aqua.font(12), .foregroundColor: Theme.ink(0.50),
         ]
         // One rhythm for all four rows, each mark centred on its text line.
         let rowH: CGFloat = 21
@@ -1303,9 +1303,9 @@ final class SyncOptionsBox: NSView {
     static func disabledCheck(at p: NSPoint) {
         let r = NSRect(x: p.x - 6, y: p.y - 6, width: 12, height: 12)
         let box = NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2)
-        NSColor(white: 0.93, alpha: 1).setFill()
+        Theme.ink(0.93).setFill()
         box.fill()
-        NSColor(white: 0.68, alpha: 1).setStroke()
+        Theme.ink(0.68).setStroke()
         box.lineWidth = 1
         box.stroke()
     }
@@ -1315,7 +1315,7 @@ final class SyncOptionsBox: NSView {
         let ring = NSBezierPath(ovalIn: r.insetBy(dx: 0.5, dy: 0.5))
         NSColor(white: on ? 0.99 : 0.95, alpha: 1).setFill()
         ring.fill()
-        NSColor(white: 0.55, alpha: 1).setStroke()
+        Theme.ink(0.55).setStroke()
         ring.lineWidth = 1
         ring.stroke()
         guard on else { return }
@@ -1341,7 +1341,7 @@ final class CheckListView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         super.init(frame: .zero)
         titleLabel.stringValue = title
         titleLabel.font = Aqua.font(15)
-        titleLabel.textColor = NSColor(white: 0.12, alpha: 1)
+        titleLabel.textColor = Theme.ink(0.12)
         table.headerView = nil
         table.rowHeight = 20
         table.usesAlternatingRowBackgroundColors = true
@@ -1421,12 +1421,12 @@ final class CheckRowView: NSView {
             in: NSRect(x: 26, y: bounds.midY - 8, width: max(0, bounds.width - 26 - dotRoom), height: 16),
             withAttributes: [
                 .font: Aqua.font(12),
-                .foregroundColor: NSColor(white: 0.12, alpha: 1),
+                .foregroundColor: Theme.ink(0.12),
             ])
         // Already on the iPod. Kept separate from the tick: the tick says what
         // should be there after the next sync, this says what is there now.
         if row.onDevice {
-            NSColor(white: 0.62, alpha: 1).setFill()
+            Theme.ink(0.62).setFill()
             NSBezierPath(ovalIn: NSRect(x: bounds.maxX - 11, y: bounds.midY - 2.5,
                                         width: 5, height: 5)).fill()
         }

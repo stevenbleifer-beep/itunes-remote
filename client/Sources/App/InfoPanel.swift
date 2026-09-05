@@ -73,8 +73,8 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
         let top: CGFloat = hasLyrics ? 76 : 46
         let height = top + CGFloat(InfoPanel.rows.count) * rowHeight + 34 + 52
         let content = ChromeView(frame: NSRect(x: 0, y: 0, width: 640, height: height))
-        content.gradientTop = NSColor(white: 0.93, alpha: 1)
-        content.gradientBottom = NSColor(white: 0.88, alpha: 1)
+        content.gradientTop = Theme.ink(0.93)
+        content.gradientBottom = Theme.ink(0.88)
         panel = NSPanel(contentRect: content.frame,
                         styleMask: [.titled], backing: .buffered, defer: false)
         panel.contentView = content
@@ -184,7 +184,7 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
         infoViews.append(compilation)
 
         statusLabel.font = Aqua.font(11)
-        statusLabel.textColor = NSColor(white: 0.35, alpha: 1)
+        statusLabel.textColor = Theme.ink(0.35)
         statusLabel.frame = NSRect(x: 20, y: 20, width: 300, height: 16)
         content.addSubview(statusLabel)
 
@@ -228,7 +228,7 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
                 self.lyricsView.isEditable = true
             } else {
                 self.lyricsView.string = "The lyrics could not be read from iTunes."
-                self.lyricsView.textColor = NSColor(white: 0.45, alpha: 1)
+                self.lyricsView.textColor = Theme.ink(0.45)
             }
         }
     }
@@ -282,7 +282,7 @@ final class InfoPanel: NSObject, NSTextFieldDelegate {
         rep.size = size
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        NSColor.white.setFill()
+        Theme.paper.setFill()
         NSRect(origin: .zero, size: size).fill()
         NSGraphicsContext.current?.imageInterpolation = .high
         image.draw(in: NSRect(origin: .zero, size: size), from: .zero, operation: .sourceOver, fraction: 1)
@@ -422,20 +422,20 @@ final class ArtworkWell: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let box = bounds.insetBy(dx: 1, dy: 1)
-        NSColor.white.setFill()
+        Theme.paper.setFill()
         box.fill()
         if let img = image {
             let side = min(box.width, box.height)
             let r = NSRect(x: box.midX - side / 2, y: box.midY - side / 2, width: side, height: side)
             img.draw(in: r, from: .zero, operation: .sourceOver, fraction: 1)
         } else {
-            NSGradient(starting: NSColor(white: 0.92, alpha: 1), ending: NSColor(white: 0.84, alpha: 1))!.draw(in: box, angle: 90)
-            let attrs: [NSAttributedString.Key: Any] = [.font: Aqua.font(11), .foregroundColor: NSColor(white: 0.45, alpha: 1)]
+            NSGradient(starting: Theme.ink(0.92), ending: Theme.ink(0.84))!.draw(in: box, angle: 90)
+            let attrs: [NSAttributedString.Key: Any] = [.font: Aqua.font(11), .foregroundColor: Theme.ink(0.45)]
             let text = "No Artwork" as NSString
             let size = text.size(withAttributes: attrs)
             text.draw(at: NSPoint(x: box.midX - size.width / 2, y: box.midY - size.height / 2), withAttributes: attrs)
         }
-        (highlighted ? Aqua.accent : NSColor(white: 0.55, alpha: 1)).setStroke()
+        (highlighted ? Aqua.accent : Theme.ink(0.55)).setStroke()
         let edge = NSBezierPath(rect: bounds.insetBy(dx: 0.5, dy: 0.5))
         edge.lineWidth = highlighted ? 2 : 1
         edge.stroke()
@@ -492,27 +492,27 @@ final class InfoTabStrip: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let box = bounds.insetBy(dx: 0.5, dy: 0.5)
         let shape = NSBezierPath(roundedRect: box, xRadius: 4, yRadius: 4)
-        NSGradient(starting: NSColor(white: 0.99, alpha: 1), ending: NSColor(white: 0.90, alpha: 1))!.draw(in: shape, angle: 90)
+        NSGradient(starting: Theme.ink(0.99), ending: Theme.ink(0.90))!.draw(in: shape, angle: 90)
         for (i, title) in titles.enumerated() {
             let r = NSRect(x: 1 + CGFloat(i) * segmentWidth, y: 1, width: segmentWidth, height: bounds.height - 2)
             if i == selectedIndex {
                 NSGraphicsContext.saveGraphicsState()
                 shape.addClip()
-                NSGradient(starting: NSColor(white: 0.72, alpha: 1), ending: NSColor(white: 0.80, alpha: 1))!.draw(in: r, angle: 90)
+                NSGradient(starting: Theme.ink(0.72), ending: Theme.ink(0.80))!.draw(in: r, angle: 90)
                 NSGraphicsContext.restoreGraphicsState()
             }
             if i > 0 {
-                NSColor(white: 0.6, alpha: 1).setFill()
+                Theme.ink(0.6).setFill()
                 NSRect(x: r.minX, y: 1, width: 1, height: bounds.height - 2).fill()
             }
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: Aqua.font(11, bold: i == selectedIndex),
-                .foregroundColor: i == selectedIndex ? NSColor.white : NSColor(white: 0.2, alpha: 1),
+                .foregroundColor: i == selectedIndex ? NSColor.white : Theme.ink(0.2),
             ]
             let size = (title as NSString).size(withAttributes: attrs)
             (title as NSString).draw(at: NSPoint(x: r.midX - size.width / 2, y: r.midY - size.height / 2), withAttributes: attrs)
         }
-        NSColor(white: 0.55, alpha: 1).setStroke()
+        Theme.ink(0.55).setStroke()
         shape.lineWidth = 1
         shape.stroke()
     }

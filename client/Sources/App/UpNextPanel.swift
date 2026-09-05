@@ -40,8 +40,8 @@ final class UpNextPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
     override init() {
         let content = ChromeView(frame: NSRect(x: 0, y: 0, width: 420, height: 460))
-        content.gradientTop = NSColor(white: 0.93, alpha: 1)
-        content.gradientBottom = NSColor(white: 0.88, alpha: 1)
+        content.gradientTop = Theme.ink(0.93)
+        content.gradientBottom = Theme.ink(0.88)
         panel = UpNextWindow(contentRect: content.frame,
                              styleMask: [.titled, .closable, .resizable, .utilityWindow],
                              backing: .buffered, defer: false)
@@ -76,7 +76,7 @@ final class UpNextPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         content.addSubview(scroll)
 
         emptyLabel.font = Aqua.font(11)
-        emptyLabel.textColor = NSColor(white: 0.45, alpha: 1)
+        emptyLabel.textColor = Theme.ink(0.45)
         emptyLabel.frame = NSRect(x: 14, y: 16, width: 300, height: 16)
         emptyLabel.autoresizingMask = [.width]
         content.addSubview(emptyLabel)
@@ -144,7 +144,7 @@ final class UpNextPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         let text = t.name + "  —  " + t.artist
         return NSAttributedString(string: text, attributes: [
             .font: Aqua.font(11),
-            .foregroundColor: dim ? NSColor(white: 0.45, alpha: 1) : NSColor.controlTextColor,
+            .foregroundColor: dim ? Theme.ink(0.45) : NSColor.controlTextColor,
         ])
     }
 
@@ -159,7 +159,7 @@ final class UpNextPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        AquaTables.rowView(tableView, row: row, striped: true, background: .white, selection: .blue)
+        AquaTables.rowView(tableView, row: row, striped: true, background: Theme.paper, selection: .blue)
     }
 
     // MARK: Reordering

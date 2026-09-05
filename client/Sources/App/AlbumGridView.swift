@@ -80,7 +80,7 @@ final class AlbumGridView: NSView, NSDraggingSource {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.white.setFill()
+        Theme.paper.setFill()
         dirtyRect.fill()
         guard !albums.isEmpty, columns > 0 else { return }
         let firstRow = max(0, Int((dirtyRect.minY - 8) / cellH))
@@ -118,24 +118,24 @@ final class AlbumGridView: NSView, NSDraggingSource {
                 sh.shadowBlurRadius = 3
                 sh.shadowOffset = NSSize(width: 0, height: 2)
                 sh.set()
-                NSColor.white.setFill()
+                Theme.paper.setFill()
                 NSBezierPath(rect: artRect).fill()
                 NSGraphicsContext.restoreGraphicsState()
                 img.draw(in: artRect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
             } else {
-                NSGradient(starting: NSColor(white: 0.90, alpha: 1), ending: NSColor(white: 0.80, alpha: 1))!.draw(in: artRect, angle: 90)
-                NSColor(white: 0.72, alpha: 1).setStroke()
+                NSGradient(starting: Theme.ink(0.90), ending: Theme.ink(0.80))!.draw(in: artRect, angle: 90)
+                Theme.ink(0.72).setStroke()
                 let r = art * 0.28
                 for k in [1.0, 0.7, 0.4] as [CGFloat] {
                     NSBezierPath(ovalIn: NSRect(x: artRect.midX - r * k, y: artRect.midY - r * k, width: r * k * 2, height: r * k * 2)).stroke()
                 }
                 request(i)
             }
-            NSColor(white: 0.6, alpha: 1).setStroke()
+            Theme.ink(0.6).setStroke()
             NSBezierPath(rect: artRect.insetBy(dx: 0.5, dy: 0.5)).stroke()
 
-            let textColor: NSColor = selected ? .white : NSColor(white: 0.15, alpha: 1)
-            let subColor: NSColor = selected ? NSColor(white: 1, alpha: 0.85) : NSColor(white: 0.45, alpha: 1)
+            let textColor: NSColor = selected ? .white : Theme.ink(0.15)
+            let subColor: NSColor = selected ? NSColor(white: 1, alpha: 0.85) : Theme.ink(0.45)
             (album.title as NSString).draw(in: NSRect(x: cell.minX + 6, y: artRect.maxY + 6, width: cell.width - 12, height: 15), withAttributes: [
                 .font: Aqua.font(11, bold: true), .foregroundColor: textColor, .paragraphStyle: titleStyle])
             (album.artistName as NSString).draw(in: NSRect(x: cell.minX + 6, y: artRect.maxY + 21, width: cell.width - 12, height: 14), withAttributes: [
@@ -257,7 +257,7 @@ final class AlbumGridView: NSView, NSDraggingSource {
         let dragItem = NSDraggingItem(pasteboardWriter: item)
         let size = NSSize(width: 72, height: 72)
         let image = dragImage(for: start.index) ?? NSImage(size: size, flipped: false) { r in
-            NSColor(white: 0.82, alpha: 1).setFill()
+            Theme.ink(0.82).setFill()
             r.fill()
             return true
         }

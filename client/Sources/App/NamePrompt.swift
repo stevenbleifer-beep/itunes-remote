@@ -16,8 +16,8 @@ final class NamePrompt: NSObject {
     init(title: String, prompt: String, placeholder: String, acceptTitle: String, initialValue: String? = nil) {
         okButton = AquaPushButton(title: acceptTitle, isDefault: true)
         let content = ChromeView(frame: NSRect(x: 0, y: 0, width: 420, height: 140))
-        content.gradientTop = NSColor(white: 0.93, alpha: 1)
-        content.gradientBottom = NSColor(white: 0.88, alpha: 1)
+        content.gradientTop = Theme.ink(0.93)
+        content.gradientBottom = Theme.ink(0.88)
         let sheet = PromptPanel(contentRect: content.frame, styleMask: [.titled], backing: .buffered, defer: false)
         panel = sheet
         panel.contentView = content

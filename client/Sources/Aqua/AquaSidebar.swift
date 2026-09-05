@@ -199,7 +199,7 @@ final class SidebarIconView: NSView {
             let body = NSBezierPath(roundedRect: NSRect(x: cx - 4.5, y: cy - 7, width: 9, height: 14), xRadius: 2, yRadius: 2)
             fill.setFill()
             body.fill()
-            (selected ? NSColor(srgbRed: 0.35, green: 0.42, blue: 0.55, alpha: 1) : NSColor(white: 0.92, alpha: 1)).setFill()
+            (selected ? NSColor(srgbRed: 0.35, green: 0.42, blue: 0.55, alpha: 1) : Theme.ink(0.92)).setFill()
             NSRect(x: cx - 3, y: cy + 1, width: 6, height: 4.5).fill()
             NSBezierPath(ovalIn: NSRect(x: cx - 2.75, y: cy - 5.75, width: 5.5, height: 5.5)).fill()
         case .speaker:

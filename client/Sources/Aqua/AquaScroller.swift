@@ -13,7 +13,7 @@ final class AquaScroller: NSScroller {
 
     private func drawClassicSlot(in slotRect: NSRect) {
         let vertical = bounds.height > bounds.width
-        NSGradient(starting: NSColor(white: 0.90, alpha: 1), ending: NSColor(white: 0.96, alpha: 1))!
+        NSGradient(starting: Theme.ink(0.90), ending: Theme.ink(0.96))!
             .draw(in: slotRect, angle: vertical ? 0 : 90)
         // A faint inset on the inner edge, not a hard line.
         NSColor(white: 0.82, alpha: 0.7).setFill()
@@ -43,9 +43,9 @@ final class AquaScroller: NSScroller {
         guard r.width > 2, r.height > 2 else { return }
         let radius = (vertical ? r.width : r.height) / 2
         let pill = NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: radius, yRadius: radius)
-        NSGradient(starting: NSColor(white: 0.66, alpha: 1), ending: NSColor(white: 0.50, alpha: 1))!
+        NSGradient(starting: Theme.ink(0.66), ending: Theme.ink(0.50))!
             .draw(in: pill, angle: vertical ? 0 : 90)
-        NSColor(white: 0.36, alpha: 1).setStroke()
+        Theme.ink(0.36).setStroke()
         pill.lineWidth = 1
         pill.stroke()
         // Top-edge highlight along the pill.

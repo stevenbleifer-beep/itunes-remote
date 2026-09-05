@@ -80,7 +80,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         transcript.isSelectable = true
         transcript.isRichText = true
         transcript.drawsBackground = true
-        transcript.backgroundColor = .white
+        transcript.backgroundColor = Theme.paper
         transcript.textContainerInset = NSSize(width: 8, height: 10)
         transcript.font = Aqua.font(12)
         transcript.isVerticallyResizable = true
@@ -95,7 +95,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         transcriptScroll.verticalScroller = AquaScroller()
         transcriptScroll.borderType = .bezelBorder
         transcriptScroll.drawsBackground = true
-        transcriptScroll.backgroundColor = .white
+        transcriptScroll.backgroundColor = Theme.paper
 
         field.font = Aqua.font(13)
         field.bezelStyle = .squareBezel
@@ -118,13 +118,13 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         saveButton.action = #selector(save(_:))
 
         heading.font = Aqua.font(13, bold: true)
-        heading.textColor = NSColor(white: 0.25, alpha: 1)
+        heading.textColor = Theme.ink(0.25)
         heading.lineBreakMode = .byTruncatingTail
         statusLabel.font = Aqua.font(11)
-        statusLabel.textColor = NSColor(white: 0.35, alpha: 1)
+        statusLabel.textColor = Theme.ink(0.35)
         statusLabel.lineBreakMode = .byTruncatingTail
         indexLabel.font = Aqua.font(11)
-        indexLabel.textColor = NSColor(white: 0.45, alpha: 1)
+        indexLabel.textColor = Theme.ink(0.45)
         indexLabel.lineBreakMode = .byTruncatingTail
         indexLabel.alignment = .right
 
@@ -235,7 +235,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
     required init?(coder: NSCoder) { fatalError() }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(white: 0.96, alpha: 1).setFill()
+        Theme.ink(0.96).setFill()
         bounds.fill()
     }
 
@@ -243,10 +243,10 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
 
     private func welcome() {
         transcript.string = ""
-        append("Ask for a playlist and it will build one from your own library — nothing it names is a song you do not have.\n\n", color: NSColor(white: 0.35, alpha: 1), italic: false)
-        append("Try: “make a playlist for date night”, “upbeat 80s for a road trip”, “something like Bill Evans for a rainy Sunday”.\n\n", color: NSColor(white: 0.45, alpha: 1), italic: true)
-        append("Then say what to change: “less jazz, add a couple of slow indie rock songs, keep it to 20”.\n\n", color: NSColor(white: 0.45, alpha: 1), italic: true)
-        append("It learns from every song you delete and every list you save; Controls ▸ Train Curator on My Edits… goes further once enough are saved.\n", color: NSColor(white: 0.5, alpha: 1), italic: false)
+        append("Ask for a playlist and it will build one from your own library — nothing it names is a song you do not have.\n\n", color: Theme.ink(0.35), italic: false)
+        append("Try: “make a playlist for date night”, “upbeat 80s for a road trip”, “something like Bill Evans for a rainy Sunday”.\n\n", color: Theme.ink(0.45), italic: true)
+        append("Then say what to change: “less jazz, add a couple of slow indie rock songs, keep it to 20”.\n\n", color: Theme.ink(0.45), italic: true)
+        append("It learns from every song you delete and every list you save; Controls ▸ Train Curator on My Edits… goes further once enough are saved.\n", color: Theme.ink(0.5), italic: false)
     }
 
     private func append(_ text: String, color: NSColor, italic: Bool = false, bold: Bool = false) {
@@ -261,18 +261,18 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
 
     func say(listener text: String) {
         if !(transcript.string.isEmpty || transcript.string.hasSuffix("\n\n")) { append("\n", color: .black) }
-        append("You: ", color: NSColor(white: 0.2, alpha: 1), bold: true)
-        append(text + "\n\n", color: NSColor(white: 0.2, alpha: 1))
+        append("You: ", color: Theme.ink(0.2), bold: true)
+        append(text + "\n\n", color: Theme.ink(0.2))
     }
 
     func say(curator text: String) {
         append("Curator: ", color: Aqua.accent, bold: true)
-        append(text + "\n\n", color: NSColor(white: 0.2, alpha: 1))
+        append(text + "\n\n", color: Theme.ink(0.2))
     }
 
     /// A quiet line: what was saved, how long it took, what went wrong.
     func note(_ text: String) {
-        append(text + "\n\n", color: NSColor(white: 0.45, alpha: 1), italic: true)
+        append(text + "\n\n", color: Theme.ink(0.45), italic: true)
     }
 
     // MARK: State
@@ -425,13 +425,13 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
         default: text = ""
         }
         cell.textField?.stringValue = text
-        cell.textField?.textColor = id == "why" ? NSColor(white: 0.4, alpha: 1) : .controlTextColor
+        cell.textField?.textColor = id == "why" ? Theme.ink(0.4) : .controlTextColor
         cell.textField?.font = Aqua.font(11)
         return cell
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        AquaTables.rowView(tableView, row: row, striped: true, background: .white, selection: .blue)
+        AquaTables.rowView(tableView, row: row, striped: true, background: Theme.paper, selection: .blue)
     }
 
     // MARK: Dragging: reorder here, or carry songs to a sidebar playlist

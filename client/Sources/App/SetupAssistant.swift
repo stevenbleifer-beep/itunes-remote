@@ -60,8 +60,8 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
     init(settings: ServerSettings) {
         draft = settings
         content = ChromeView(frame: NSRect(x: 0, y: 0, width: SetupAssistant.W, height: SetupAssistant.H))
-        content.gradientTop = NSColor(white: 0.93, alpha: 1)
-        content.gradientBottom = NSColor(white: 0.88, alpha: 1)
+        content.gradientTop = Theme.ink(0.93)
+        content.gradientBottom = Theme.ink(0.88)
         window = NSWindow(contentRect: content.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Set Up \(AppIdentity.name)"
         window.contentView = content
@@ -77,12 +77,12 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
     private func build() {
         let W = SetupAssistant.W, H = SetupAssistant.H
         titleLabel.font = Aqua.font(15, bold: true)
-        titleLabel.textColor = NSColor(white: 0.2, alpha: 1)
+        titleLabel.textColor = Theme.ink(0.2)
         titleLabel.frame = NSRect(x: 24, y: H - 48, width: W - 48, height: 22)
         content.addSubview(titleLabel)
 
         bodyLabel.font = Aqua.font(12)
-        bodyLabel.textColor = NSColor(white: 0.25, alpha: 1)
+        bodyLabel.textColor = Theme.ink(0.25)
         bodyLabel.frame = NSRect(x: 24, y: H - 150, width: W - 48, height: 96)
         content.addSubview(bodyLabel)
 
@@ -133,7 +133,7 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
         content.addSubview(progress)
 
         statusLabel.font = Aqua.font(11)
-        statusLabel.textColor = NSColor(white: 0.35, alpha: 1)
+        statusLabel.textColor = Theme.ink(0.35)
         statusLabel.frame = NSRect(x: 24, y: 62, width: W - 48, height: 44)
         content.addSubview(statusLabel)
 
@@ -547,7 +547,7 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        AquaTables.rowView(tableView, row: row, striped: true, background: .white, selection: .blue)
+        AquaTables.rowView(tableView, row: row, striped: true, background: Theme.paper, selection: .blue)
     }
 
     // MARK: Development

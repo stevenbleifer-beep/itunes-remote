@@ -127,7 +127,9 @@ behind them, the transport buttons and the display on the system's glass
 pill selections in the accent colour, overlay scrollers. Every control is
 still drawn by the app; each one asks the theme at draw time. The choice
 is read once at launch, so the switch relaunches the app. The modern look
-is light-only for now.
+follows the system's light or dark setting; every colour it draws with is
+dynamic, and the fixed greys of the classic drawing are turned over for it
+in the dark. Classic is always light, as iTunes 10 was.
 
 ## Two libraries: iTunes over there, Apple Music here
 

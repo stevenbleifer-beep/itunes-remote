@@ -56,8 +56,8 @@ final class MissingArtworkWindow: NSObject, NSTableViewDataSource, NSTableViewDe
     init(api: APIClient) {
         self.api = api
         content = ChromeView(frame: NSRect(x: 0, y: 0, width: MissingArtworkWindow.W, height: MissingArtworkWindow.H))
-        content.gradientTop = NSColor(white: 0.93, alpha: 1)
-        content.gradientBottom = NSColor(white: 0.88, alpha: 1)
+        content.gradientTop = Theme.ink(0.93)
+        content.gradientBottom = Theme.ink(0.88)
         window = NSWindow(contentRect: content.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Missing Artwork"
         window.contentView = content
@@ -72,12 +72,12 @@ final class MissingArtworkWindow: NSObject, NSTableViewDataSource, NSTableViewDe
     private func build() {
         let W = MissingArtworkWindow.W, H = MissingArtworkWindow.H
         titleLabel.font = Aqua.font(15, bold: true)
-        titleLabel.textColor = NSColor(white: 0.2, alpha: 1)
+        titleLabel.textColor = Theme.ink(0.2)
         titleLabel.frame = NSRect(x: 24, y: H - 46, width: W - 48, height: 22)
         content.addSubview(titleLabel)
 
         bodyLabel.font = Aqua.font(11)
-        bodyLabel.textColor = NSColor(white: 0.3, alpha: 1)
+        bodyLabel.textColor = Theme.ink(0.3)
         bodyLabel.stringValue = "Covers come from the iTunes Store's catalogue: the artist and album names of each album you look up "
             + "are sent to Apple's search service, and nothing else leaves this Mac. Find All takes a match only when both names agree."
         bodyLabel.frame = NSRect(x: 24, y: H - 92, width: W - 48, height: 40)
@@ -105,7 +105,7 @@ final class MissingArtworkWindow: NSObject, NSTableViewDataSource, NSTableViewDe
         well.toolTip = "The cover found; drop a picture here to use your own instead"
         content.addSubview(well)
         matchLabel.font = Aqua.font(11)
-        matchLabel.textColor = NSColor(white: 0.3, alpha: 1)
+        matchLabel.textColor = Theme.ink(0.3)
         matchLabel.alignment = .center
         matchLabel.lineBreakMode = .byTruncatingTail
         matchLabel.frame = NSRect(x: W - 24 - 200, y: well.frame.minY - 20, width: 200, height: 16)
@@ -135,7 +135,7 @@ final class MissingArtworkWindow: NSObject, NSTableViewDataSource, NSTableViewDe
         content.addSubview(closeButton)
 
         statusLabel.font = Aqua.font(11)
-        statusLabel.textColor = NSColor(white: 0.3, alpha: 1)
+        statusLabel.textColor = Theme.ink(0.3)
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.frame = NSRect(x: 24, y: 36, width: 490, height: 16)
         content.addSubview(statusLabel)
@@ -232,12 +232,12 @@ final class MissingArtworkWindow: NSObject, NSTableViewDataSource, NSTableViewDe
         default: cell.textField?.stringValue = status[MissingArtworkWindow.key(a)] ?? ""
         }
         cell.textField?.font = Aqua.font(11)
-        cell.textField?.textColor = (status[MissingArtworkWindow.key(a)] ?? "").hasPrefix("Set") ? NSColor(white: 0.5, alpha: 1) : .controlTextColor
+        cell.textField?.textColor = (status[MissingArtworkWindow.key(a)] ?? "").hasPrefix("Set") ? Theme.ink(0.5) : .controlTextColor
         return cell
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        AquaTables.rowView(tableView, row: row, striped: true, background: .white, selection: .blue)
+        AquaTables.rowView(tableView, row: row, striped: true, background: Theme.paper, selection: .blue)
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {

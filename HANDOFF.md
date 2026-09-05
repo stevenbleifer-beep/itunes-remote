@@ -1268,3 +1268,19 @@ unfocused browser pane), SidebarIconView (accent icons), AquaScroller
 the library switch). Test without saving: `-appearance modern`.
 Verified with live captures in List and Cover Flow. Light-only: the
 app's own labels carry fixed greys, so dark mode is a follow-up.
+
+**Dark mode for the modern look (2026-09-05, later).** `Theme.dynamic(light,
+dark)` wraps `NSColor(name:dynamicProvider:)`; every Theme colour is one,
+plus `Theme.raised` (knobs, pills, buttons) and `Theme.paper` (page white,
+near-black in the dark, plain white in classic). `Theme.ink(g)` is the
+sweep: a regex turned every `NSColor(white: g, alpha: 1)` in App/ and
+Aqua/ (195 sites) into `Theme.ink(g)`, which is the same fixed grey in
+classic and, in the modern look, a dynamic colour whose dark side is
+`0.92 − 0.85·g` — text greys go light, panel greys go dark. Literal
+`.white` backgrounds became `Theme.paper`. `Theme.appearance` is nil for
+modern (follow the system), Aqua for classic, and `--dark` forces dark
+for a test capture; `NSRequiresAquaSystemAppearance` left the Info.plist.
+The one bug the first capture showed: a `: .white` row background the
+sed did not match (pattern was `background: .white`) left every other
+track row white with white text; fixed at the call site. Verified with
+live captures in dark and light.

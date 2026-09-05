@@ -14,11 +14,11 @@ enum Aqua {
 
     // Lists
     static let stripe = NSColor(srgbRed: 0.953, green: 0.965, blue: 0.980, alpha: 1)      // #F3F6FA
-    static let gridLine = NSColor(white: 0.87, alpha: 1)
+    static let gridLine = Theme.ink(0.87)
     static let selectionTopKey = NSColor(srgbRed: 0.45, green: 0.62, blue: 0.89, alpha: 1)
     static let selectionBottomKey = NSColor(srgbRed: 0.20, green: 0.41, blue: 0.79, alpha: 1)
-    static let selectionTopInactive = NSColor(white: 0.72, alpha: 1)
-    static let selectionBottomInactive = NSColor(white: 0.58, alpha: 1)
+    static let selectionTopInactive = Theme.ink(0.72)
+    static let selectionBottomInactive = Theme.ink(0.58)
 
     // Sidebar
     static let classicSidebarBackground = NSColor(srgbRed: 0.878, green: 0.902, blue: 0.933, alpha: 1)  // #E0E6EE
@@ -26,11 +26,11 @@ enum Aqua {
     static var sidebarHeaderText: NSColor { Theme.isModern ? Theme.secondaryText : NSColor(srgbRed: 0.40, green: 0.45, blue: 0.52, alpha: 1) }
 
     // Chrome (toolbar, status bar, panels)
-    static let chromeTop = NSColor(white: 0.92, alpha: 1)
-    static let chromeBottom = NSColor(white: 0.76, alpha: 1)
-    static let chromeLine = NSColor(white: 0.48, alpha: 1)
+    static let chromeTop = Theme.ink(0.92)
+    static let chromeBottom = Theme.ink(0.76)
+    static let chromeLine = Theme.ink(0.48)
     static let chromeHighlight = NSColor(white: 1.0, alpha: 0.55)
-    static let glyph = NSColor(white: 0.22, alpha: 1)
+    static let glyph = Theme.ink(0.22)
     static var accent: NSColor { Theme.isModern ? Theme.accent : NSColor(srgbRed: 0.16, green: 0.42, blue: 0.85, alpha: 1) }
 
     /// mm:ss, as the display panel and track table show durations.
@@ -282,7 +282,7 @@ final class AquaDisplayPanel: NSView {
         outer.fill()
         NSGraphicsContext.restoreGraphicsState()
 
-        NSColor(white: 0.55, alpha: 1).setStroke()
+        Theme.ink(0.55).setStroke()
         path.lineWidth = 1
         path.stroke()
 
@@ -297,7 +297,7 @@ final class AquaDisplayPanel: NSView {
     /// Two small chevrons, one above the other, as iTunes 10 drew them.
     private func drawArrows() {
         let r = arrowsRect
-        NSColor(white: 0.40, alpha: 1).setFill()
+        Theme.ink(0.40).setFill()
         let up = NSBezierPath()
         up.move(to: NSPoint(x: r.minX, y: r.midY + 1.5))
         up.line(to: NSPoint(x: r.midX, y: r.maxY))
@@ -326,7 +326,7 @@ final class AquaDisplayPanel: NSView {
             Theme.controlFillPressed.setFill()
             groove.fill()
         } else {
-            NSGradient(starting: NSColor(white: 0.72, alpha: 1), ending: NSColor(white: 0.86, alpha: 1))!
+            NSGradient(starting: Theme.ink(0.72), ending: Theme.ink(0.86))!
                 .draw(in: groove, angle: -90)
         }
         NSGraphicsContext.saveGraphicsState()
@@ -358,7 +358,7 @@ final class AquaDisplayPanel: NSView {
         }
         NSGraphicsContext.restoreGraphicsState()
         if !Theme.isModern {
-            NSColor(white: 0.56, alpha: 1).setStroke()
+            Theme.ink(0.56).setStroke()
             NSBezierPath(roundedRect: g.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2).stroke()
         }
     }
@@ -369,7 +369,7 @@ final class AquaDisplayPanel: NSView {
     var airPlayActive = false { didSet { needsDisplay = true } }
 
     private func drawCornerGlyphs() {
-        let color = airPlayActive ? Aqua.accent : (Theme.isModern ? Theme.secondaryText : NSColor(white: 0.45, alpha: 1))
+        let color = airPlayActive ? Aqua.accent : (Theme.isModern ? Theme.secondaryText : Theme.ink(0.45))
         let cy = bounds.midY
         func circle(_ cx: CGFloat, _ fill: NSColor) {
             let p = NSBezierPath(ovalIn: NSRect(x: cx - 6, y: cy - 6, width: 12, height: 12))
@@ -378,7 +378,7 @@ final class AquaDisplayPanel: NSView {
         }
         // Left: play (triangle) or pause (bars), knocked out of a dark disc.
         let lx: CGFloat = 12
-        circle(lx, NSColor(white: 0.45, alpha: 1))
+        circle(lx, Theme.ink(0.45))
         NSColor(srgbRed: 0.93, green: 0.95, blue: 0.87, alpha: 1).setFill()
         if isPlaying {
             NSRect(x: lx - 2.6, y: cy - 2.6, width: 1.8, height: 5.2).fill()
@@ -411,7 +411,7 @@ final class AquaDisplayPanel: NSView {
         style.lineBreakMode = .byTruncatingTail
         (text as NSString).draw(in: rect, withAttributes: [
             .font: Aqua.font(size, bold: bold),
-            .foregroundColor: (Theme.isModern ? Theme.text : NSColor(white: 0.25, alpha: 1)).withAlphaComponent(alpha),
+            .foregroundColor: (Theme.isModern ? Theme.text : Theme.ink(0.25)).withAlphaComponent(alpha),
             .paragraphStyle: style,
         ])
     }
@@ -443,7 +443,7 @@ final class AquaDisplayPanel: NSView {
         let timeStyle = NSMutableParagraphStyle()
         timeStyle.alignment = .center
         let timeAttrs: [NSAttributedString.Key: Any] = [
-            .font: Aqua.font(9), .foregroundColor: NSColor(white: 0.35, alpha: 1), .paragraphStyle: timeStyle,
+            .font: Aqua.font(9), .foregroundColor: Theme.ink(0.35), .paragraphStyle: timeStyle,
         ]
         let timeY = g.midY - 6
         (Aqua.clock(pos) as NSString).draw(
@@ -457,9 +457,9 @@ final class AquaDisplayPanel: NSView {
             Theme.controlFillPressed.setFill()
             groove.fill()
         } else {
-            NSGradient(starting: NSColor(white: 0.72, alpha: 1), ending: NSColor(white: 0.86, alpha: 1))!
+            NSGradient(starting: Theme.ink(0.72), ending: Theme.ink(0.86))!
                 .draw(in: groove, angle: -90)
-            NSColor(white: 0.56, alpha: 1).setStroke()
+            Theme.ink(0.56).setStroke()
             NSBezierPath(roundedRect: g.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2).stroke()
         }
 
@@ -494,7 +494,7 @@ final class AquaDisplayPanel: NSView {
             sh.shadowBlurRadius = 2
             sh.shadowOffset = NSSize(width: 0, height: -0.5)
             sh.set()
-            NSColor.white.setFill()
+            Theme.raised.setFill()
             knob.fill()
             NSGraphicsContext.restoreGraphicsState()
             Theme.hairline.setStroke()
@@ -507,12 +507,12 @@ final class AquaDisplayPanel: NSView {
         sh.shadowBlurRadius = 1.5
         sh.shadowOffset = NSSize(width: 0, height: -1)
         sh.set()
-        NSColor(white: 0.85, alpha: 1).setFill()
+        Theme.ink(0.85).setFill()
         knob.fill()
         NSGraphicsContext.restoreGraphicsState()
-        NSGradient(starting: NSColor(white: 0.99, alpha: 1), ending: NSColor(white: 0.80, alpha: 1))!
+        NSGradient(starting: Theme.ink(0.99), ending: Theme.ink(0.80))!
             .draw(in: knob, angle: -90)
-        NSColor(white: 0.40, alpha: 1).setStroke()
+        Theme.ink(0.40).setStroke()
         knob.lineWidth = 1
         knob.stroke()
     }
@@ -545,7 +545,7 @@ final class AquaAirPlayButton: NSView {
     }()
 
     override func draw(_ dirtyRect: NSRect) {
-        let color: NSColor = !isEnabled ? NSColor(white: 0.62, alpha: 1)
+        let color: NSColor = !isEnabled ? Theme.ink(0.62)
             : isActive ? Aqua.accent : Aqua.glyph
         if isPressed || isActive {
             let bg = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 3, yRadius: 3)
@@ -588,7 +588,7 @@ final class ArtworkView: NSView {
             sh.shadowBlurRadius = Theme.isModern ? 6 : 3
             sh.shadowOffset = NSSize(width: 0, height: -1)
             sh.set()
-            NSColor.white.setFill()
+            Theme.paper.setFill()
             let shape = Theme.isModern ? NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6) : NSBezierPath(rect: box)
             shape.fill()
             NSGraphicsContext.restoreGraphicsState()
@@ -598,22 +598,22 @@ final class ArtworkView: NSView {
                      respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high.rawValue])
             NSGraphicsContext.restoreGraphicsState()
         } else {
-            NSGradient(starting: NSColor(white: 0.97, alpha: 1), ending: NSColor(white: 0.88, alpha: 1))!
+            NSGradient(starting: Theme.ink(0.97), ending: Theme.ink(0.88))!
                 .draw(in: box, angle: -90)
             // A drawn disc, so no artwork ships with the app.
             let c = NSPoint(x: box.midX, y: box.midY)
             let r = side * 0.24
-            NSColor(white: 0.78, alpha: 1).setStroke()
+            Theme.ink(0.78).setStroke()
             for k in [1.0, 0.72, 0.44] as [CGFloat] {
                 let p = NSBezierPath(ovalIn: NSRect(x: c.x - r * k, y: c.y - r * k, width: r * k * 2, height: r * k * 2))
                 p.lineWidth = 1
                 p.stroke()
             }
-            NSColor(white: 0.80, alpha: 1).setFill()
+            Theme.ink(0.80).setFill()
             NSBezierPath(ovalIn: NSRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4)).fill()
         }
         if !Theme.isModern {
-            NSColor(white: 0.55, alpha: 1).setStroke()
+            Theme.ink(0.55).setStroke()
             NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5)).stroke()
         }
 

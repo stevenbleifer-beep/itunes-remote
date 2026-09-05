@@ -26,7 +26,7 @@ final class AquaConnectionBadge: NSView {
         let emboss = NSShadow()
         emboss.shadowColor = NSColor.white.withAlphaComponent(Theme.isModern ? 0 : 0.7)
         emboss.shadowOffset = NSSize(width: 0, height: -1)
-        return [.font: Aqua.font(11), .foregroundColor: Theme.isModern ? Theme.secondaryText : NSColor(white: 0.25, alpha: 1), .shadow: emboss]
+        return [.font: Aqua.font(11), .foregroundColor: Theme.isModern ? Theme.secondaryText : Theme.ink(0.25), .shadow: emboss]
     }
 
     override var intrinsicContentSize: NSSize {
@@ -38,7 +38,7 @@ final class AquaConnectionBadge: NSView {
         let (top, bottom): (NSColor, NSColor)
         switch state {
         case .connecting:
-            (top, bottom) = (NSColor(white: 0.80, alpha: 1), NSColor(white: 0.55, alpha: 1))
+            (top, bottom) = (Theme.ink(0.80), Theme.ink(0.55))
         case .home:
             (top, bottom) = (NSColor(srgbRed: 0.62, green: 0.93, blue: 0.45, alpha: 1), NSColor(srgbRed: 0.20, green: 0.62, blue: 0.10, alpha: 1))
         case .away:

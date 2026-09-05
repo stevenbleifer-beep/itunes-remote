@@ -23,12 +23,12 @@ struct AquaGelPalette {
     )
 
     static let white = AquaGelPalette(
-        top: NSColor(white: 1.00, alpha: 1),
-        middle: NSColor(white: 0.90, alpha: 1),
-        bottom: NSColor(white: 0.84, alpha: 1),
-        bounce: NSColor(white: 1.00, alpha: 1),
-        strokeTop: NSColor(white: 0.58, alpha: 1),
-        strokeBottom: NSColor(white: 0.46, alpha: 1),
+        top: Theme.ink(1.00),
+        middle: Theme.ink(0.90),
+        bottom: Theme.ink(0.84),
+        bounce: Theme.ink(1.00),
+        strokeTop: Theme.ink(0.58),
+        strokeBottom: Theme.ink(0.46),
         text: .black
     )
 
@@ -172,7 +172,7 @@ final class AquaPushButton: NSView {
         shadow.shadowBlurRadius = 2
         shadow.shadowOffset = NSSize(width: 0, height: -0.5)
         shadow.set()
-        (isDefault ? Theme.accent : NSColor.white).setFill()
+        (isDefault ? Theme.accent : Theme.raised).setFill()
         capsule.fill()
         NSGraphicsContext.restoreGraphicsState()
         if pressed {
@@ -191,7 +191,7 @@ final class AquaPushButton: NSView {
         (title as NSString).draw(at: NSPoint(x: round(body.midX - size.width / 2), y: round(body.midY - size.height / 2) + 1),
                                  withAttributes: attrs)
         if !isEnabled {
-            NSColor.white.withAlphaComponent(0.4).setFill()
+            Theme.windowBackground.withAlphaComponent(0.4).setFill()
             capsule.fill()
         }
     }

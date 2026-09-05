@@ -67,7 +67,7 @@ final class AquaSegmentedControl: NSView {
                     sh.shadowBlurRadius = 2
                     sh.shadowOffset = NSSize(width: 0, height: -0.5)
                     sh.set()
-                    NSColor.white.setFill()
+                    Theme.raised.setFill()
                     NSBezierPath(roundedRect: r.insetBy(dx: 2, dy: 2), xRadius: (r.height - 4) / 2, yRadius: (r.height - 4) / 2).fill()
                     NSGraphicsContext.restoreGraphicsState()
                 }
@@ -83,7 +83,7 @@ final class AquaSegmentedControl: NSView {
         shadow.shadowBlurRadius = 1
         shadow.shadowOffset = NSSize(width: 0, height: -1)
         shadow.set()
-        NSColor(white: 0.85, alpha: 1).setFill()
+        Theme.ink(0.85).setFill()
         capsule.fill()
         NSGraphicsContext.restoreGraphicsState()
 
@@ -94,30 +94,30 @@ final class AquaSegmentedControl: NSView {
                            width: segmentWidth, height: outer.height)
             let down = i == selectedIndex || i == pressedIndex
             if down {
-                NSGradient(starting: NSColor(white: 0.66, alpha: 1), ending: NSColor(white: 0.76, alpha: 1))!
+                NSGradient(starting: Theme.ink(0.66), ending: Theme.ink(0.76))!
                     .draw(in: r, angle: -90)
                 // Inner shadow along the top, the pressed-in look.
                 NSColor.black.withAlphaComponent(0.18).setFill()
                 NSRect(x: r.minX, y: r.maxY - 1, width: r.width, height: 1).fill()
             } else {
-                NSGradient(starting: NSColor(white: 0.99, alpha: 1), ending: NSColor(white: 0.86, alpha: 1))!
+                NSGradient(starting: Theme.ink(0.99), ending: Theme.ink(0.86))!
                     .draw(in: r, angle: -90)
             }
             if i > 0 {
-                NSColor(white: 0.55, alpha: 1).setFill()
+                Theme.ink(0.55).setFill()
                 NSRect(x: r.minX - 0.5, y: r.minY, width: 1, height: r.height).fill()
             }
             drawGlyph(glyph, in: r, down: down)
         }
         NSGraphicsContext.restoreGraphicsState()
 
-        NSColor(white: 0.45, alpha: 1).setStroke()
+        Theme.ink(0.45).setStroke()
         capsule.lineWidth = 1
         capsule.stroke()
     }
 
     private func drawGlyph(_ glyph: ViewGlyph, in r: NSRect, down: Bool) {
-        let color = Theme.isModern ? (down ? Theme.text : Theme.secondaryText) : (down ? NSColor(white: 0.15, alpha: 1) : NSColor(white: 0.30, alpha: 1))
+        let color = Theme.isModern ? (down ? Theme.text : Theme.secondaryText) : (down ? Theme.ink(0.15) : Theme.ink(0.30))
         color.setFill()
         color.setStroke()
         let cx = r.midX, cy = r.midY

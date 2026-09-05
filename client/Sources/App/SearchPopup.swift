@@ -199,7 +199,7 @@ final class SearchPopup: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard row < rows.count else { return nil }
         let cell = AquaTables.labelCell(tableView, id: "search")
-        let grey = NSColor(white: 0.45, alpha: 1)
+        let grey = Theme.ink(0.45)
         switch rows[row] {
         case .header(let s):
             cell.textField?.attributedStringValue = NSAttributedString(string: s, attributes: [
@@ -230,16 +230,16 @@ final class SearchPopup: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { !isHeader(row) }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        AquaTables.rowView(tableView, row: row, striped: false, background: .white, selection: .blue)
+        AquaTables.rowView(tableView, row: row, striped: false, background: Theme.paper, selection: .blue)
     }
 }
 
 /// White with a one-pixel grey line round it.
 final class SearchPopupBezel: NSView {
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.white.setFill()
+        Theme.paper.setFill()
         bounds.fill()
-        NSColor(white: 0.55, alpha: 1).setStroke()
+        Theme.ink(0.55).setStroke()
         NSBezierPath(rect: bounds.insetBy(dx: 0.5, dy: 0.5)).stroke()
     }
 }

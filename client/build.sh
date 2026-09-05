@@ -43,7 +43,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSRequiresAquaSystemAppearance</key><true/>
   <!-- Plain HTTP is fine on the LAN (.local) and inside the Tailscale
        tunnel, which is WireGuard-encrypted end to end; ATS only knows the
        second one by name. -->

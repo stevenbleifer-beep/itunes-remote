@@ -33,7 +33,7 @@ final class MiniPlayerWindowController: NSWindowController, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
         window.level = .floating
-        window.appearance = NSAppearance(named: .aqua)
+        window.appearance = Theme.appearance
         window.delegate = self
         window.setFrameAutosaveName("MiniPlayer")
 

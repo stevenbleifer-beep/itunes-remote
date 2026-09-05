@@ -32,8 +32,8 @@ final class TrainingWindow: NSObject, NSWindowDelegate {
 
     override init() {
         content = ChromeView(frame: NSRect(x: 0, y: 0, width: TrainingWindow.W, height: TrainingWindow.H))
-        content.gradientTop = NSColor(white: 0.93, alpha: 1)
-        content.gradientBottom = NSColor(white: 0.88, alpha: 1)
+        content.gradientTop = Theme.ink(0.93)
+        content.gradientBottom = Theme.ink(0.88)
         window = NSWindow(contentRect: content.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Train the Curator"
         window.contentView = content
@@ -46,12 +46,12 @@ final class TrainingWindow: NSObject, NSWindowDelegate {
     private func build() {
         let W = TrainingWindow.W, H = TrainingWindow.H
         titleLabel.font = Aqua.font(15, bold: true)
-        titleLabel.textColor = NSColor(white: 0.2, alpha: 1)
+        titleLabel.textColor = Theme.ink(0.2)
         titleLabel.frame = NSRect(x: 24, y: H - 48, width: W - 48, height: 22)
         content.addSubview(titleLabel)
 
         bodyLabel.font = Aqua.font(12)
-        bodyLabel.textColor = NSColor(white: 0.25, alpha: 1)
+        bodyLabel.textColor = Theme.ink(0.25)
         bodyLabel.stringValue = "Every playlist you save teaches the curator: the songs you kept, the ones you took out, and what you said. "
             + "Training turns those into a picker of its own, made on this Mac from the base model Qwen 2.5 7B. "
             + "Nothing about your library leaves the Mac; only the base model and the training tools are downloaded.\n\n"
@@ -61,12 +61,12 @@ final class TrainingWindow: NSObject, NSWindowDelegate {
         content.addSubview(bodyLabel)
 
         countLabel.font = Aqua.font(12, bold: true)
-        countLabel.textColor = NSColor(white: 0.2, alpha: 1)
+        countLabel.textColor = Theme.ink(0.2)
         countLabel.frame = NSRect(x: 24, y: H - 218, width: W - 48, height: 34)
         content.addSubview(countLabel)
 
         stageLabel.font = Aqua.font(11)
-        stageLabel.textColor = NSColor(white: 0.3, alpha: 1)
+        stageLabel.textColor = Theme.ink(0.3)
         stageLabel.lineBreakMode = .byTruncatingTail
         stageLabel.frame = NSRect(x: 24, y: H - 244, width: W - 48, height: 16)
         content.addSubview(stageLabel)
@@ -81,8 +81,8 @@ final class TrainingWindow: NSObject, NSWindowDelegate {
 
         log.isEditable = false
         log.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
-        log.textColor = NSColor(white: 0.3, alpha: 1)
-        log.backgroundColor = NSColor(white: 0.97, alpha: 1)
+        log.textColor = Theme.ink(0.3)
+        log.backgroundColor = Theme.ink(0.97)
         log.textContainerInset = NSSize(width: 4, height: 4)
         log.isVerticallyResizable = true
         log.autoresizingMask = [.width]

@@ -168,8 +168,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.minSize = NSSize(width: 900, height: 560)
-        window.appearance = NSAppearance(named: .aqua)
-        window.backgroundColor = Theme.isModern ? Theme.windowBackground : NSColor(white: 0.80, alpha: 1)
+        window.appearance = Theme.appearance
+        window.backgroundColor = Theme.isModern ? Theme.windowBackground : Theme.ink(0.80)
         buildViews()
         wireController()
         window.setFrameAutosaveName("MainWindow")
@@ -188,8 +188,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func buildViews() {
         guard let window = window else { return }
         let content = ChromeView(frame: window.contentView!.bounds)
-        content.gradientTop = NSColor(white: 0.80, alpha: 1)
-        content.gradientBottom = NSColor(white: 0.80, alpha: 1)
+        content.gradientTop = Theme.ink(0.80)
+        content.gradientBottom = Theme.ink(0.80)
         content.autoresizesSubviews = true
         window.contentView = content
         let W = content.bounds.width, H = content.bounds.height
@@ -275,7 +275,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         searchField.font = Aqua.font(11)
         searchField.placeholderAttributedString = NSAttributedString(string: "Search", attributes: [
             .font: Aqua.font(11),
-            .foregroundColor: NSColor(white: 0.55, alpha: 1),
+            .foregroundColor: Theme.ink(0.55),
         ])
 
         // Window title, drawn in the toolbar since the real title bar is hidden.
@@ -286,7 +286,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         let centred = NSMutableParagraphStyle()
         centred.alignment = .center
         titleLabel.attributedStringValue = NSAttributedString(string: AppIdentity.name, attributes: [
-            .font: Aqua.font(13, bold: true), .foregroundColor: NSColor(white: 0.30, alpha: 1),
+            .font: Aqua.font(13, bold: true), .foregroundColor: Theme.ink(0.30),
             .shadow: emboss, .paragraphStyle: centred,
         ])
         titleLabel.alignment = .center
@@ -320,7 +320,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         statusLabel.autoresizingMask = [.width]
         statusLabel.alignment = .center
         statusLabel.font = Aqua.font(11)
-        statusLabel.textColor = NSColor(white: 0.2, alpha: 1)
+        statusLabel.textColor = Theme.ink(0.2)
         statusBar.addSubview(statusLabel)
 
         var bx: CGFloat = 8
@@ -356,7 +356,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         connectionBadge.toolTip = "Working out whether the \(ServerSettings.name) is on the local network."
         statusBar.addSubview(connectionBadge)
         libraryStamp.font = Aqua.font(11)
-        libraryStamp.textColor = NSColor(white: 0.35, alpha: 1)
+        libraryStamp.textColor = Theme.ink(0.35)
         libraryStamp.alignment = .right
         libraryStamp.lineBreakMode = .byClipping
         libraryStamp.autoresizingMask = [.minXMargin]
@@ -693,7 +693,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         s.verticalScroller = AquaScroller()
         s.borderType = Theme.isModern ? .noBorder : .lineBorder
         s.drawsBackground = true
-        s.backgroundColor = .white
+        s.backgroundColor = Theme.paper
         return s
     }
 
@@ -4027,7 +4027,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             cell.textField?.font = Aqua.font(11, bold: isPlaying)
             // In Duplicates, the copies the app would let go of are grey.
             let extra = controller.source == .duplicates && controller.duplicateExtras.contains(t.persistentId)
-            cell.textField?.textColor = extra ? NSColor(white: 0.5, alpha: 1) : NSColor.controlTextColor
+            cell.textField?.textColor = extra ? Theme.ink(0.5) : NSColor.controlTextColor
             return cell
         case .none:
             return nil
@@ -4049,10 +4049,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         let tag = Tag(rawValue: tableView.tag)
         if tag == .tracks, row < displayRows.count, case .group = displayRows[row] {
-            return AquaTables.rowView(tableView, row: 0, striped: false, background: .white)
+            return AquaTables.rowView(tableView, row: 0, striped: false, background: Theme.paper)
         }
         return AquaTables.rowView(tableView, row: row, striped: tag == .tracks,
-                                  background: tag == .source ? (Theme.isModern ? .clear : Aqua.sidebarBackground) : .white,
+                                  background: tag == .source ? (Theme.isModern ? .clear : Aqua.sidebarBackground) : Theme.paper,
                                   selection: tag == .source ? .sidebar : .blue)
     }
 

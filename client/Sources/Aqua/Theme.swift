@@ -16,17 +16,44 @@ enum Theme {
         isModern ? NSFont.systemFont(ofSize: size, weight: bold ? .semibold : .regular) : Aqua.lucida(size, bold: bold)
     }
 
-    // The modern palette. Light, quiet, with the system accent for anything selected.
-    static let windowBackground = NSColor(white: 0.965, alpha: 1)
-    static let contentBackground = NSColor.white
-    static let sidebarBackground = NSColor(white: 0.955, alpha: 1)
-    static let hairline = NSColor(white: 0, alpha: 0.10)
-    static let text = NSColor(white: 0.12, alpha: 1)
-    static let secondaryText = NSColor(white: 0.45, alpha: 1)
-    static let controlFill = NSColor(white: 0, alpha: 0.06)
-    static let controlFillPressed = NSColor(white: 0, alpha: 0.13)
-    static let stripe = NSColor(white: 0.975, alpha: 1)
+    // The modern palette: dynamic, so the same names answer in light and dark.
+    static func dynamic(_ light: NSColor, _ dark: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        }
+    }
+
+    static let windowBackground = dynamic(NSColor(white: 0.965, alpha: 1), NSColor(white: 0.15, alpha: 1))
+    static let contentBackground = dynamic(.white, NSColor(white: 0.11, alpha: 1))
+    static let sidebarBackground = dynamic(NSColor(white: 0.955, alpha: 1), NSColor(white: 0.17, alpha: 1))
+    static let hairline = dynamic(NSColor(white: 0, alpha: 0.10), NSColor(white: 1, alpha: 0.12))
+    static let text = dynamic(NSColor(white: 0.12, alpha: 1), NSColor(white: 0.92, alpha: 1))
+    static let secondaryText = dynamic(NSColor(white: 0.45, alpha: 1), NSColor(white: 0.60, alpha: 1))
+    static let controlFill = dynamic(NSColor(white: 0, alpha: 0.06), NSColor(white: 1, alpha: 0.08))
+    static let controlFillPressed = dynamic(NSColor(white: 0, alpha: 0.13), NSColor(white: 1, alpha: 0.16))
+    static let stripe = dynamic(NSColor(white: 0.975, alpha: 1), NSColor(white: 0.135, alpha: 1))
+    /// Something that sits up off the surface: a knob, a pill, a button.
+    static let raised = dynamic(.white, NSColor(white: 0.34, alpha: 1))
     static var accent: NSColor { NSColor.controlAccentColor }
+
+    /// A page-white background: paper in the light, near-black in the dark.
+    /// Classic stays white.
+    static var paper: NSColor { isModern ? contentBackground : .white }
+
+    /// A fixed grey from the classic drawing, kept as it is there and
+    /// turned over for the modern look in the dark: a 0.2 text grey becomes
+    /// a light one, a 0.97 panel becomes a dark one.
+    static func ink(_ white: CGFloat) -> NSColor {
+        guard isModern else { return NSColor(white: white, alpha: 1) }
+        return dynamic(NSColor(white: white, alpha: 1), NSColor(white: max(0.05, min(0.95, 0.92 - 0.85 * white)), alpha: 1))
+    }
+
+    /// The system appearance the app should wear: the modern look follows
+    /// the system (light or dark); classic is always Aqua.
+    static var appearance: NSAppearance? {
+        if CommandLine.arguments.contains("--dark") { return NSAppearance(named: .darkAqua) }
+        return isModern ? nil : NSAppearance(named: .aqua)
+    }
 
     static var scrollerStyle: NSScroller.Style { isModern ? .overlay : .legacy }
 

@@ -77,7 +77,7 @@ final class SongNotifier {
                                          colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        NSColor.white.setFill()
+        Theme.paper.setFill()
         NSRect(x: 0, y: 0, width: side, height: side).fill()
         NSGraphicsContext.current?.imageInterpolation = .high
         image.draw(in: NSRect(x: 0, y: 0, width: side, height: side), from: .zero, operation: .sourceOver, fraction: 1)
