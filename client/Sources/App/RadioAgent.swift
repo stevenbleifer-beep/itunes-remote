@@ -46,14 +46,14 @@ final class RadioAgent {
     why is under ten words: what makes this one right for the request.
     """
 
-    func ask(_ text: String, want: Int = 15) async throws -> Result {
+    func ask(_ text: String, filter: RadioFilter = RadioFilter(), want: Int = 15) async throws -> Result {
         let started = Date()
         onStatus("Working out what to search for…")
-        var plan = try await makePlan(text, broaden: nil)
+        var plan = try await makePlan(text, filter: filter, broaden: nil)
         var found = try await run(plan.queries)
         if found.isEmpty {
             onStatus("Nothing matched — trying a wider search…")
-            plan = try await makePlan(text, broaden: plan.queries)
+            plan = try await makePlan(text, filter: filter, broaden: plan.queries)
             found = try await run(plan.queries)
         }
         if found.isEmpty {
@@ -73,11 +73,21 @@ final class RadioAgent {
                       seconds: Date().timeIntervalSince(started))
     }
 
-    /// A plain search, no model: the words as a station name, and as a tag.
-    func search(_ text: String) async throws -> [RadioStation] {
+    /// A plain search, no model: the words as a station name, and as a
+    /// style, within whatever the menus have fixed.
+    func search(_ text: String, filter: RadioFilter = RadioFilter()) async throws -> [RadioStation] {
         let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        async let byName = browser.search(RadioBrowserClient.Query(name: words, limit: 60))
-        async let byTag = browser.search(RadioBrowserClient.Query(tag: words, limit: 60))
+        var byNameQ = RadioBrowserClient.Query(name: words, tag: filter.tag, countryCode: filter.countryCode, limit: 60)
+        var byTagQ = RadioBrowserClient.Query(tag: words, countryCode: filter.countryCode, limit: 60)
+        if let t = filter.tag, !t.isEmpty, t.lowercased() != words.lowercased() {
+            // The words as a name within the fixed style; and the style
+            // alone with the words as a name is the same search, so the
+            // second is the words as a second style — rarely useful — skipped.
+            byTagQ = byNameQ
+            byNameQ.name = words
+        }
+        async let byName = browser.search(byNameQ)
+        async let byTag = browser.search(byTagQ)
         let name = (try? await byName) ?? []
         let tag = (try? await byTag) ?? []
         return RadioAgent.merge([name, tag])
@@ -91,8 +101,14 @@ final class RadioAgent {
         var note: String
     }
 
-    private func makePlan(_ text: String, broaden previous: [RadioBrowserClient.Query]?) async throws -> Plan {
+    private func makePlan(_ text: String, filter: RadioFilter, broaden previous: [RadioBrowserClient.Query]?) async throws -> Plan {
         var prompt = "Request: \(text)"
+        if !filter.isEmpty {
+            var fixed: [String] = []
+            if let t = filter.tag, !t.isEmpty { fixed.append("tag \"\(t)\"") }
+            if let c = filter.countryCode, !c.isEmpty { fixed.append("countrycode \"\(c)\" (\(filter.countryName ?? c))") }
+            prompt += "\n\nThe listener has fixed these in the menus, and every query must keep them: " + fixed.joined(separator: ", ") + "."
+        }
         if let p = previous {
             prompt += "\n\nThese searches found nothing: " + p.map { $0.description }.joined(separator: "; ")
                 + ". Search more broadly: drop the place or the country, use a more general tag, or search by name alone."
@@ -121,11 +137,15 @@ final class RadioAgent {
                     query.name = query.name ?? place
                 }
             }
+            // The menus are not a suggestion.
+            if let t = filter.tag, !t.isEmpty { query.tag = t }
+            if let c = filter.countryCode, !c.isEmpty { query.countryCode = c }
             if !query.isEmpty { queries.append(query) }
         }
         if queries.isEmpty {
             // The model gave nothing usable: the request itself, as a name and a tag.
-            queries = [RadioBrowserClient.Query(name: text, limit: 40), RadioBrowserClient.Query(tag: text, limit: 40)]
+            queries = [RadioBrowserClient.Query(name: text, tag: filter.tag, countryCode: filter.countryCode, limit: 40),
+                       RadioBrowserClient.Query(tag: filter.tag ?? text, countryCode: filter.countryCode, limit: 40)]
         }
         return Plan(queries: queries, places: places, note: (obj["note"] as? String) ?? "")
     }

@@ -6,9 +6,11 @@ import Cocoa
 /// "Play on This Mac" bypasses AirPlay entirely: the file comes over HTTP
 /// with range requests, and AVFoundation decodes it here.
 @MainActor
-final class LocalPlayer: NSObject {
+final class LocalPlayer: NSObject, AVPlayerItemMetadataOutputPushDelegate {
     private let player = AVPlayer()
     private(set) var current: Track?
+    /// The song a stream is carrying, from its ICY metadata.
+    private(set) var streamTitle: String?
     private var endObserver: NSObjectProtocol?
     private var timeObserver: Any?
     /// The item whose status is being watched, so the observer comes off
@@ -46,8 +48,27 @@ final class LocalPlayer: NSObject {
         set { player.volume = Float(min(1, max(0, newValue))) }
     }
 
+    nonisolated func metadataOutput(_ output: AVPlayerItemMetadataOutput, didOutputTimedMetadataGroups groups: [AVTimedMetadataGroup],
+                                    from track: AVPlayerItemTrack?) {
+        var title: String?
+        for g in groups {
+            for item in g.items {
+                let id = item.identifier
+                if id == .icyMetadataStreamTitle || id == .commonIdentifierTitle || id == .id3MetadataTitleDescription,
+                   let v = item.value as? String, !v.trimmingCharacters(in: .whitespaces).isEmpty {
+                    title = v.trimmingCharacters(in: .whitespaces)
+                }
+            }
+        }
+        guard let t = title else { return }
+        Task { @MainActor in
+            if self.streamTitle != t { self.streamTitle = t; self.onTick() }
+        }
+    }
+
     func play(_ track: Track, api: APIClient) {
         current = track
+        streamTitle = nil
         let asset = AVURLAsset(url: api.audioURL(for: track.persistentId), options: [
             "AVURLAssetHTTPHeaderFieldsKey": ["Authorization": "Bearer \(api.token)"],
         ])
@@ -77,6 +98,12 @@ final class LocalPlayer: NSObject {
                         album: "Internet Radio", albumArtist: "", genre: station.tagLine, year: nil,
                         trackNumber: nil, discNumber: nil, totalTime: nil, size: nil, compilation: false)
         let item = AVPlayerItem(url: url)
+        streamTitle = nil
+        // Icecast/Shoutcast streams carry "Artist - Title" between the
+        // frames; HLS carries ID3 timed metadata. Both land here.
+        let meta = AVPlayerItemMetadataOutput(identifiers: nil)
+        meta.setDelegate(self, queue: .main)
+        item.add(meta)
         if let old = endObserver { NotificationCenter.default.removeObserver(old) }
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
@@ -122,6 +149,7 @@ final class LocalPlayer: NSObject {
         stopObserving()
         player.replaceCurrentItem(with: nil)
         current = nil
+        streamTitle = nil
         onTick()
     }
 
@@ -136,7 +164,7 @@ final class LocalPlayer: NSObject {
         let s = current == nil ? "stopped" : (isPlaying ? "playing" : "paused")
         let track = current.map {
             PlayerTrack(persistentId: $0.persistentId, name: $0.name, artist: $0.artist,
-                        album: $0.album, duration: duration)
+                        album: $0.album, duration: duration, streamTitle: streamTitle)
         }
         return PlayerState(state: s, volume: Int((volume * 100).rounded()), position: position,
                            track: track, playlist: nil, shuffle: false, repeat: "off")

@@ -857,6 +857,8 @@ class Api(object):
             state["playlist"] = {"name": f[9], "persistentId": f[10]}
         state["shuffle"] = len(f) > 11 and self._bool(f[11])
         state["repeat"] = f[12] if len(f) > 12 else "off"
+        if state["track"] is not None and len(f) > 13 and f[13]:
+            state["track"]["streamTitle"] = f[13]
         return state
 
     def post_shuffle(self, params, query, body):

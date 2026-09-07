@@ -214,6 +214,8 @@ struct PlayerTrack: Decodable {
     let artist: String
     let album: String
     let duration: Double
+    /// The song a radio stream is carrying right now, when the station says.
+    var streamTitle: String? = nil
 }
 
 struct PlayerPlaylist: Decodable {

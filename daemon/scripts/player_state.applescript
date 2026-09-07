@@ -10,6 +10,7 @@ on run argv
         end if
         set vol to sound volume
         set pos to 0
+        set stt to ""
         set pid to ""
         set dbid to 0
         set nm to ""
@@ -42,6 +43,11 @@ on run argv
                 set plPid to persistent ID of current playlist
             end try
         end try
-        return pstate & US & vol & US & pos & US & pid & US & dbid & US & nm & US & ar & US & al & US & dur & US & plName & US & plPid & US & shuf & US & rep
+        -- The song a stream is carrying, when the station says.
+        try
+            set stt to current stream title
+            if stt is missing value then set stt to ""
+        end try
+        return pstate & US & vol & US & pos & US & pid & US & dbid & US & nm & US & ar & US & al & US & dur & US & plName & US & plPid & US & shuf & US & rep & US & stt
     end tell
 end run

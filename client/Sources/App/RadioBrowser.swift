@@ -102,6 +102,27 @@ struct RadioStation: Codable, Equatable {
     }
 }
 
+/// What the page's Style and Country menus have fixed. Searches keep to
+/// it; Ask is told about it and its queries are held to it.
+struct RadioFilter {
+    var tag: String?
+    var countryCode: String?
+    var countryName: String?
+    var isEmpty: Bool { (tag ?? "").isEmpty && (countryCode ?? "").isEmpty }
+    var description: String {
+        var parts: [String] = []
+        if let t = tag, !t.isEmpty { parts.append(t) }
+        if let c = countryName ?? countryCode, !c.isEmpty { parts.append("in \(c)") }
+        return parts.joined(separator: " ")
+    }
+}
+
+struct RadioCountry: Equatable {
+    let name: String
+    let code: String
+    let count: Int
+}
+
 struct RadioError: Error, LocalizedError {
     let message: String
     init(_ m: String) { message = m }
@@ -175,6 +196,21 @@ final class RadioBrowserClient {
     /// The most listened-to stations in the directory right now.
     func popular(limit: Int = 60) async throws -> [RadioStation] {
         try await search(Query(order: "clickcount", limit: limit))
+    }
+
+    /// The directory's countries with at least a handful of stations, by name.
+    func countries() async throws -> [RadioCountry] {
+        let rows = try await get("/json/countries", [URLQueryItem(name: "order", value: "name")])
+        let long = ["The United States Of America": "USA", "The United Kingdom Of Great Britain And Northern Ireland": "UK",
+                    "The Russian Federation": "Russia", "The Republic Of Korea": "South Korea", "The United Arab Emirates": "UAE"]
+        var out: [RadioCountry] = []
+        for r in rows {
+            guard let name = r["name"] as? String, let code = r["iso_3166_1"] as? String, code.count == 2,
+                  let n = r["stationcount"] as? Int, n >= 5 else { continue }
+            let short = long[name] ?? (name.hasPrefix("The ") ? String(name.dropFirst(4)) : name)
+            out.append(RadioCountry(name: short, code: code.uppercased(), count: n))
+        }
+        return out.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     /// Tells the directory a station was played, once per play. Its
@@ -276,5 +312,29 @@ final class RadioGeocoder {
             }
             if let data = try? JSONEncoder().encode(cache) { try? data.write(to: url, options: .atomic) }
         }
+    }
+}
+
+
+extension RadioStation {
+    /// What a station sends as its "stream title" is usually "Artist - Song",
+    /// but some send a page of XML (Dalet's RadioInfo), a URL, or nothing
+    /// worth showing. This keeps a song line and drops the rest.
+    static func songLine(from raw: String?) -> String? {
+        guard var t = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
+        if t.hasPrefix("<") {
+            func tag(_ name: String) -> String? {
+                guard let r = t.range(of: "<\(name)>"), let e = t.range(of: "</\(name)>", range: r.upperBound..<t.endIndex) else { return nil }
+                let v = t[r.upperBound..<e.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+                return v.isEmpty ? nil : v
+            }
+            let title = tag("DB_DALET_TITLE_NAME") ?? tag("title") ?? tag("TITLE")
+            let artist = tag("DB_DALET_ARTIST_NAME") ?? tag("artist") ?? tag("ARTIST")
+            guard let song = title else { return nil }
+            t = artist.map { "\($0) — \(song)" } ?? song
+        }
+        if t.contains("<") || t.lowercased().hasPrefix("http") { return nil }
+        if t.count > 90 { t = String(t.prefix(88)) + "…" }
+        return t
     }
 }

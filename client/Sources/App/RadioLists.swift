@@ -81,3 +81,69 @@ final class RadioLists {
         onChange()
     }
 }
+
+
+/// A station tuned to, and when: the radio's listening history, newest
+/// first, kept in Application Support/<app>/radio/history.json. One entry
+/// per station, moved to the top when it is played again, two hundred at most.
+struct RadioPlay: Codable {
+    var station: RadioStation
+    var date: Date
+    var plays: Int
+}
+
+@MainActor
+final class RadioHistory {
+    private(set) var plays: [RadioPlay] = []
+    var onChange: () -> Void = {}
+    private let url: URL
+
+    init() {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(AppIdentity.supportFolder).appendingPathComponent("radio")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        url = dir.appendingPathComponent("history.json")
+        if let data = try? Data(contentsOf: url), let saved = try? JSONDecoder().decode([RadioPlay].self, from: data) {
+            plays = saved
+        }
+    }
+
+    func record(_ station: RadioStation) {
+        var count = 1
+        if let i = plays.firstIndex(where: { $0.station.uuid == station.uuid }) {
+            count = plays[i].plays + 1
+            plays.remove(at: i)
+        }
+        plays.insert(RadioPlay(station: station, date: Date(), plays: count), at: 0)
+        if plays.count > 200 { plays.removeLast(plays.count - 200) }
+        save()
+    }
+
+    func remove(_ uuids: Set<String>) {
+        plays.removeAll { uuids.contains($0.station.uuid) }
+        save()
+    }
+
+    func clear() {
+        plays = []
+        save()
+    }
+
+    /// "Just now", "20 min ago", "Yesterday 9:14 PM", "Sep 3".
+    static func when(_ d: Date) -> String {
+        let s = Date().timeIntervalSince(d)
+        if s < 60 { return "Just now" }
+        if s < 3600 { return "\(Int(s / 60)) min ago" }
+        let f = DateFormatter()
+        if Calendar.current.isDateInToday(d) { f.dateStyle = .none; f.timeStyle = .short; return f.string(from: d) }
+        if Calendar.current.isDateInYesterday(d) { f.timeStyle = .short; f.dateStyle = .none; return "Yesterday " + f.string(from: d) }
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f.string(from: d)
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(plays) { try? data.write(to: url, options: .atomic) }
+        onChange()
+    }
+}

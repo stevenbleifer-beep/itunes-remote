@@ -1747,3 +1747,51 @@ greyer pin with "near …" as the subtitle. The first version ignored new
 places while a batch was running, which is why the Beatles list showed one
 pin; it queues now. Pins fit with edge padding so the outermost labels are
 not cut off.
+
+**Radio, third pass (2026-09-07, night).** Steven, away from home on
+another Wi-Fi: the app connected but slowly; the New List sheet froze the
+app; and he asked for genre and country filters, a listening history, and
+the song name in the status bar.
+
+- **Away start-up.** Measured over the tunnel: the whole library comes in
+  2.2 s (6 MB gzipped, the daemon already compresses). The slowness was
+  the order of things: the first load started on the tunnel, then the
+  probe said "away", and `applyConnection` started the load again.
+  `connectAfterProbe` (main.swift → MainWindowController) now waits for
+  the first home-or-away answer, four seconds at most, and connects once
+  to the right host; `applyConnection` restarts a load only when the host
+  actually changed.
+- **The sheet freeze.** `NamePrompt` was a local in every caller and the
+  buttons' targets are weak (`AquaPushButton.target`), so the controller
+  was gone by the time Create was clicked and nothing responded, Escape
+  included. `present(in:)` now captures itself in the sheet's completion
+  handler until the sheet ends. The same latent bug was in every playlist
+  prompt.
+- **Filters.** `RadioFilter` (tag, countrycode); Style is a fixed list of
+  everyday genres, Country comes from `/json/countries` (≥5 stations,
+  everyday names). Search, Popular and Ask all keep to them; Ask is told
+  in the prompt and its queries are forced to them afterwards.
+- **Recently Played.** `RadioHistory` (radio/history.json, 200 entries,
+  one per station moved to the top on replay) under RADIO, with a Played
+  column ("20 min ago · 3 times"). Delete takes one off.
+- **The song on a stream.** `player_state.applescript` returns iTunes'
+  `current stream title` as a 14th field → `PlayerTrack.streamTitle`; on
+  this Mac `AVPlayerItemMetadataOutput` reads the ICY/ID3 title. The LCD
+  shows the song over the station; the status bar reads "On <station>:
+  <song>" while it plays (`streamStatus`, refreshed from `updatePlayerUI`).
+- New-list flow opens the list it just made and says where it went.
+- Test flags: `--source radio-history`, `--radio-newlist`.
+- **Stop.** A Stop button on the page (`stopRadio`): stops the station,
+  clears `playingStation`, and puts the output back where it was if the
+  station had been moved to this Mac (`modeBeforeRadioFallback`).
+- **Letting go.** With `PlayerController.streaming` set, iTunes seen on
+  something other than the stream is not a stale source and not a song
+  ending: `onStreamLost` clears the station and nothing steps. Found when a
+  test instance and Steven's own app drove iTunes at once — his app's
+  handoff to the next song made the test instance step to the next
+  *station*.
+- **Stream titles.** Some stations send a page of XML (Dalet RadioInfo) as
+  the ICY title; `RadioStation.songLine(from:)` pulls artist and title out
+  of that, drops anything else with tags or a URL, and caps the length.
+- Never run a playback test against the Pro while Steven is listening
+  through his own copy of the app: the two fight over iTunes.

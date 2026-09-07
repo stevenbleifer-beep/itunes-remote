@@ -221,9 +221,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func connect(with settings: ServerSettings) {
         guard let url = settings.baseURL else { return }
-        main.connect(APIClient(baseURL: url, token: settings.token))
+        let api = APIClient(baseURL: url, token: settings.token)
         if let lan = settings.lanURL, lan != url {
-            main.startConnectionMonitor(lanURL: lan, token: settings.token)
+            // The probe says home or away within a couple of seconds; the
+            // first load then goes to the right host once, instead of
+            // starting on one and being started again on the other.
+            main.connectAfterProbe(api, lanURL: lan, token: settings.token)
+        } else {
+            main.connect(api)
         }
     }
 

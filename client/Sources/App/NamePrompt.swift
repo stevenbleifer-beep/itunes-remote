@@ -90,8 +90,14 @@ final class NamePrompt: NSObject {
         }
     }
 
+    /// The sheet keeps its controller alive until it ends. Callers hold
+    /// the prompt in a local, and the buttons' targets are weak: without
+    /// this the controller was gone by the time Create was clicked, the
+    /// click did nothing, Escape did nothing, and the sheet could not be
+    /// dismissed — "the app froze on the screen where I name the list".
     func present(in parent: NSWindow) {
-        parent.beginSheet(panel, completionHandler: nil)
+        let keep = self
+        parent.beginSheet(panel) { _ in _ = keep }
     }
 }
 

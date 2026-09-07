@@ -217,6 +217,19 @@ final class PlayerController {
                 onChange()
                 return
             }
+            if streaming, let expected = expectedTrack, let now = s.track?.persistentId, now != expected, s.isPlaying {
+                // The station was left for something else: not ours to step from.
+                Self.trace("iTunes is on \(s.track?.name ?? now) instead of the station — the radio lets go")
+                streaming = false
+                expectedTrack = nil
+                lastOwnTrack = nil
+                remoteState = s
+                lastPoll = Date()
+                lastRemote = (now, s.position, s.track?.duration ?? 0, true)
+                onChange()
+                onStreamLost()
+                return
+            }
             if let expected = expectedTrack, let now = s.track?.persistentId, now != expected, s.isPlaying,
                lastRemote?.id == expected {
                 // A one-off ends in a stop unless iTunes has a source standing
@@ -375,7 +388,8 @@ final class PlayerController {
     }
 
     func stop() {
-        if mode == .local { local.stop(); return }
+        streaming = false
+        if mode == .local { local.stop(); onChange(); return }
         guard let api = api else { return }
         suppressFinish = true
         command { try await api.playerCommand("stop") }
@@ -431,6 +445,13 @@ final class PlayerController {
     /// once the daemon says which it is. `completion` gets the error text
     /// when the other Mac could not open it, so the window can fall back to
     /// playing it here.
+    /// True from a stream being asked for until a song is. While it is,
+    /// iTunes moving to something else is not a song ending and not a stale
+    /// source: someone changed the station, and the radio just lets go.
+    private(set) var streaming = false
+    /// Fires when iTunes is seen playing something other than the stream.
+    var onStreamLost: () -> Void = {}
+
     func playStream(_ station: RadioStation, completion: @escaping (String?) -> Void) {
         finishedTrack = nil
         disarmEndOfTrack()
@@ -438,6 +459,7 @@ final class PlayerController {
         pendingSince = nil
         lastOwnTrack = nil
         expectedTrack = nil
+        streaming = true
         if mode == .local {
             local.playStream(station)
             onChange()
@@ -464,6 +486,7 @@ final class PlayerController {
     }
 
     func play(_ track: Track, playlist: String?) {
+        streaming = false
         lastOwnTrack = track.persistentId
         expectedTrack = track.persistentId
         finishedTrack = nil
