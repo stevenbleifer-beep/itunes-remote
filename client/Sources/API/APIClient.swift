@@ -184,6 +184,30 @@ final class APIClient {
         _ = try await request("POST", "/api/player/play", body: body)
     }
 
+    struct QueueReply: Decodable { let playlist: String; let count: Int }
+
+    /// Fills a queue playlist with a batch — the song to play now first, then
+    /// what follows — and plays the playlist. iTunes moves through it by
+    /// itself, so the app's order is iTunes' order.
+    func queuePlay(tracks: [String]) async throws -> QueueReply {
+        let data = try await request("POST", "/api/queue/play", body: ["tracks": tracks])
+        return try JSONDecoder().decode(QueueReply.self, from: data)
+    }
+
+    /// Builds the batch that comes after this one, in the playlist iTunes is
+    /// not playing from, so the switch at the end is one fast command.
+    @discardableResult
+    func queuePrepare(tracks: [String]) async throws -> QueueReply {
+        let data = try await request("POST", "/api/queue/prepare", body: ["tracks": tracks])
+        return try JSONDecoder().decode(QueueReply.self, from: data)
+    }
+
+    /// Plays the batch prepared earlier.
+    func queueSwitch() async throws -> QueueReply {
+        let data = try await request("POST", "/api/queue/switch")
+        return try JSONDecoder().decode(QueueReply.self, from: data)
+    }
+
     func setVolume(_ volume: Int) async throws {
         _ = try await request("POST", "/api/player/volume", body: ["volume": volume])
     }

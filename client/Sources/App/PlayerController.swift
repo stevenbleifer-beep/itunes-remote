@@ -53,8 +53,15 @@ final class PlayerController {
     /// in a 93,000-track library, or much more over the Tailscale tunnel —
     /// plus a margin. Aimed at 0.4 s flat, iTunes got its own song in first
     /// by a hair: the command was issued in time and landed just late.
-    private var endLead: Double { min(3, max(0.4, lastPlayLatency + 0.3)) }
+    private var endLead: Double {
+        // A prepared batch is one command away; a fill is ten lookups in a
+        // 93,000-track library. Aiming a switch by what a fill costs clipped
+        // three seconds off the end of the song before it.
+        let cost = preparedIds.isEmpty ? lastPlayLatency : lastSwitchLatency
+        return min(3, max(0.4, cost + 0.3))
+    }
     private var lastPlayLatency = 0.9
+    private var lastSwitchLatency = 0.5
     private var endTimer: Timer?
     private var endArmedFor: String?
     /// The track the app has already stepped away from, so that a late poll
@@ -203,6 +210,17 @@ final class PlayerController {
             // iTunes moved on by itself: it was playing our song, and now it
             // is playing another one we never asked for. Treat our song as
             // finished and let the window choose what follows.
+            // Inside the app's own queue playlist, whatever iTunes plays is
+            // the app's own choice: adopt it and let it run. This is the
+            // path every song takes now, and the reason none of the checks
+            // below fire any more.
+            if let q = queuePlaylistId, s.playlist?.persistentId == q, let now = s.track?.persistentId, s.isPlaying {
+                if now != lastOwnTrack { Self.trace("iTunes moved on inside the queue to \(s.track?.name ?? now)") }
+                lastOwnTrack = now
+                expectedTrack = now
+                pendingPlay = nil
+                pendingSince = nil
+            }
             // The play never took: iTunes is on something else seconds after
             // being asked. Ask again rather than leaving its choice playing.
             if let expected = expectedTrack, let now = s.track?.persistentId, now != expected, s.isPlaying,
@@ -260,11 +278,22 @@ final class PlayerController {
     /// is why this still works while the app sits in the background polling
     /// once every five seconds.
     private func armEndOfTrack(_ s: PlayerState) {
+        // Inside the app's queue playlist there is usually nothing to beat:
+        // iTunes' next song is already the app's next song, and cutting in
+        // would only clip the end of every track. The exceptions are the last
+        // song of the batch, where iTunes has nothing to follow it with, and
+        // a batch the app has changed its mind about.
+        if let q = queuePlaylistId, s.playlist?.persistentId == q, !queueStale, !atEndOfBatch {
+            disarmEndOfTrack()
+            return
+        }
         // Only for a song this app started. If someone put something on at
         // the MacBook Pro itself, iTunes' queue is theirs and the app has no
-        // business stepping out of it.
+        // business stepping out of it. Anything out of the app's own queue
+        // playlist counts as the app's.
+        let ours = lastOwnTrack == s.track?.persistentId || inOwnQueue
         guard mode == .remote, s.isPlaying, let t = s.track, t.duration > 0,
-              t.persistentId == lastOwnTrack, t.persistentId != finishedTrack else {
+              ours, t.persistentId != finishedTrack else {
             disarmEndOfTrack()
             return
         }
@@ -387,6 +416,127 @@ final class PlayerController {
         finishedTrack = nil
     }
 
+    /// The app's own queue playlist on the MacBook Pro, once iTunes has made
+    /// it. While iTunes is playing inside it, everything it plays is the
+    /// app's choice, so there is nothing to race and nothing to take back.
+    private(set) var queuePlaylistId: String?
+
+    /// True when iTunes is playing inside the app's queue playlist.
+    var inOwnQueue: Bool {
+        guard let q = queuePlaylistId else { return false }
+        return remoteState?.playlist?.persistentId == q
+    }
+
+    /// Plays a song by handing iTunes a batch. The queue playlist is filled
+    /// with this song and the next few, and the *playlist* is played: from
+    /// there iTunes moves through the batch itself, gaplessly, in the app's
+    /// order, with no window in which it can pick a song of its own.
+    ///
+    /// iTunes reads a playlist once, when told to play it — tracks added
+    /// afterwards are not picked up, and editing the playlist it is playing
+    /// from loses its place — so the batch after this one is built in a
+    /// second playlist while this one plays, and switched to with one fast
+    /// command at the end of it. When that command is a fraction late the
+    /// worst that happens is a moment's silence: at the end of a batch iTunes
+    /// stops, where at the end of a track played out of the library it went
+    /// wandering.
+    func playInQueue(_ track: Track, upcoming: [Track]) {
+        lastOwnTrack = track.persistentId
+        expectedTrack = track.persistentId
+        finishedTrack = nil
+        disarmEndOfTrack()
+        if mode == .local, let api = api {
+            local.play(track, api: api)
+            onChange()
+            return
+        }
+        guard let api = api else { return }
+        pendingPlay = (track.persistentId, nil)
+        pendingSince = Date()
+        pendingRetries = 0
+        // Already sitting in the other playlist, waiting: one command.
+        let switching = preparedIds.first == track.persistentId
+        let batch = switching ? preparedIds : ([track] + upcoming).map { $0.persistentId }
+        let names = ([track] + upcoming).prefix(3).map { $0.name }.joined(separator: ", ")
+        let asked = Date()
+        Task {
+            do {
+                if switching {
+                    let reply = try await api.queueSwitch()
+                    queuePlaylistId = reply.playlist
+                    queuedIds = Array(batch.prefix(max(reply.count, 1)))
+                    lastSwitchLatency = Date().timeIntervalSince(asked)
+                    Self.trace(String(format: "switched to the prepared batch of %d in %.2fs",
+                                      queuedIds.count, lastSwitchLatency))
+                } else {
+                    let reply = try await api.queuePlay(tracks: batch)
+                    queuePlaylistId = reply.playlist
+                    queuedIds = Array(batch.prefix(reply.count))
+                    Self.trace("queued \(reply.count) and played the queue playlist: \(names)")
+                }
+                if !switching { lastPlayLatency = Date().timeIntervalSince(asked) }
+                preparedIds = []
+                queueStale = false
+                lastError = nil
+            } catch {
+                // No queue playlist to be had (an old daemon, or iTunes said
+                // no): play the old way and let the end-of-track handoff
+                // cover the gap.
+                Self.trace("queue failed (\(error.localizedDescription)) — playing from the library instead")
+                queuedIds = []
+                preparedIds = []
+                lastError = error.localizedDescription
+                play(track: track.persistentId, playlist: nil)
+            }
+            await refresh()
+            onQueueEmpty()
+        }
+    }
+
+    /// Builds the batch that follows the one playing, in the other playlist,
+    /// so the end of this batch is one fast command instead of a fill.
+    func prepareNext(_ tracks: [Track]) {
+        guard mode == .remote, let api = api, !tracks.isEmpty, inOwnQueue else { return }
+        let ids = tracks.map { $0.persistentId }
+        guard ids != preparedIds else { return }
+        Task {
+            do {
+                let reply = try await api.queuePrepare(tracks: ids)
+                preparedIds = Array(ids.prefix(reply.count))
+                Self.trace("prepared the next batch of \(preparedIds.count): " +
+                           tracks.prefix(3).map { $0.name }.joined(separator: ", "))
+            } catch {
+                Self.trace("could not prepare the next batch: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Asks the window for the batch after this one, once there is one to ask
+    /// about. Set by the window.
+    var onQueueEmpty: () -> Void = {}
+
+    /// The batch iTunes was handed, in order, and the one waiting next door.
+    private(set) var queuedIds: [String] = []
+    private(set) var preparedIds: [String] = []
+    /// Set when the order has changed under a batch already playing — a
+    /// shuffle, an edit to Up Next. iTunes cannot be told about it, so the
+    /// app takes the next song back over rather than let a stale batch run.
+    private var queueStale = false
+    func markQueueStale() {
+        guard inOwnQueue, !queuedIds.isEmpty else { return }
+        queueStale = true
+        preparedIds = []
+        Self.trace("queue is stale — the app will take the next song")
+        if let s = remoteState { armEndOfTrack(s) }
+    }
+
+    /// True when the song playing is the last one iTunes was handed, so the
+    /// app has to hand over the next batch itself.
+    private var atEndOfBatch: Bool {
+        guard let playing = remoteState?.track?.persistentId, let last = queuedIds.last else { return true }
+        return playing == last
+    }
+
     func play(_ track: Track, playlist: String?) {
         lastOwnTrack = track.persistentId
         expectedTrack = track.persistentId
@@ -495,9 +645,14 @@ final class PlayerController {
     /// song does and the app decides what follows.
     private func keepITunesNeutral() {
         guard let api = api else { return }
+        // Shuffle is the app's: the queue playlist is already in the order
+        // this app chose, and iTunes shuffling it would undo that. Repeat One
+        // is iTunes', because holding on the same song is the one thing it
+        // can do gaplessly and the app cannot.
+        let repeatMode = self.repeatMode
         Task {
             try? await api.setShuffle(false)
-            try? await api.setRepeat("off")
+            try? await api.setRepeat(repeatMode == "one" ? "one" : "off")
         }
     }
 

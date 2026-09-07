@@ -100,15 +100,17 @@ through iTunes itself, never to the files behind its back.
   coming under "Continuing from … (shuffled)", and playing something from
   the panel moves the shuffle along to it. Repeat All deals a new order
   when the round ends.
-- **The app owns the queue, always.** Every song is started from the
-  library, never "inside" a playlist, and the app — not iTunes — decides
-  what follows. It does not wait to find out what iTunes would have done:
-  playing a track through the library leaves the library queued, so the
-  app steps to its own next song four tenths of a second before the
-  current one runs out, and stops iTunes when its list is finished. If
-  iTunes ever does get a song of its own in first, the app notices on the
-  next poll and puts the right one on. Songs *you* start at the MacBook
-  Pro are left alone.
+- **The app owns the queue, always.** It hands iTunes a batch of songs — the
+  one you picked and what follows — in a playlist of its own, and iTunes
+  moves through that by itself: gapless, in the app's order, never a song
+  nobody asked for. The next batch is built in a second playlist while the
+  first one plays, so the changeover is one command at the end of a song. The
+  two playlists live in an "iTunes Remote" folder in iTunes and are hidden
+  from the app's own sidebar.
+  Where iTunes cannot help — the last song of a batch, or an order changed
+  under one — the app steps in just before the song ends, and if it is a
+  fraction late the worst that happens is a moment's silence. Songs *you*
+  start at the MacBook Pro are left alone.
 - **It picks up what is already playing.** Close the window mid-song and
   open it again: the song is on the display straight away (the player is
   asked for before the 93,000-track library), the row is bold, and the app

@@ -1126,6 +1126,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 self.loadAlbums()
             }
             self.updateArtwork()
+            self.tryPlayWantedTrack()
             if let wanted = self.playFirstWhenLoaded, self.controller.source.playlistId == wanted {
                 self.playFirstWhenLoaded = nil
                 if let first = self.rows.first { self.startPlayback(first, playlist: wanted, context: self.rows) }
@@ -1143,6 +1144,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             // the library on its own once this song runs out.
             if !self.step(by: 1) { self.player.stopAfterList() }
         }
+        player.onQueueEmpty = { [weak self] in self?.prepareNextBatch() }
         player.onSyncProgress = { [weak self] p in self?.showSyncProgress(p) }
         display.onCycleMode = { [weak self] mode in
             guard let self = self else { return }
@@ -2144,10 +2146,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         if let id = player.state?.track?.persistentId { current = list.firstIndex { $0.persistentId == id } }
         rebuildShuffleOrder(startingWith: current)
         refreshUpNext()
+        rewriteQueueTail()
     }
 
     @objc private func cycleRepeat(_ sender: Any?) {
         player.cycleRepeat()
+        rewriteQueueTail()
     }
 
     @objc private func toggleArtworkPane(_ sender: Any?) {
@@ -2727,6 +2731,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         // The library usually finishes loading before the first poll comes
         // back, but either can be last, so the takeover is tried from both.
         if !adoptedOnLaunch { adoptWhatIsPlaying() }
+        followOwnQueue()
         let state = player.state
         let playing = state?.isPlaying ?? false
         playButton.glyph = playing ? .pause : .play
@@ -2840,14 +2845,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         startedFromPlaylistId = playlist
         PlayerController.trace("play \(track.name) — \(track.displayArtist) (context \(playContextName ?? "—"), \(playContext.count) songs\(player.shuffle ? ", shuffled" : ""))")
-        // Always from the library, never "inside" the playlist: played inside
-        // it, iTunes makes the playlist its queue and advances on its own
-        // (with its own shuffle), and the app's order never gets a turn.
-        // Playing from the library leaves iTunes queued on the library, which
-        // it would also walk into at the end of the song — PlayerController
-        // steps a fraction of a second before that can happen.
-        // The playlist is remembered here for the sidebar's speaker only.
-        player.play(track, playlist: nil)
+        // Into the app's own queue playlist, with what comes after it, and
+        // played inside that. iTunes decides what follows a song by what
+        // comes next in its current playlist — so the app makes that playlist
+        // say what it means, instead of playing out of the library and then
+        // racing iTunes' walk through it at the end of every song.
+        // The user's playlist is remembered here for the sidebar's speaker.
+        lastQueueTrack = track.persistentId
+        player.playInQueue(track, upcoming: queueUpcoming(after: track.persistentId, limit: 2))
     }
 
     /// The list playback continues through, fixed when it started.
@@ -2894,6 +2899,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         p.onQueueChanged = { [weak self] q in
             self?.upNext = q
             self?.refreshUpNext()
+            self?.rewriteQueueTail()
         }
         p.onPlayQueued = { [weak self] i in
             guard let self = self, i < self.upNext.count else { return }
@@ -2919,10 +2925,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// What the current list would play after the current song, ignoring the
     /// manual queue. With shuffle on it is the shuffled order from here on,
     /// which is fixed when playback starts, so it can be shown.
-    private func upcomingTracks(limit: Int = 100) -> [Track] {
+    private func upcomingTracks(limit: Int = 100, after: String? = nil) -> [Track] {
         let list = playContext.isEmpty ? rows : playContext
         var playing: Int? = nil
-        if let id = player.state?.track?.persistentId { playing = list.firstIndex { $0.persistentId == id } }
+        if let id = after ?? player.state?.track?.persistentId { playing = list.firstIndex { $0.persistentId == id } }
         if player.shuffle {
             if shuffleOrder.isEmpty || shuffleOrder.count != list.count { rebuildShuffleOrder(startingWith: playing) }
             if let i = playing, let c = shuffleOrder.firstIndex(of: i) { shuffleCursor = c }
@@ -2930,7 +2936,62 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             return shuffleOrder.dropFirst(from).prefix(limit).compactMap { $0 < list.count ? list[$0] : nil }
         }
         guard let i = playing else { return Array(list.prefix(limit)) }
-        return Array(list.dropFirst(i + 1).prefix(limit))
+        var tail = Array(list.dropFirst(i + 1).prefix(limit))
+        // Repeat All comes round again, and the queue playlist has to be
+        // told so before the end of the list rather than after it.
+        if (player.state?.repeatMode ?? "off") == "all", tail.count < limit {
+            tail += list.prefix(min(limit - tail.count, i))
+        }
+        return tail
+    }
+
+    /// What the queue playlist should hold after the song playing: anything
+    /// queued by hand first, then the list carrying on.
+    private func queueUpcoming(after id: String?, limit: Int = 10) -> [Track] {
+        var out = upNext
+        out += upcomingTracks(limit: limit, after: id)
+        // The same song twice in a row is iTunes' business (Repeat One), not
+        // a batch's, and a batch with holes in it would play them.
+        var seen = Set<String>()
+        return out.filter { seen.insert($0.persistentId).inserted }.prefix(limit).map { $0 }
+    }
+
+    /// iTunes has moved on inside the app's queue playlist — which is the
+    /// app's own choice, made a song ago. Keep up with it: take the song off
+    /// the hand-made queue if that is where it came from, move the shuffle
+    /// cursor onto it, and write what now comes after it.
+    private var lastQueueTrack: String?
+    private func followOwnQueue() {
+        guard let s = player.state, s.state != "stopped", let id = s.track?.persistentId,
+              id != lastQueueTrack else { return }
+        lastQueueTrack = id
+        guard player.inOwnQueue else { return }
+        // iTunes moved on inside the batch the app handed it: take the song
+        // off the hand-made queue if that is where it came from, and move the
+        // shuffle cursor onto it. Nothing is written — iTunes read the
+        // playlist when it started, and the next batch goes over when this
+        // one runs out.
+        if upNext.first?.persistentId == id { upNext.removeFirst() }
+        let list = playContext.isEmpty ? rows : playContext
+        if player.shuffle, let i = list.firstIndex(where: { $0.persistentId == id }),
+           let c = shuffleOrder.firstIndex(of: i) { shuffleCursor = c }
+        refreshUpNext()
+        prepareNextBatch()
+    }
+
+    /// The batch after the one iTunes is playing, built in the other queue
+    /// playlist so the end of this one is a single command.
+    private func prepareNextBatch() {
+        guard let last = player.queuedIds.last else { return }
+        player.prepareNext(queueUpcoming(after: last, limit: 10))
+    }
+
+    /// The order changed under the song playing — shuffle toggled, Up Next
+    /// edited, repeat changed. iTunes is already holding a batch in the old
+    /// order and cannot be told otherwise, so the app takes the next song
+    /// back over rather than letting the stale batch carry on.
+    private func rewriteQueueTail() {
+        player.markQueueStale()
     }
 
     private func refreshUpNext() {
@@ -2947,6 +3008,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         guard !picked.isEmpty else { return }
         upNext.insert(contentsOf: picked, at: 0)
         refreshUpNext()
+        rewriteQueueTail()
         flashStatus(picked.count == 1 ? "Playing “\(picked[0].name)” next."
                                       : "\(picked.count) songs playing next.")
     }
@@ -2956,6 +3018,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         guard !picked.isEmpty else { return }
         upNext.append(contentsOf: picked)
         refreshUpNext()
+        rewriteQueueTail()
         flashStatus(picked.count == 1 ? "Added “\(picked[0].name)” to Up Next."
                                       : "Added \(picked.count) songs to Up Next.")
     }
@@ -3176,6 +3239,24 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
+    /// `--play-track PID`: start one song from the list on screen, for
+    /// checking the queue without driving the window. The library can take a
+    /// minute to arrive, so this waits for the rows rather than giving up.
+    private var playTrackWanted: String? = {
+        guard let i = CommandLine.arguments.firstIndex(of: "--play-track"),
+              i + 1 < CommandLine.arguments.count else { return nil }
+        return CommandLine.arguments[i + 1].uppercased()
+    }()
+
+    private func tryPlayWantedTrack() {
+        guard let want = playTrackWanted, !rows.isEmpty else { return }
+        guard let row = rows.firstIndex(where: { $0.persistentId.uppercased() == want }) else { return }
+        playTrackWanted = nil
+        print("play-track: row \(row) of \(rows.count)")
+        fflush(stdout)
+        playRow(row)
+    }
+
     var openMissingArtwork = false
     var likeAlbum: String?
 
@@ -3215,6 +3296,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 fflush(stdout)
             }
         }
+        tryPlayWantedTrack()
         if openMissingArtwork { showMissingArtwork(nil) }
         if let want = likeAlbum, let api = controller.api {
             let parts = want.split(separator: "|", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces).lowercased() }

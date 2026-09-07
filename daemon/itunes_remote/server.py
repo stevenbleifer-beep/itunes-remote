@@ -175,6 +175,12 @@ class Api(object):
         self.config = config
         self.itunes = itunes
         self.write_log = write_log
+        # The app's own queue playlists, once iTunes has told us their ids,
+        # and which of the two iTunes is playing. Two, because a playlist
+        # cannot be edited while iTunes is playing from it without losing its
+        # place: the next batch is built in the other one.
+        self.queue_pids = {"a": "", "b": ""}
+        self.queue_active = ""
         self.artwork_cache = OrderedDict()   # persistent id -> (mime, bytes) or None
         self.artwork_lock = threading.Lock()
         # Covers a client is waiting for, exported by the warmer ahead of its sweep.
@@ -233,6 +239,9 @@ class Api(object):
             ("POST", r"/api/player/shuffle", self.post_shuffle),
             ("POST", r"/api/player/repeat", self.post_repeat),
             ("POST", r"/api/player/position", self.post_position),
+            ("POST", r"/api/queue/play", self.post_queue_play),
+            ("POST", r"/api/queue/prepare", self.post_queue_prepare),
+            ("POST", r"/api/queue/switch", self.post_queue_switch),
             ("GET", r"/api/sources", self.get_sources),
             ("GET", r"/api/sync", self.get_sync_plan),
             ("PUT", r"/api/sync", self.put_sync_plan),
@@ -534,7 +543,20 @@ class Api(object):
                 known[pid] = a["hasArtwork"]
 
     def get_playlists(self, params, query, body):
-        return {"playlists": self.store.lib.playlist_summaries()}
+        return {"playlists": [p for p in self.store.lib.playlist_summaries()
+                              if not self._is_queue_playlist(p)]}
+
+    def _is_queue_playlist(self, summary):
+        """The app's own queue playlists, which are not playlists to the user."""
+        if summary.get("persistentId") in self.queue_pids.values():
+            return bool(summary.get("persistentId"))
+        # The folder it lives in is the app's too, and has nothing else in it.
+        if summary.get("folder") and summary.get("name") == self.QUEUE_FOLDER:
+            return True
+        if summary.get("name") not in (self.QUEUE_NAME, self.QUEUE_NAME_B):
+            return False
+        parent = self.store.lib.playlists_by_id.get(summary.get("parentId") or "")
+        return bool(parent) and parent.get("name") == self.QUEUE_FOLDER
 
     def get_playlist_tracks(self, params, query, body):
         f = self._filters(query)
@@ -869,6 +891,68 @@ class Api(object):
             return {"playing": played}
         self._script("player_cmd", "play", timeout=15)
         return {"ok": True}
+
+    # The playlist the app plays inside of, so that iTunes' idea of what comes
+    # next is the app's. Kept in a folder of its own and hidden from
+    # /api/playlists, so it is not offered as somewhere to put songs or as
+    # something to sync.
+    QUEUE_FOLDER = "iTunes Remote"
+    QUEUE_NAME = "Queue"
+    QUEUE_NAME_B = "Queue 2"
+
+    def _queue_track_ids(self, body):
+        tracks = (body or {}).get("tracks") or []
+        if not isinstance(tracks, list) or not tracks or len(tracks) > 100:
+            raise ApiError(400, "tracks must be 1 to 100 persistent IDs")
+        pids = []
+        for t in tracks:
+            if not isinstance(t, str) or not re.match(r"^[0-9A-Fa-f]{16}$", t):
+                raise ApiError(400, "tracks must be persistent IDs")
+            t = t.upper()
+            if t in self.store.lib.tracks and t not in pids:
+                pids.append(t)
+        if not pids:
+            raise ApiError(404, "none of those tracks are in the library")
+        return pids
+
+    def _fill_queue(self, slot, pids):
+        """Writes a batch into one of the two queue playlists."""
+        name = self.QUEUE_NAME if slot == "a" else self.QUEUE_NAME_B
+        out = self.itunes.fields(self._script("queue_fill", self.QUEUE_FOLDER, name,
+                                              self.queue_pids.get(slot, ""), *pids, timeout=120))
+        if not out or not out[0]:
+            raise ApiError(502, "iTunes did not return the queue playlist")
+        self.queue_pids[slot] = out[0]
+        return {"slot": slot, "playlist": out[0],
+                "count": self._num(out[2], len(pids)) if len(out) > 2 else len(pids)}
+
+    def post_queue_play(self, params, query, body):
+        """Fills a queue playlist with a batch and plays it straight away."""
+        pids = self._queue_track_ids(body)
+        slot = "b" if self.queue_active == "a" else "a"
+        filled = self._fill_queue(slot, pids)
+        played = self.itunes.fields(self._script("queue_play", filled["playlist"], timeout=60))
+        self.queue_active = slot
+        filled["playing"] = played[0] if played else ""
+        return filled
+
+    def post_queue_prepare(self, params, query, body):
+        """Builds the batch that comes next, in the playlist iTunes is not
+        playing from, ready for one fast switch at the end of this one."""
+        pids = self._queue_track_ids(body)
+        slot = "b" if self.queue_active == "a" else "a"
+        return self._fill_queue(slot, pids)
+
+    def post_queue_switch(self, params, query, body):
+        """Plays the batch prepared earlier: one command, no writing."""
+        slot = "b" if self.queue_active == "a" else "a"
+        pid = self.queue_pids.get(slot, "")
+        if not pid:
+            raise ApiError(409, "nothing has been prepared")
+        played = self.itunes.fields(self._script("queue_play", pid, timeout=60))
+        self.queue_active = slot
+        return {"slot": slot, "playlist": pid, "playing": played[0] if played else "",
+                "count": self._num(played[1], 0) if len(played) > 1 else 0}
 
     def post_player_cmd(self, params, query, body):
         self._script("player_cmd", params["cmd"], timeout=15)

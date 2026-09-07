@@ -1435,3 +1435,70 @@ back to 73 afterwards, the paused song restored):
 No stranger in between. With the app's shuffle on, "Russian Roulette" is
 its own pick out of the album — iTunes' own next song there is "Alabama",
 which is what the earlier runs played for a second before this landed.
+
+## The app's own queue: two playlists (2026-09-07, midday)
+
+Everything before this was racing iTunes and losing sometimes. What iTunes
+plays after a song is decided when playback *starts*, by what it was handed:
+
+- `play <track>` is a queue of one. When it runs out iTunes carries on
+  through the playlist the track was reached through — `library playlist 1`,
+  the whole library — which is where every stray song came from.
+- `play <track> of <playlist>` is the same: the queue is still one song.
+  Tested on the real library: at the end, iTunes went to "Love Comes To
+  Everyone" out of the library, not to the next track of the playlist.
+- **`play <playlist>`** hands iTunes the playlist. It then moves through it
+  by itself — gaplessly, in the order given, and *stops* at the end instead
+  of wandering.
+
+So the app keeps two playlists of its own, in a folder called **iTunes
+Remote** (`Queue` and `Queue 2`), hidden from `/api/playlists` — the app's
+sidebar still shows 73 playlists, and they cannot be picked as somewhere to
+put songs or as something to sync. Steven agreed to the playlist before it
+was made; it holds membership only, and no file is ever touched.
+
+Two, because iTunes reads the playlist once, at `play`:
+
+- Tracks added afterwards are not picked up — it stops at the end of what it
+  was handed (verified: a one-track batch, two tracks appended, iTunes
+  stopped).
+- Editing the playlist it is playing from loses its place — it falls back
+  into the library at the end of the song. That was the "Satisfied" stray in
+  the 12:26 log, caused by the app rewriting the tail on every track change.
+
+So the batch after this one is built in the *other* playlist, and the end of
+a batch is one fast command (`play` the prepared playlist) instead of a fill.
+
+**Daemon.** `POST /api/queue/play` fills the idle slot and plays it (the
+click path), `/api/queue/prepare` fills it without playing, `/api/queue/switch`
+plays what was prepared. `queue_fill.applescript` and
+`queue_play.applescript`; `QUEUE_FOLDER`/`QUEUE_NAME`/`QUEUE_NAME_B` and
+`_is_queue_playlist` keep them out of the app's lists.
+
+**Client.** `PlayerController.playInQueue(_:upcoming:)` sends the song plus
+two (a fill of three is ~0.7 s, so a double-click still starts almost at
+once); `prepareNext(_:)` builds the following ten while that plays;
+`playInQueue` notices when the song asked for is already first in the
+prepared batch and switches instead of filling. `queuedIds` is the batch
+iTunes holds, `preparedIds` the one waiting. The end-of-track timer now arms
+only where iTunes will *not* do the right thing by itself: the last song of a
+batch, and a batch made stale by a shuffle or an Up Next edit
+(`markQueueStale`). `endLead` is aimed by the cost of a switch (~0.5 s) when
+one is prepared, not by the cost of a fill (~2 s), which was clipping three
+seconds off the last song of a batch.
+
+Verified on the real library, silently, with `--trace-queue`:
+
+    queue: queued 3 and played the queue playlist: Drug Of Choice, Picture Perfect…
+    queue: prepared the next batch of 3: So Long, Good-Bye, Alabama, Proud Of You
+
+    12:39:50.951 playing 217.60/218.55 Drug Of Choice        Queue     <- in a batch
+    12:39:51.532 playing   0.00/380.45 Picture Perfect       Queue
+
+    12:40:32.546 playing 223.05/225.97 All Your Lies         Queue     <- between batches
+    12:40:33.242 playing   0.00/223.59 So Long, Good-Bye     Queue 2
+
+Nothing in between, either time, and the playlist column shows who is
+driving. Repeat One is iTunes' own repeat now (gapless, and the one thing it
+can do that the app cannot); shuffle stays off in iTunes, since the batch is
+already in the app's shuffled order.
