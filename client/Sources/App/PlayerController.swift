@@ -15,15 +15,36 @@ final class PlayerController {
     let local = LocalPlayer()
     /// Called when a locally played track ends, so the window can advance.
     var onLocalTrackFinished: () -> Void = {}
-    /// Fires when iTunes reaches the end of a track on its own. `play <track>`
-    /// gives iTunes a one-item queue, so it stops rather than advancing; this
-    /// is what lets the app carry on to the next track, and makes shuffle and
-    /// repeat mean something in remote mode.
+    /// Fires when the song playing on the MacBook Pro is over, so the window
+    /// can play whatever its own list says comes next.
+    ///
+    /// It does *not* wait for iTunes to stop. `play <track>` resolves the
+    /// track through `library playlist 1`, which makes the whole library
+    /// iTunes' current playlist: the moment a song ends iTunes carries on
+    /// through the library by itself, and a song nobody asked for played
+    /// until the next poll took the step back — a second with the app in
+    /// front, five with it in the background, which is what "it plays a
+    /// random song for a bit" was. So the app gets in first: it knows when
+    /// the song ends and steps a fraction of a second early, and the stop
+    /// and takeover checks below are only the net beneath that.
     var onRemoteTrackFinished: () -> Void = {}
     /// Set while the app itself is asking iTunes to stop or pause, so that
     /// deliberate stop is not mistaken for a track ending.
     private var suppressFinish = false
     private var lastRemote: (id: String, position: Double, duration: Double, playing: Bool)?
+
+    /// How far before the end of a song the next one is started, to beat
+    /// iTunes to its own advance through the library. The last fraction of a
+    /// second of a track is silence on nearly everything; a stranger's song
+    /// was not.
+    private static let endLead = 0.4
+    private var endTimer: Timer?
+    private var endArmedFor: String?
+    /// The track the app has already stepped away from, so that a late poll
+    /// (or iTunes stopping afterwards) cannot step a second time and skip a
+    /// song. Cleared whenever the app asks for a track, so Repeat One can
+    /// play the same song again.
+    private var finishedTrack: String?
 
     private var remoteState: PlayerState?
 
@@ -122,7 +143,11 @@ final class PlayerController {
         if watchingSync || tickCount % 5 == 0 {
             Task { await pollSyncProgress() }
         }
-        if away && mode == .remote && tickCount % 3 != 0 {
+        // In the last seconds of a song the reading has to be fresh: the
+        // step is aimed from it, and aiming from a five-second-old position
+        // is how you end up hearing iTunes' idea of what comes next.
+        let ending = nearEndOfTrack
+        if away && mode == .remote && !ending && tickCount % 3 != 0 {
             onChange()
             return
         }
@@ -131,11 +156,18 @@ final class PlayerController {
             if tickCount % 30 == 0 { Task { await refresh() } }   // keep iTunes' state warm
             return
         }
-        if !NSApp.isActive && tickCount % 5 != 0 {
+        if !NSApp.isActive && !ending && tickCount % 5 != 0 {
             onChange()   // still advance the local clock for the display
             return
         }
         Task { await refresh() }
+    }
+
+    /// Within a few seconds of the end of the song on the MacBook Pro.
+    private var nearEndOfTrack: Bool {
+        guard mode == .remote, let s = remoteState, s.isPlaying,
+              let d = s.track?.duration, d > 0 else { return false }
+        return d - displayPosition < 8
     }
 
     func refresh() async {
@@ -167,15 +199,61 @@ final class PlayerController {
             lastPoll = Date()
             lastError = nil
             itunesRunning = true
-            if finished { onRemoteTrackFinished() }
+            armEndOfTrack(s)
+            if finished, s.track?.persistentId != finishedTrack { onRemoteTrackFinished() }
         } catch let e as APIError where e.status == 503 {
             itunesRunning = false
             lastError = e.message
             remoteState = nil
+            disarmEndOfTrack()
         } catch {
             lastError = error.localizedDescription
         }
         onChange()
+    }
+
+    /// Aims the end-of-track timer at the song now playing. Every poll
+    /// re-aims it, so a seek, a pause or a song started at the Pro itself
+    /// moves it too. The timer runs on real time from the last poll, which
+    /// is why this still works while the app sits in the background polling
+    /// once every five seconds.
+    private func armEndOfTrack(_ s: PlayerState) {
+        // Only for a song this app started. If someone put something on at
+        // the MacBook Pro itself, iTunes' queue is theirs and the app has no
+        // business stepping out of it.
+        guard mode == .remote, s.isPlaying, let t = s.track, t.duration > 0,
+              t.persistentId == lastOwnTrack, t.persistentId != finishedTrack else {
+            disarmEndOfTrack()
+            return
+        }
+        endTimer?.invalidate()
+        endArmedFor = t.persistentId
+        let fire = max(t.duration - s.position - Self.endLead, 0.05)
+        endTimer = Timer.scheduledTimer(withTimeInterval: fire, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.endOfTrackReached() }
+        }
+    }
+
+    private func disarmEndOfTrack() {
+        endTimer?.invalidate()
+        endTimer = nil
+        endArmedFor = nil
+    }
+
+    private func endOfTrackReached() {
+        guard mode == .remote, let id = endArmedFor, id != finishedTrack,
+              remoteState?.isPlaying == true else { return }
+        disarmEndOfTrack()
+        finishedTrack = id
+        onRemoteTrackFinished()
+    }
+
+    /// Nothing follows in the window's list, so iTunes has to be stopped
+    /// before it wanders off into the library on its own.
+    func stopAfterList() {
+        guard mode == .remote, let api = api else { return }
+        suppressFinish = true
+        command { try await api.playerCommand("stop") }
     }
 
     /// True when iTunes has just run off the end of a track by itself.
@@ -193,7 +271,8 @@ final class PlayerController {
             }
         }
         guard mode == .remote, new.state == "stopped", new.track == nil,
-              let previous = lastRemote, previous.playing, previous.duration > 0 else { return false }
+              let previous = lastRemote, previous.playing, previous.duration > 0,
+              previous.id != finishedTrack else { return false }
         guard !suppressFinish else {
             suppressFinish = false
             return false
@@ -256,6 +335,8 @@ final class PlayerController {
     func play(_ track: Track, playlist: String?) {
         lastOwnTrack = track.persistentId
         expectedTrack = track.persistentId
+        finishedTrack = nil
+        disarmEndOfTrack()
         if mode == .local, let api = api {
             local.play(track, api: api)
             onChange()

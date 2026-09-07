@@ -1065,7 +1065,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         player.onOutputsChanged = { [weak self] in self?.updateAirPlayButton() }
         player.onError = { [weak self] message in self?.flashStatus(message) }
         player.onLocalTrackFinished = { [weak self] in self?.step(by: 1) }
-        player.onRemoteTrackFinished = { [weak self] in self?.step(by: 1) }
+        player.onRemoteTrackFinished = { [weak self] in
+            guard let self = self else { return }
+            // Nothing left in the list: stop iTunes, or it plays on through
+            // the library on its own once this song runs out.
+            if !self.step(by: 1) { self.player.stopAfterList() }
+        }
         player.onSyncProgress = { [weak self] p in self?.showSyncProgress(p) }
         display.onCycleMode = { [weak self] mode in
             guard let self = self else { return }
@@ -2752,6 +2757,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         // Always from the library, never "inside" the playlist: played inside
         // it, iTunes makes the playlist its queue and advances on its own
         // (with its own shuffle), and the app's order never gets a turn.
+        // Playing from the library leaves iTunes queued on the library, which
+        // it would also walk into at the end of the song — PlayerController
+        // steps a fraction of a second before that can happen.
         // The playlist is remembered here for the sidebar's speaker only.
         player.play(track, playlist: nil)
     }
@@ -3241,20 +3249,21 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     /// Steps to the next or previous track, honouring shuffle and repeat.
+    /// Returns false when the list has nothing more to play, which is the
+    /// caller's cue to stop iTunes rather than let it carry on by itself.
     ///
-    /// iTunes cannot do this for us. Its app-level `shuffle enabled` and
-    /// `song repeat` accept a write and then have no effect on playback; the
-    /// properties that actually govern it live on the current playlist and are
-    /// read-only (-10006). Since `play <track>` gives iTunes a one-item queue,
-    /// this app already owns the queue in both remote and local mode — so
-    /// shuffle and repeat are implemented here, where they genuinely work.
-    private func step(by delta: Int) {
+    /// iTunes cannot do this for us: what it plays after a song is whatever
+    /// follows in its current playlist, and since the app resolves tracks
+    /// through `library playlist 1` that is the whole library. Shuffle and
+    /// repeat are this app's, in both remote and local mode.
+    @discardableResult
+    private func step(by delta: Int) -> Bool {
         // Anything explicitly queued plays before the list carries on.
         if delta > 0, !upNext.isEmpty {
             let track = upNext.removeFirst()
             startPlayback(track, playlist: controller.source.playlistId)
             refreshUpNext()
-            return
+            return true
         }
         let list = playContext.isEmpty ? rows : playContext
         // The song to step from: what is playing, or — when iTunes has
@@ -3268,14 +3277,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             // window, say). Start the list on screen from the top rather
             // than handing the step to iTunes, whose queue is whatever it
             // was last told to play inside.
-            if let first = rows.first { startPlayback(first, playlist: controller.source.playlistId, context: rows) }
-            return
+            guard let first = rows.first else { return false }
+            startPlayback(first, playlist: controller.source.playlistId, context: rows)
+            return true
         }
         let mode = player.state?.repeatMode ?? "off"
         // Repeat One holds on the same track, whichever way you step.
         if mode == "one" {
-            playInContext(i)
-            return
+            return playInContext(i)
         }
         if player.shuffle {
             if shuffleOrder.count != list.count || !shuffleOrder.contains(i) { rebuildShuffleOrder(startingWith: i) }
@@ -3284,24 +3293,24 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             if next < 0 { next = 0 }
             if next >= shuffleOrder.count {
                 // The round is over: again, in a new order, if repeating.
-                guard mode == "all" else { return }
+                guard mode == "all" else { return false }
                 rebuildShuffleOrder(startingWith: nil)
                 if shuffleOrder.first == i, shuffleOrder.count > 1 { shuffleOrder.swapAt(0, 1) }
                 next = 0
             }
             shuffleCursor = next
-            playInContext(shuffleOrder[next])
-            return
+            return playInContext(shuffleOrder[next])
         }
-        guard let j = nextIndex(from: i, in: list, delta: delta, repeatAll: mode == "all") else { return }
-        playInContext(j)
+        guard let j = nextIndex(from: i, in: list, delta: delta, repeatAll: mode == "all") else { return false }
+        return playInContext(j)
     }
 
     /// Plays an entry of the current context and highlights it if the
     /// window happens to be showing it.
-    private func playInContext(_ index: Int) {
+    @discardableResult
+    private func playInContext(_ index: Int) -> Bool {
         let list = playContext.isEmpty ? rows : playContext
-        guard index >= 0, index < list.count else { return }
+        guard index >= 0, index < list.count else { return false }
         let track = list[index]
         // Playing something out of order (from the queue panel, say) moves
         // the shuffle along to it, so Next carries on from there.
@@ -3312,6 +3321,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             trackTable.selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
             trackTable.scrollRowToVisible(r)
         }
+        return true
     }
 
     private func nextIndex(from i: Int, in list: [Track], delta: Int, repeatAll: Bool) -> Int? {

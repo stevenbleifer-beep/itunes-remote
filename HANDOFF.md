@@ -1321,3 +1321,50 @@ queue, say) — the app treats ours as finished and `onRemoteTrackFinished`
 plays the next from its own order. `step` finds the song to step from
 by what is playing, else by `player.lastOwnTrack`, so the list carries on
 from the right place even while iTunes' wrong song is briefly up.
+
+## The queue that was never one item (2026-09-07)
+
+"Playing music from an album isn't working right — it'll play the song and
+then a random song for a bit, then go back to the correct song."
+
+The assumption underneath every previous fix was wrong. `play <track>` was
+believed to give iTunes a one-item queue that ends when the song does. It
+does not. `play_track.applescript` resolves the track through `library
+playlist 1`, so iTunes makes **the library** its current playlist — the
+daemon says so plainly while a song from an album is playing:
+
+    "playlist": {"name": "Library", "persistentId": "119FF5656BF62069"}
+
+When the song ends iTunes walks on through the library by itself. Whatever
+it picks plays until the next poll (one second with the app in front, five
+with it in the background), at which point the takeover added on 09-05
+notices a song nobody asked for and starts the right one — which, when
+iTunes' pick happened to *be* the right one, restarts the song a few
+seconds in. That is the whole complaint: a stranger's song for a bit, then
+back to the correct one.
+
+So the app no longer waits to find out what iTunes did. `PlayerController`
+now aims an **end-of-track timer**:
+
+- `armEndOfTrack(_:)` runs on every poll and schedules `endOfTrackReached`
+  for `duration - position - endLead` (0.4 s). The timer runs on real time
+  from the last poll, so it is right even while the app is in the
+  background polling once every five seconds. Every poll re-aims it, so a
+  seek, a pause or a song started at the Pro moves it.
+- It arms **only for a song this app started** (`t.persistentId ==
+  lastOwnTrack`). Put something on at the MacBook Pro itself and iTunes'
+  queue is yours; the app keeps out of it.
+- `finishedTrack` is the song already stepped away from, so a stale poll,
+  or iTunes stopping afterwards, cannot step twice and skip a song. It is
+  cleared on every `play`, so Repeat One still repeats.
+- `nearEndOfTrack` (last 8 s) overrides the background and away poll
+  throttles, so the aim is taken from a fresh position.
+
+The cost is 0.4 s of the tail: the last fraction of a second of a track is
+silence on nearly everything, and the gap between songs is the same one
+the app has always had, since it has always started the next song itself.
+
+`step(by:)` now returns whether it started anything, and
+`onRemoteTrackFinished` calls `player.stopAfterList()` when it did not —
+at the end of a list with Repeat off, iTunes has to be stopped, or it
+carries on into the library exactly as before.

@@ -101,10 +101,14 @@ through iTunes itself, never to the files behind its back.
   the panel moves the shuffle along to it. Repeat All deals a new order
   when the round ends.
 - **The app owns the queue, always.** Every song is started from the
-  library, never "inside" a playlist, so iTunes holds a one-item queue and
-  the app decides what follows; and if iTunes ever wanders off to a song
-  of its own choosing, the app notices on the next poll and plays the
-  right next one.
+  library, never "inside" a playlist, and the app — not iTunes — decides
+  what follows. It does not wait to find out what iTunes would have done:
+  playing a track through the library leaves the library queued, so the
+  app steps to its own next song four tenths of a second before the
+  current one runs out, and stops iTunes when its list is finished. If
+  iTunes ever does get a song of its own in first, the app notices on the
+  next poll and puts the right one on. Songs *you* start at the MacBook
+  Pro are left alone.
 - **Play with nothing playing starts the list on screen** — the selected
   song, or the first (a random one with shuffle on) — instead of handing
   the click to iTunes, whose queue was whatever it last had and, with its
