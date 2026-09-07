@@ -1,7 +1,7 @@
 import Cocoa
 
 enum SidebarIcon {
-    case music, recent, duplicates, playlist, smartPlaylist, folder, curator, ipod, speaker, none
+    case music, recent, duplicates, playlist, smartPlaylist, folder, curator, ipod, speaker, radio, none
 }
 
 /// The small grey triangle beside a folder: right when closed, down when
@@ -195,6 +195,21 @@ final class SidebarIconView: NSView {
             }
             fill.setFill()
             NSBezierPath(ovalIn: NSRect(x: cx - 2.2, y: cy - 2.2, width: 4.4, height: 4.4)).fill()
+        case .radio:
+            // A little wireless set: a body, a dial, a speaker grille, an aerial.
+            fill.setFill()
+            NSBezierPath(roundedRect: NSRect(x: cx - 7, y: cy - 6, width: 14, height: 9.5), xRadius: 2, yRadius: 2).fill()
+            (selected ? NSColor(white: 1, alpha: 0.35) : NSColor(white: 1, alpha: 0.9)).setFill()
+            NSBezierPath(ovalIn: NSRect(x: cx + 1.2, y: cy - 4.2, width: 4.4, height: 4.4)).fill()
+            for y in [-4.5, -2.5, -0.5] as [CGFloat] {
+                NSRect(x: cx - 5.2, y: cy + y, width: 5, height: 1).fill()
+            }
+            fill.setStroke()
+            let aerial = NSBezierPath()
+            aerial.move(to: NSPoint(x: cx - 2.5, y: cy + 3.5))
+            aerial.line(to: NSPoint(x: cx + 4, y: cy + 8))
+            aerial.lineWidth = 1.3
+            aerial.stroke()
         case .ipod:
             let body = NSBezierPath(roundedRect: NSRect(x: cx - 4.5, y: cy - 7, width: 9, height: 14), xRadius: 2, yRadius: 2)
             fill.setFill()

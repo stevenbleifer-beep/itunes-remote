@@ -26,6 +26,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         case playlist(Playlist)
         case device(DeviceSource)
         case curator
+        case radio
+        case radioList(RadioList)
     }
 
     private var sourceRows: [SourceRow] = [.header("LIBRARY"), .library, .header("PLAYLISTS")]
@@ -418,6 +420,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         curatorPage.autoresizingMask = [.width, .height]
         curatorPage.isHidden = true
         rightContainer.addSubview(curatorPage)
+        radioPage.frame = rightContainer.bounds
+        radioPage.autoresizingMask = [.width, .height]
+        radioPage.isHidden = true
+        rightContainer.addSubview(radioPage)
         wireCurator()
         devicePage.frame = mainSplit.frame
         devicePage.autoresizingMask = [.width, .height]
@@ -1156,6 +1162,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 self.display.modes = [.player]
             }
         }
+        wireRadio()
         // The Mac's media keys go to whichever app here is the "now playing"
         // app, so the app claims that role and forwards them on.
         mediaKeys.onTogglePlayPause = { [weak self] in self?.player.playPause() }
@@ -1175,6 +1182,217 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         mediaKeys.start()
         startMediaKeyTap()
         updateStatus()
+    }
+
+    // MARK: Radio
+
+    /// Live internet radio, from the Radio Browser directory: a page with
+    /// the world and a list of stations, searched by words or by asking the
+    /// curator's local model, and the app's own station lists under RADIO
+    /// in the sidebar. Stations play in iTunes over there (its own URL
+    /// track) or, when that Mac cannot open the stream, on this one.
+    private let radioPage = RadioPageView()
+    private let radioLists = RadioLists()
+    private lazy var radioAgent = RadioAgent(ollama: curator.ollama)
+    private var radioOpen = false
+    private var radioListOpen: String?
+    private var playingStation: RadioStation?
+    private var radioLoadedPopular = false
+    private var radioAskPending = false
+
+    static var radioHidden: Bool {
+        get { UserDefaults.standard.bool(forKey: "radioHidden") }
+        set { UserDefaults.standard.set(newValue, forKey: "radioHidden") }
+    }
+
+    /// View ▸ Radio: the section comes and goes from the sidebar.
+    @objc func toggleRadioVisible(_ sender: Any?) {
+        let hide = !MainWindowController.radioHidden
+        MainWindowController.radioHidden = hide
+        if hide && radioOpen {
+            closeRadioPage()
+            controller.source = .library
+        }
+        reloadSourceList()
+    }
+
+    private func wireRadio() {
+        radioPage.lists = radioLists.lists
+        radioPage.modelLine = MainWindowController.aiEnabled
+            ? "Ask uses \(radioAgent.model) · Search matches names and styles · directory: radio-browser.info"
+            : "Search matches names and styles · directory: radio-browser.info"
+        radioLists.onChange = { [weak self] in
+            guard let self = self else { return }
+            self.radioPage.lists = self.radioLists.lists
+            if let id = self.radioListOpen {
+                if let l = self.radioLists.list(id) { self.radioPage.refresh(list: l) } else { self.openRadioPage(list: nil) }
+            }
+            self.reloadSourceList()
+        }
+        radioPage.onSearch = { [weak self] text in Task { @MainActor in await self?.searchRadio(text) } }
+        radioPage.onAsk = { [weak self] text in
+            guard let self = self else { return }
+            if MainWindowController.aiEnabled {
+                Task { @MainActor in await self.askRadio(text) }
+            } else {
+                Task { @MainActor in await self.searchRadio(text) }
+            }
+        }
+        radioPage.onPopular = { [weak self] in Task { @MainActor in await self?.loadPopularStations(force: true) } }
+        radioPage.onPlay = { [weak self] s in self?.playStation(s) }
+        radioPage.onAdd = { [weak self] stations, id in self?.addStations(stations, to: id) }
+        radioPage.onRemove = { [weak self] stations in
+            guard let self = self, let id = self.radioListOpen else { return }
+            self.radioLists.remove(Set(stations.map { $0.uuid }), from: id)
+            self.flashStatus(stations.count == 1 ? "Took “\(stations[0].name)” off the list." : "Took \(stations.count) stations off the list.")
+        }
+    }
+
+    private func openRadioPage(list: RadioList?) {
+        closeDevicePage()
+        closeCuratorPage()
+        radioOpen = true
+        radioListOpen = list?.id
+        rightSplit.isHidden = true
+        radioPage.isHidden = false
+        radioPage.playingUUID = playingStation?.uuid
+        if let l = list {
+            radioPage.show(list: l)
+        } else if !radioLoadedPopular {
+            Task { @MainActor in await loadPopularStations(force: false) }
+        } else if radioPage.listId != nil {
+            radioPage.show(radioPage.stations, note: "", heading: "Stations")
+        }
+        radioPage.focusField()
+    }
+
+    private func closeRadioPage() {
+        guard radioOpen else { return }
+        radioOpen = false
+        radioListOpen = nil
+        radioPage.isHidden = true
+        rightSplit.isHidden = false
+    }
+
+    /// The directory's most-listened stations, the page's opening view.
+    private func loadPopularStations(force: Bool) async {
+        radioPage.setBusy(true)
+        radioPage.setStatus("Asking the directory…")
+        do {
+            let stations = try await RadioBrowserClient.shared.popular(limit: 60)
+            radioLoadedPopular = true
+            radioPage.show(stations, note: "The \(stations.count) most listened-to stations in the directory right now. Search, or ask for something.",
+                           heading: "Stations")
+        } catch {
+            radioPage.note("The station directory did not answer: \(error.localizedDescription)")
+        }
+        radioPage.setBusy(false)
+    }
+
+    private func searchRadio(_ text: String) async {
+        radioPage.setBusy(true)
+        radioPage.setStatus("Searching…")
+        do {
+            let stations = try await radioAgent.search(text)
+            radioPage.show(stations, note: stations.isEmpty ? "Nothing in the directory matches “\(text)”."
+                           : "\(stations.count) station\(stations.count == 1 ? "" : "s") matching “\(text)”.", heading: "Stations")
+        } catch {
+            radioPage.note("Search failed: \(error.localizedDescription)")
+        }
+        radioPage.setBusy(false)
+    }
+
+    private func askRadio(_ text: String) async {
+        radioPage.setBusy(true)
+        radioAgent.onStatus = { [weak self] s in self?.radioPage.setStatus(s) }
+        do {
+            _ = await OllamaRuntime.shared.ensureRunning()
+            let result = try await radioAgent.ask(text)
+            var why: [String: String] = [:]
+            for p in result.picks where !p.why.isEmpty { why[p.station.uuid] = p.why }
+            let picked = result.picks.map { $0.station }
+            // The picks first, then the rest of what was found, so the map
+            // shows the lot and the list leads with the choice.
+            let rest = result.found.filter { s in !picked.contains { $0.uuid == s.uuid } }
+            let note = result.note.isEmpty ? "\(picked.count) picked from \(result.found.count) found." : result.note
+            radioPage.show(picked + rest, why: why,
+                           note: "\(note)  (\(picked.count) picked from \(result.found.count) found, \(Int(result.seconds.rounded())) s)",
+                           heading: "Stations — \(text)")
+        } catch {
+            radioPage.note("Sorry — \(error.localizedDescription)")
+        }
+        radioPage.setBusy(false)
+    }
+
+    private func playStation(_ station: RadioStation) {
+        playingStation = station
+        radioPage.playingUUID = station.uuid
+        RadioBrowserClient.shared.click(station.uuid)
+        flashStatus("Tuning to \(station.name)…")
+        sourceList.reloadData()
+        player.playStream(station) { [weak self] error in
+            guard let self = self, self.playingStation?.uuid == station.uuid else { return }
+            if let error = error {
+                // iTunes over there could not open it — no network on that
+                // Mac, or a stream it cannot read. This Mac can.
+                self.playStationHere(station, because: error)
+                return
+            }
+            // Opened, but is anything arriving? With no network over there
+            // iTunes says "playing" and sits at 0:00. Give it a few seconds.
+            guard self.player.mode == .remote else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 9) { [weak self] in
+                guard let self = self, self.playingStation?.uuid == station.uuid, self.player.mode == .remote,
+                      let st = self.player.state, st.track?.persistentId == self.player.lastOwnTrack else {
+                    PlayerController.trace("stream check for \(station.name) skipped: mode \(String(describing: self?.player.mode)), track \(self?.player.state?.track?.persistentId ?? "-") vs own \(self?.player.lastOwnTrack ?? "-")")
+                    return
+                }
+                PlayerController.trace(String(format: "stream check for %@: %@ at %.1f", station.name, st.state, st.position))
+                if st.state != "playing" || st.position < 1 {
+                    self.player.stop()
+                    self.playStationHere(station, because: "no sound arrived over there")
+                }
+            }
+        }
+    }
+
+    private func playStationHere(_ station: RadioStation, because reason: String) {
+        flashStatus("\(ServerSettings.appName) over on \(ServerSettings.name) could not play \(station.name) (\(reason)) — playing it on this Mac instead.")
+        player.setMode(.local)
+        player.playStream(station) { _ in }
+        updatePlayerUI()
+    }
+
+    private func addStations(_ stations: [RadioStation], to id: String?) {
+        guard !stations.isEmpty else { return }
+        if let id = id, let l = radioLists.list(id) {
+            let n = radioLists.add(stations, to: id)
+            flashStatus(n == 0 ? "Already in “\(l.name)”." : "Added \(n) station\(n == 1 ? "" : "s") to “\(l.name)”.")
+            return
+        }
+        let prompt = NamePrompt(title: "New Station List", prompt: "Name for the list:",
+                                placeholder: "Late-night jazz", acceptTitle: "Create")
+        prompt.onAccept = { [weak self] name, done in
+            guard let self = self else { return }
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { done("Give the list a name."); return }
+            let l = self.radioLists.create(trimmed, stations: stations)
+            self.flashStatus("“\(l.name)” made with \(l.stations.count) station\(l.stations.count == 1 ? "" : "s").")
+            done(nil)
+        }
+        if let w = window { prompt.present(in: w) }
+    }
+
+    private func deleteRadioList(_ list: RadioList) {
+        let alert = NSAlert()
+        alert.messageText = "Delete the station list “\(list.name)”?"
+        alert.informativeText = "The stations stay in the directory; only the list goes."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if radioListOpen == list.id { openRadioPage(list: nil) }
+        radioLists.delete(list.id)
+        flashStatus("Deleted “\(list.name)”.")
     }
 
     // MARK: Volume keys for the other Mac
@@ -1613,6 +1831,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// Selecting a device in the source list replaces the browser and track
     /// table with its page, the way iTunes did.
     private func openDevicePage(for device: DeviceSource) {
+        closeRadioPage()
         openDevice = device.name
         devicePage.isHidden = false
         devicePage.frame = mainSplit.frame
@@ -1880,6 +2099,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// table for its page; the sidebar and the player stay.
     private func openCuratorPage() {
         closeDevicePage()
+        closeRadioPage()
         curatorOpen = true
         Task { @MainActor in
             _ = await OllamaRuntime.shared.ensureRunning()
@@ -2317,6 +2537,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             sourceRows.append(.header("CURATOR"))
             sourceRows.append(.curator)
         }
+        if !MainWindowController.radioHidden {
+            sourceRows.append(.header("RADIO"))
+            sourceRows.append(.radio)
+            sourceRows += radioLists.lists.map { .radioList($0) }
+        }
         sourceRows.append(.header("PLAYLISTS"))
         // Playlists as a tree: a folder's playlists sit under it, stepped in,
         // and stay hidden while it is closed. The daemon lists them flat,
@@ -2351,9 +2576,20 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             initialSource = nil
             curatorOpen = true
         }
+        if initialSource == "radio" {
+            initialSource = nil
+            radioOpen = true
+        }
         if curatorOpen, let i = sourceRows.firstIndex(where: { if case .curator = $0 { return true }; return false }) {
             select = i
             if curatorPage.isHidden { openCuratorPage() }
+        } else if radioOpen, let i = sourceRows.firstIndex(where: {
+            if case .radio = $0 { return radioListOpen == nil }
+            if case .radioList(let l) = $0 { return l.id == radioListOpen }
+            return false
+        }) {
+            select = i
+            if radioPage.isHidden { openRadioPage(list: radioListOpen.flatMap { radioLists.list($0) }) }
         } else if controller.source == .recentlyAdded {
             select = 2
         } else if controller.source == .duplicates,
@@ -2940,6 +3176,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             rebuildShuffleOrder(startingWith: list.firstIndex { $0.persistentId == track.persistentId })
         }
         startedFromPlaylistId = playlist
+        if playingStation != nil { playingStation = nil; radioPage.playingUUID = nil; sourceList.reloadData() }
         PlayerController.trace("play \(track.name) — \(track.displayArtist) (context \(playContextName ?? "—"), \(playContext.count) songs\(player.shuffle ? ", shuffled" : ""))")
         // One song, by reference: a one-off to iTunes, which stops when it
         // ends, and the app plays the next one just before that. Never
@@ -3168,6 +3405,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         if item.action == #selector(toggleSongNotifications(_:)) {
             item.state = SongNotifier.enabled ? .on : .off
         }
+        if item.action == #selector(toggleRadioVisible(_:)) {
+            item.state = MainWindowController.radioHidden ? .off : .on
+        }
         if item.action == #selector(toggleVolumeKeys(_:)) {
             item.state = MainWindowController.volumeKeysEnabled && mediaKeyTap.isRunning ? .on : .off
         }
@@ -3304,6 +3544,38 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         restoreUpNext()
         adoptWhatIsPlaying()
         if CommandLine.arguments.contains("--find-ipod") { findIPod(nil) }
+        // `--radio-ask TEXT`: the radio agent on one request, its picks printed.
+        if let i = CommandLine.arguments.firstIndex(of: "--radio-ask"), i + 1 < CommandLine.arguments.count {
+            let text = CommandLine.arguments[i + 1]
+            openRadioPage(list: nil)
+            radioAskPending = true
+            Task { @MainActor in
+                await self.askRadio(text)
+                print("radio: " + self.radioPage.stations.map { "\($0.name) [\($0.countryCode)]" }.joined(separator: " | "))
+                fflush(stdout)
+                self.radioAskPending = false
+            }
+        }
+        // `--radio-play N`: tune to the N-th station on the page (after
+        // `--radio-ask`, or the popular list), quietly, and print the player.
+        if let i = CommandLine.arguments.firstIndex(of: "--radio-play"), i + 1 < CommandLine.arguments.count,
+           let n = Int(CommandLine.arguments[i + 1]) {
+            openRadioPage(list: nil)
+            Task { @MainActor in
+                var waited = 0
+                while self.radioPage.stations.isEmpty || self.radioAskPending, waited < 240 {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    waited += 1
+                }
+                guard n >= 0, n < self.radioPage.stations.count else { print("radio-play: no such station"); fflush(stdout); return }
+                self.player.local.volume = 0.05
+                self.playStation(self.radioPage.stations[n])
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                let st = self.player.state
+                print("radio-play: mode=\(self.player.mode) state=\(st?.state ?? "-") track=\(st?.track?.name ?? "-") artist=\(st?.track?.artist ?? "-") pos=\(Int(self.player.displayPosition)) status=\(self.statusLabel.stringValue)")
+                fflush(stdout)
+            }
+        }
         // `--shuffle-preview`: the shuffled order the queue would show, printed.
         if CommandLine.arguments.contains("--shuffle-preview") {
             let was = player.shuffle
@@ -3467,6 +3739,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// repeat are this app's, in both remote and local mode.
     @discardableResult
     private func step(by delta: Int) -> Bool {
+        // A station playing: Next and Previous move along the stations on
+        // the radio page, and nowhere else.
+        if let s = playingStation {
+            if let next = radioPage.neighbour(of: s.uuid, step: delta) { playStation(next) }
+            return true
+        }
         // Anything explicitly queued plays before the list carries on.
         if delta > 0, !upNext.isEmpty {
             let track = upNext.removeFirst()
@@ -3612,6 +3890,16 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             }
             if event.keyCode == 36, self.window?.firstResponder === self.trackTable {   // Return
                 self.trackDoubleClickedFromSelection()
+                return nil
+            }
+            // The radio's list: Delete takes stations off a saved list, Return tunes in.
+            if self.radioOpen, self.window?.firstResponder === self.radioPage.table {
+                if event.keyCode == 51 || event.keyCode == 117 { self.radioPage.removeSelection(); return nil }
+                if event.keyCode == 36 { self.radioPage.playSelection(); return nil }
+            }
+            if (event.keyCode == 51 || event.keyCode == 117), self.window?.firstResponder === self.sourceList,
+               self.sourceList.selectedRow >= 0, case .radioList(let l) = self.sourceRows[self.sourceList.selectedRow] {
+                self.deleteRadioList(l)
                 return nil
             }
             // The curator's list: Delete drops songs, Return plays the selection.
@@ -4226,6 +4514,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 return cell
             case .curator:
                 return sidebarCell(tableView, text: "Playlist Curator", icon: .curator)
+            case .radio:
+                return sidebarCell(tableView, text: "Stations", icon: .radio)
+            case .radioList(let l):
+                let cell = sidebarCell(tableView, text: l.name, icon: playingStation != nil && radioListOpen == l.id ? .speaker : .playlist)
+                cell.indent = 14
+                return cell
             case .device(let d):
                 var text = d.name
                 if let free = d.freeSpace, let cap = d.capacity, cap > 0 {
@@ -4390,12 +4684,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             // lowest-numbered playlist of the group.
             guard table.selectedRowIndexes.count == 1 else { return }
             switch sourceRows[row] {
-            case .library: closeDevicePage(); closeCuratorPage(); controller.source = .library
-            case .recentlyAdded: closeDevicePage(); closeCuratorPage(); controller.source = .recentlyAdded
-            case .duplicates: closeDevicePage(); closeCuratorPage(); controller.source = .duplicates
-            case .playlist(let p): closeDevicePage(); closeCuratorPage(); controller.source = .playlist(p)
-            case .device(let d): closeCuratorPage(); openDevicePage(for: d)
+            case .library: closeDevicePage(); closeCuratorPage(); closeRadioPage(); controller.source = .library
+            case .recentlyAdded: closeDevicePage(); closeCuratorPage(); closeRadioPage(); controller.source = .recentlyAdded
+            case .duplicates: closeDevicePage(); closeCuratorPage(); closeRadioPage(); controller.source = .duplicates
+            case .playlist(let p): closeDevicePage(); closeCuratorPage(); closeRadioPage(); controller.source = .playlist(p)
+            case .device(let d): closeCuratorPage(); closeRadioPage(); openDevicePage(for: d)
             case .curator: openCuratorPage()
+            case .radio: openRadioPage(list: nil)
+            case .radioList(let l): openRadioPage(list: l)
             case .header: break
             }
         case .browser:

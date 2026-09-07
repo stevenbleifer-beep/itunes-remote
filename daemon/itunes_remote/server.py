@@ -177,6 +177,10 @@ class Api(object):
         self.write_log = write_log
         # The app's own queue playlist, once iTunes has told us its id.
         self.queue_pid = ""
+        # The URL track iTunes made for the last station the app tuned to,
+        # and the one each stream address got, while this daemon runs.
+        self.radio_pid = ""
+        self.radio_tracks = {}
         self.artwork_cache = OrderedDict()   # persistent id -> (mime, bytes) or None
         self.artwork_lock = threading.Lock()
         # Covers a client is waiting for, exported by the warmer ahead of its sweep.
@@ -236,6 +240,7 @@ class Api(object):
             ("POST", r"/api/player/repeat", self.post_repeat),
             ("POST", r"/api/player/position", self.post_position),
             ("POST", r"/api/queue/play", self.post_queue_play),
+            ("POST", r"/api/radio/play", self.post_radio_play),
             ("GET", r"/api/sources", self.get_sources),
             ("GET", r"/api/sync", self.get_sync_plan),
             ("PUT", r"/api/sync", self.put_sync_plan),
@@ -928,6 +933,32 @@ class Api(object):
         return {"playlist": out[0],
                 "count": self._num(out[2], len(pids)) if len(out) > 2 else len(pids),
                 "playing": played[0] if played else ""}
+
+    def post_radio_play(self, params, query, body):
+        """Tunes iTunes to a live stream (an internet radio station). iTunes
+        keeps a URL track per stream in its library, which the XML then
+        carries; the parser leaves those out of the song list."""
+        body = body or {}
+        url = body.get("url")
+        if not isinstance(url, str) or len(url) > 2000 or not re.match(r"^https?://[^\s\"']+$", url):
+            raise ApiError(400, "url must be an http or https address")
+        known = self.radio_tracks.get(url, "")
+        name = body.get("name")
+        name = name.strip()[:120] if isinstance(name, str) else ""
+        out = self.itunes.fields(self._script("radio_play", url, known, self.radio_pid, name, timeout=45))
+        playing = out[0] if out else ""
+        if not playing:
+            raise ApiError(502, "iTunes did not start the stream")
+        # The URL track iTunes is on now: remembered for this address, so the
+        # next time is a play rather than another entry; and the script
+        # deletes the previous station's entry, so the library never fills
+        # with stations.
+        if self.radio_pid and self.radio_pid != playing:
+            for k in [k for k, v in self.radio_tracks.items() if v == self.radio_pid]:
+                del self.radio_tracks[k]
+        self.radio_tracks[url] = playing
+        self.radio_pid = playing
+        return {"playing": playing, "name": out[1] if len(out) > 1 else ""}
 
     def post_player_cmd(self, params, query, body):
         self._script("player_cmd", params["cmd"], timeout=15)

@@ -22,7 +22,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 swiftc -O -o "$BIN" \
     Sources/Aqua/*.swift Sources/API/*.swift Sources/App/*.swift \
-    -framework Cocoa -framework MediaPlayer -framework MusicKit -framework ShazamKit -framework AVFoundation
+    -framework Cocoa -framework MediaPlayer -framework MusicKit -framework ShazamKit -framework AVFoundation \
+    -framework MapKit -framework CoreLocation
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

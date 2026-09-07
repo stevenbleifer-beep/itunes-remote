@@ -319,6 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "AI Features", action: #selector(MainWindowController.toggleAIFeatures(_:)), keyEquivalent: "")
         viewMenu.addItem(withTitle: "Playlist Curator", action: #selector(MainWindowController.toggleCuratorVisible(_:)), keyEquivalent: "")
+        viewMenu.addItem(withTitle: "Radio", action: #selector(MainWindowController.toggleRadioVisible(_:)), keyEquivalent: "")
         viewMenu.addItem(withTitle: "Show Duplicates", action: #selector(MainWindowController.toggleDuplicatesVisible(_:)), keyEquivalent: "")
         viewMenu.addItem(.separator())
         for (i, title) in ["as List", "as Album List", "as Grid", "as Cover Flow"].enumerated() {

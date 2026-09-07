@@ -1668,3 +1668,67 @@ Get Info, Connect. Daemon log clean since the 15:53 restart. Found:
   views with `--view` instead.
 - Setting the search field by accessibility does not filter (no
   `controlTextDidChange`), as noted before.
+
+## Radio (2026-09-07, evening)
+
+Steven: "research what Radio Garden is… implement another section like
+that into the app with a section in the sidebar, with a local AI driven
+agentically speaking search function with selections and playlists of
+stations." Built on the **Radio Browser** directory
+(api.radio-browser.info: open, ~58,000 stations, JSON, `geo_lat`/`geo_long`
+for many, `url_resolved` for the stream, `lastcheckok` for whether it was
+up; it asks for a User-Agent and counts a click per play) rather than Radio
+Garden's own unofficial API, which is undocumented and region-blocked.
+
+**Files.** `RadioBrowser.swift` (station model, mirror-hopping client,
+`Query` with name/tag/countrycode/language/geo), `RadioLists.swift` (the
+app's station lists, `Application Support/<app>/radio/lists.json`),
+`RadioAgent.swift` (the model: a *plan* call turns the request into up to
+five queries — `chatJSON` on the curator's model, JSON out — places are
+geocoded with `CLGeocoder` into `geo_lat/geo_long/geo_distance`; results
+are merged interleaved; an empty result gets one broadened re-plan; more
+than fifteen candidates and a *choose* call picks with a "why"; with AI
+Features off, or the Search button, it is a plain name+tag search),
+`RadioPageView.swift` (search line, `MKMapView` with `MKMarkerAnnotationView`
+pins that select rows and vice versa, the station table, Add to List
+pull-down, Play, Remove). MainWindowController: `SourceRow.radio` /
+`.radioList`, `openRadioPage(list:)`, `playStation`, Next/Previous walk the
+page while a station plays, Delete on the page or the sidebar list,
+View ▸ Radio (`radioHidden`). build.sh links MapKit and CoreLocation.
+
+**Playback.** `PlayerController.playStream(_:completion:)`: remote mode
+asks the daemon (`POST /api/radio/play {url,name}` → `radio_play.applescript`:
+`open location`, or `play` an existing URL track with that address; it
+returns the URL track's persistent ID, which becomes `lastOwnTrack` so the
+poll's takeover and retry logic stay quiet; the daemon remembers that ID
+and the script deletes the previous one when the next station starts, so
+the library carries at most one of the app's stations — every
+`open location` otherwise adds a URL track, and every library change is a
+24 s reparse on the Pro). Local mode, or a failure over there, plays the
+stream with AVPlayer (`LocalPlayer.playStream`) — HLS included, which
+iTunes 12.9.5 cannot read. **iTunes with no network says "playing" and
+sits at 0:00**: `playStation` looks nine seconds later and, if the position
+has not moved, stops iTunes and switches to this Mac with a status line.
+A station is not one of the app's songs: no end-of-track timer (duration
+0), `reachedEnd` never fires, and `startPlayback` clears `playingStation`.
+
+**Test flags.** `--source radio` opens the page; `--radio-ask TEXT` runs
+the agent and prints the picks; `--radio-play N` tunes to the N-th station
+on the page at local volume 0.05 after any ask has finished and prints the
+player state. Verified: the popular list and map; "late night jazz somewhere
+in portugal" → plan `jazz/PT`, `jazz near Lisbon`, `jazz near Porto` in 5 s,
+seven Portuguese jazz stations back. Playback, with the Pro muted: 4Drive
+Jazz (MP3) played in iTunes over there — the nine-second check read
+"playing at 10.2" and the position ran on; Antena 2 Jazzin (HLS) was refused
+by iTunes at once (the script saw the current track was not the stream,
+the daemon answered 502) and played on this Mac. The 0:00 case was found
+earlier the same evening while the Pro was off the network (its Wi-Fi had
+dropped; it rejoined the local Wi-Fi later).
+
+`displayPosition` no longer clamps to the duration when there is none, so
+a stream's clock runs on the display instead of sitting at 0:00.
+
+**Traps.** `before` is a reserved word in AppleScript. `whose address
+contains` over 1,800 URL tracks takes minutes; the script matches `address
+is` exactly. A stream played by `open location` replaces whatever iTunes
+was playing, paused songs included.

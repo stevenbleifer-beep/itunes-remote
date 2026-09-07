@@ -339,7 +339,10 @@ final class PlayerController {
         if mode == .local { return local.position }
         guard let s = state else { return 0 }
         if s.isPlaying {
-            return min(s.track?.duration ?? s.position, s.position + Date().timeIntervalSince(lastPoll))
+            let elapsed = s.position + Date().timeIntervalSince(lastPoll)
+            // A live stream has no duration: nothing to stop the clock at.
+            guard let d = s.track?.duration, d > 0 else { return elapsed }
+            return min(d, elapsed)
         }
         return s.position
     }
@@ -421,6 +424,44 @@ final class PlayerController {
     /// from then on every one-off ends in a stop again. One playlist write
     /// per stale source, which after the first is nearly never.
     private(set) var sourceStale = false
+
+    /// Tunes iTunes over there (or this Mac) to a live stream. A station is
+    /// not a song of the app's: nothing is armed for its end, nothing is
+    /// asked again, and iTunes' own URL track becomes the "own" track only
+    /// once the daemon says which it is. `completion` gets the error text
+    /// when the other Mac could not open it, so the window can fall back to
+    /// playing it here.
+    func playStream(_ station: RadioStation, completion: @escaping (String?) -> Void) {
+        finishedTrack = nil
+        disarmEndOfTrack()
+        pendingPlay = nil
+        pendingSince = nil
+        lastOwnTrack = nil
+        expectedTrack = nil
+        if mode == .local {
+            local.playStream(station)
+            onChange()
+            completion(nil)
+            return
+        }
+        guard let api = api else { completion("not connected"); return }
+        Task {
+            do {
+                let reply = try await api.radioPlay(url: station.url, name: station.name)
+                lastOwnTrack = reply.playing.isEmpty ? nil : reply.playing
+                expectedTrack = lastOwnTrack
+                lastError = nil
+                Self.trace("stream \(station.name) playing on the other Mac as \(reply.playing)")
+                await refresh()
+                completion(nil)
+            } catch {
+                lastError = error.localizedDescription
+                Self.trace("stream \(station.name) refused over there: \(error.localizedDescription)")
+                await refresh()
+                completion(error.localizedDescription)
+            }
+        }
+    }
 
     func play(_ track: Track, playlist: String?) {
         lastOwnTrack = track.persistentId

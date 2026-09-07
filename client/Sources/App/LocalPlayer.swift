@@ -65,6 +65,31 @@ final class LocalPlayer: NSObject {
         onTick()
     }
 
+    /// A live stream on this Mac's speakers. The "track" shown is the
+    /// station: AVFoundation reports no duration for a live stream, so the
+    /// display shows the time listened and nothing to count down.
+    func playStream(_ station: RadioStation) {
+        guard let url = URL(string: station.url) else {
+            onError("the station's address is not a URL")
+            return
+        }
+        current = Track(persistentId: "radio:" + station.uuid, name: station.name, artist: station.place,
+                        album: "Internet Radio", albumArtist: "", genre: station.tagLine, year: nil,
+                        trackNumber: nil, discNumber: nil, totalTime: nil, size: nil, compilation: false)
+        let item = AVPlayerItem(url: url)
+        if let old = endObserver { NotificationCenter.default.removeObserver(old) }
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.onFinished() }
+        }
+        stopObserving()
+        item.addObserver(self, forKeyPath: "status", options: [.new], context: nil)
+        observedItem = item
+        player.replaceCurrentItem(with: item)
+        player.play()
+        onTick()
+    }
+
     override func observeValue(forKeyPath keyPath: String?, of object: Any?,
                                change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
         guard keyPath == "status", let item = object as? AVPlayerItem else { return }

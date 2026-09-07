@@ -113,6 +113,20 @@ through iTunes itself, never to the files behind its back.
   with it. That playlist, "Queue", lives in an "iTunes Remote" folder in
   iTunes and is hidden from the app's own sidebar. Songs *you* start at the
   MacBook Pro are left alone.
+- **Radio.** A RADIO section in the sidebar: *Stations* is a page with the
+  world on the left and a list on the right, fed by the open Radio Browser
+  directory (about 58,000 live stations with their genres, countries,
+  streams and, for many, a place on the map). Type a word and Search
+  matches station names and styles; type a request and Ask hands it to the
+  curator's local model, which turns it into directory searches — a genre,
+  a country, a city to look near — runs them, and chooses from what came
+  back, saying why. Double-click a station to tune iTunes over there to it
+  (it becomes iTunes' URL track, and the app keeps at most one such entry
+  in the library); if that Mac cannot open the stream, or opens it and
+  nothing arrives, the app plays it on this Mac instead and says so.
+  Next and Previous move along the stations on the page. Add to List keeps
+  stations in lists of your own under RADIO; Delete takes a station off a
+  list, or a list off the sidebar. View ▸ Radio hides the section.
 - **The keyboard's volume keys drive iTunes over there.** While a song is
   playing on the MacBook Pro, the Mac's own volume is silent, so the app
   takes the volume, mute, play/pause and track keys itself and sends them

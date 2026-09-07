@@ -196,6 +196,16 @@ final class APIClient {
         return try JSONDecoder().decode(QueueReply.self, from: data)
     }
 
+    struct RadioReply: Decodable { let playing: String; let name: String }
+
+    /// Opens a live stream in iTunes over there. It comes back with the
+    /// persistent ID of the URL track iTunes made for it, which is what the
+    /// player poll will report from then on.
+    func radioPlay(url: String, name: String) async throws -> RadioReply {
+        let data = try await request("POST", "/api/radio/play", body: ["url": url, "name": name])
+        return try JSONDecoder().decode(RadioReply.self, from: data)
+    }
+
     func setVolume(_ volume: Int) async throws {
         _ = try await request("POST", "/api/player/volume", body: ["volume": volume])
     }
