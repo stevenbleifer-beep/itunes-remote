@@ -697,11 +697,83 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         return s
     }
 
+    /// Something was already playing when the app opened — iTunes was left
+    /// running when the window was closed, or a song was put on at the
+    /// MacBook Pro itself. The app takes it over: the row goes bold, and,
+    /// the part that was missing, the app owns the queue again, so what
+    /// follows is its own list rather than iTunes' walk through the library.
+    ///
+    /// The list it carries on through is the playlist it was playing from
+    /// when it closed, if this is still that song; otherwise the album the
+    /// song is from, which is small, quick to fetch and the obvious thing to
+    /// hear next. Either way the status line says which. It does not wait
+    /// for the library: 93,000 tracks take the best part of a minute to
+    /// arrive, and by then the song can be over.
+    ///
+    /// Only at launch. While the app is up, a song started at the MacBook
+    /// Pro is left alone — "at launch" being the first two minutes, or any
+    /// time the song playing is the one the app was playing when it closed.
+    private func adoptWhatIsPlaying() {
+        guard !adoptedOnLaunch, player.lastOwnTrack == nil, playContext.isEmpty,
+              let state = player.state, state.state != "stopped", let t = state.track,
+              let api = controller.api else { return }
+        let remembered = UserDefaults.standard.string(forKey: "lastTrackId") == t.persistentId
+        guard remembered || Date().timeIntervalSince(launchedAt) < 120 else { return }
+        adoptedOnLaunch = true
+
+        let savedName = UserDefaults.standard.string(forKey: ServerSettings.key("playContextName"))
+        if remembered, let pl = UserDefaults.standard.string(forKey: ServerSettings.key("playContextPlaylist")) {
+            Task { @MainActor in
+                let list = (try? await api.tracks(filter: TrackFilter(playlist: pl)))?.tracks ?? []
+                self.adopt(t, into: list, named: savedName ?? "the playlist", playlist: pl)
+            }
+            return
+        }
+        guard !t.album.isEmpty else {
+            adopt(t, into: rows, named: controller.source.displayName, playlist: controller.source.playlistId)
+            return
+        }
+        Task { @MainActor in
+            let page = (try? await api.tracks(filter: TrackFilter(artist: t.artist.isEmpty ? nil : t.artist,
+                                                                  album: t.album)))?.tracks ?? []
+            self.adopt(t, into: page.isEmpty ? self.rows : page,
+                       named: page.isEmpty ? self.controller.source.displayName : t.album,
+                       playlist: page.isEmpty ? self.controller.source.playlistId : nil)
+        }
+    }
+
+    /// Settles the adopted song into a list and says so. A list the song is
+    /// not in is no queue at all, so the app leaves that one to iTunes.
+    private func adopt(_ track: PlayerTrack, into list: [Track], named: String, playlist: String?) {
+        guard let at = list.firstIndex(where: { $0.persistentId == track.persistentId }) else { return }
+        player.adopt(track.persistentId)
+        playContext = list
+        playContextPlaylist = playlist
+        playContextName = named
+        startedFromPlaylistId = playlist
+        rebuildShuffleOrder(startingWith: at)
+        PlayerController.trace("carrying on through \(named): \(list.count) songs, at \(at)")
+        refreshUpNext()
+        if let i = rows.firstIndex(where: { $0.persistentId == track.persistentId }),
+           let r = tableRow(forTrackIndex: i) {
+            trackTable.selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
+            trackTable.scrollRowToVisible(r)
+        }
+        flashStatus("Picked up “\(track.name)” — carrying on through \(named).")
+        updatePlayerUI()
+    }
+
+    private var adoptedOnLaunch = false
+    private let launchedAt = Date()
+
     /// Brings the window back to the track that was playing when it last
     /// closed: selects it and scrolls it into view, without starting playback.
     private func restoreLastTrack() {
         guard !restoredLastTrack else { return }
         restoredLastTrack = true
+        // Nothing to bring back to if the song is still playing and the app
+        // has just taken it over: it has already been put on screen.
+        guard !adoptedOnLaunch else { return }
         guard controller.source.isLibrary,
               let id = UserDefaults.standard.string(forKey: "lastTrackId"),
               let index = rows.firstIndex(where: { $0.persistentId == id }),
@@ -1303,11 +1375,16 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     func connect(_ api: APIClient) {
         awayURL = api.baseURL
-        controller.connect(api)
         player.api = api
         artworkCache.api = api
         artworkCache.clear()
+        // What is playing is asked for *first*. The library dump is 93,000
+        // tracks and ties the MacBook Pro up for the best part of a minute;
+        // behind it, the first player poll took that long to come back and
+        // the display sat on "93,203 songs in iTunes 12.9.5" while a song
+        // was playing — "I closed the app and now it shows nothing playing".
         player.start()
+        controller.connect(api)
         loadDevices()
         startAlertPolling()
         deviceTimer?.invalidate()
@@ -2647,6 +2724,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func updatePlayerUI() {
         miniPlayer?.update()
+        // The library usually finishes loading before the first poll comes
+        // back, but either can be last, so the takeover is tried from both.
+        if !adoptedOnLaunch { adoptWhatIsPlaying() }
         let state = player.state
         let playing = state?.isPlaying ?? false
         playButton.glyph = playing ? .pause : .play
@@ -2750,10 +2830,16 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             playContext = list
             playContextPlaylist = playlist
             playContextName = controller.source.displayName
+            // Enough to rebuild the list after a relaunch: which playlist it
+            // came from and what it was called. The songs themselves are not
+            // written out — the library is 60,000 of them.
+            UserDefaults.standard.set(playlist, forKey: ServerSettings.key("playContextPlaylist"))
+            UserDefaults.standard.set(playContextName, forKey: ServerSettings.key("playContextName"))
             // Shuffle is an order, decided now, so Up Next can show it.
             rebuildShuffleOrder(startingWith: list.firstIndex { $0.persistentId == track.persistentId })
         }
         startedFromPlaylistId = playlist
+        PlayerController.trace("play \(track.name) — \(track.displayArtist) (context \(playContextName ?? "—"), \(playContext.count) songs\(player.shuffle ? ", shuffled" : ""))")
         // Always from the library, never "inside" the playlist: played inside
         // it, iTunes makes the playlist its queue and advances on its own
         // (with its own shuffle), and the app's order never gets a turn.
@@ -3095,6 +3181,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func firstLoadDone() {
         restoreUpNext()
+        adoptWhatIsPlaying()
         if CommandLine.arguments.contains("--find-ipod") { findIPod(nil) }
         // `--shuffle-preview`: the shuffled order the queue would show, printed.
         if CommandLine.arguments.contains("--shuffle-preview") {

@@ -1368,3 +1368,70 @@ the app has always had, since it has always started the next song itself.
 `onRemoteTrackFinished` calls `player.stopAfterList()` when it did not —
 at the end of a list with Repeat off, iTunes has to be stopped, or it
 carries on into the library exactly as before.
+
+## Picking up what is already playing (2026-09-07, late morning)
+
+Two things came out of testing the handoff above on the real library.
+
+**It only worked for songs the app had started.** `armEndOfTrack` arms only
+when the playing song is `player.lastOwnTrack` — deliberately, so a song
+put on at the MacBook Pro itself is left alone. But that is exactly the
+state after a relaunch: iTunes plays on, the app comes back owning
+nothing, and the first thing it does is watch iTunes wander off into the
+library. "Your fix didn't work" was that, and "can you make it so if I
+close and reopen the remote it picks up what is already playing" is the
+same gap from the other side.
+
+`adoptWhatIsPlaying()` (MainWindowController) now takes the song over at
+launch: `player.adopt(id)` makes it the app's own, and the app rebuilds a
+list to carry on through — the playlist it was playing from when it closed
+(`playContextPlaylist` / `playContextName`, now written to defaults by
+`startPlayback`) if this is still that song, else the song's album, which
+is small and quick to fetch. It does not wait for the library: 93,000
+tracks take the best part of a minute. Only at launch — the first two
+minutes, or any time the song is the remembered one — so a song started at
+the Pro while the app is up is still left alone. The status line says
+which list it took: "Picked up “Focus” — carrying on through Division."
+
+**The player is asked for before the library.** `connect` used to start
+the library load first, and the first player poll came back behind it: the
+display sat on "93,203 songs in iTunes 12.9.5" for the best part of a
+minute while a song was playing. That was "I closed the app and now it
+shows nothing playing".
+
+**The lead is measured, not guessed.** Aimed at a flat 0.4 s, iTunes still
+got its own song in by a hair: the play is issued in time but lands late
+(HTTP, then 0.3 s of iTunes finding the track by persistent ID in a 93,000
+track library, and the daemon runs one AppleScript at a time). `endLead`
+is now `lastPlayLatency + 0.3`, clamped to 0.4…3 s, where `lastPlayLatency`
+is the round trip of the app's own last play — which also covers the
+Tailscale tunnel, where it is much longer. And `tick()` skips the poll when
+the handoff is less than 1.5 s away, so the play does not queue behind it.
+
+**A handoff that does not land is asked for again.** With the library
+fetch timing out and retrying, a play was starved long enough for iTunes
+to get in first, and nothing asked again — iTunes' choice simply played
+on. `pendingPlay` is the song asked for until iTunes is seen playing it;
+if a poll shows something else within eight seconds, the app asks again
+(three times at most) instead of stepping past it.
+
+**`--trace-queue`** prints every queue decision — adopted, carrying on
+through, armed for, end of track reached, play, asking again, nothing
+follows. The queue is the one part of this app a screenshot cannot check:
+two songs apart, both plausible. It is how the run below was read.
+
+Verified on the real library, silently (iTunes' volume set to 0 and put
+back to 73 afterwards, the paused song restored):
+
+    queue: adopted All Your Lies
+    queue: carrying on through Division: 13 songs, at 9
+    queue: armed for All Your Lies in 25.34s (at 199.43 of 225.97, lead 1.20)
+    queue: end of track reached for All Your Lies
+    queue: play Russian Roulette — 10 Years (context Division, 13 songs, shuffled)
+
+    11:20:10 playing 224.24/225.97 All Your Lies
+    11:20:11 playing   0.00/229.17 Russian Roulette
+
+No stranger in between. With the app's shuffle on, "Russian Roulette" is
+its own pick out of the album — iTunes' own next song there is "Alabama",
+which is what the earlier runs played for a second before this landed.

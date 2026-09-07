@@ -5,6 +5,16 @@ import Cocoa
 /// poll is one osascript spawn on the old machine, so this is deliberate.
 @MainActor
 final class PlayerController {
+    /// `--trace-queue`: every decision about what plays next, printed. The
+    /// queue is the one part of this app that cannot be checked from a
+    /// screenshot — two songs apart, both plausible — so it says what it did.
+    static let traceQueue = CommandLine.arguments.contains("--trace-queue")
+    static func trace(_ message: @autoclosure () -> String) {
+        guard traceQueue else { return }
+        print("queue: \(message())")
+        fflush(stdout)
+    }
+
     var api: APIClient? {
         didSet { if api != nil { keepITunesNeutral() } }
     }
@@ -37,7 +47,14 @@ final class PlayerController {
     /// iTunes to its own advance through the library. The last fraction of a
     /// second of a track is silence on nearly everything; a stranger's song
     /// was not.
-    private static let endLead = 0.4
+    ///
+    /// It is the round trip of the app's own last `play` — a tenth of a
+    /// second of HTTP and three of iTunes finding the track by persistent ID
+    /// in a 93,000-track library, or much more over the Tailscale tunnel —
+    /// plus a margin. Aimed at 0.4 s flat, iTunes got its own song in first
+    /// by a hair: the command was issued in time and landed just late.
+    private var endLead: Double { min(3, max(0.4, lastPlayLatency + 0.3)) }
+    private var lastPlayLatency = 0.9
     private var endTimer: Timer?
     private var endArmedFor: String?
     /// The track the app has already stepped away from, so that a late poll
@@ -143,6 +160,13 @@ final class PlayerController {
         if watchingSync || tickCount % 5 == 0 {
             Task { await pollSyncProgress() }
         }
+        // Out of the way of the handoff: the daemon runs one AppleScript at a
+        // time, so a poll started now would be in front of the play command
+        // that has to land before the song ends.
+        if let fire = endTimer?.fireDate, fire.timeIntervalSinceNow < 1.5 {
+            onChange()
+            return
+        }
         // In the last seconds of a song the reading has to be fresh: the
         // step is aimed from it, and aiming from a five-second-old position
         // is how you end up hearing iTunes' idea of what comes next.
@@ -179,6 +203,19 @@ final class PlayerController {
             // iTunes moved on by itself: it was playing our song, and now it
             // is playing another one we never asked for. Treat our song as
             // finished and let the window choose what follows.
+            // The play never took: iTunes is on something else seconds after
+            // being asked. Ask again rather than leaving its choice playing.
+            if let expected = expectedTrack, let now = s.track?.persistentId, now != expected, s.isPlaying,
+               let since = pendingSince, Date().timeIntervalSince(since) < 8, pendingRetries < 3 {
+                pendingRetries += 1
+                Self.trace("iTunes is on \(s.track?.name ?? now), not what was asked for — asking again (\(pendingRetries))")
+                remoteState = s
+                lastPoll = Date()
+                lastRemote = (now, s.position, s.track?.duration ?? 0, true)
+                sendPendingPlay()
+                onChange()
+                return
+            }
             if let expected = expectedTrack, let now = s.track?.persistentId, now != expected, s.isPlaying,
                lastRemote?.id == expected {
                 expectedTrack = nil
@@ -188,6 +225,11 @@ final class PlayerController {
                 onChange()
                 onRemoteTrackFinished()
                 return
+            }
+            // It landed.
+            if s.track?.persistentId == expectedTrack, s.isPlaying {
+                pendingPlay = nil
+                pendingSince = nil
             }
             if s.track?.persistentId == expectedTrack, s.state == "stopped" { expectedTrack = nil }
             let finished = reachedEnd(s)
@@ -228,10 +270,11 @@ final class PlayerController {
         }
         endTimer?.invalidate()
         endArmedFor = t.persistentId
-        let fire = max(t.duration - s.position - Self.endLead, 0.05)
+        let fire = max(t.duration - s.position - endLead, 0.05)
         endTimer = Timer.scheduledTimer(withTimeInterval: fire, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.endOfTrackReached() }
         }
+        Self.trace(String(format: "armed for %@ in %.2fs (at %.2f of %.2f, lead %.2f)", t.name, fire, s.position, t.duration, endLead))
     }
 
     private func disarmEndOfTrack() {
@@ -245,6 +288,7 @@ final class PlayerController {
               remoteState?.isPlaying == true else { return }
         disarmEndOfTrack()
         finishedTrack = id
+        Self.trace("end of track reached for \(remoteState?.track?.name ?? id)")
         onRemoteTrackFinished()
     }
 
@@ -252,6 +296,7 @@ final class PlayerController {
     /// before it wanders off into the library on its own.
     func stopAfterList() {
         guard mode == .remote, let api = api else { return }
+        Self.trace("nothing follows in the list — stopping iTunes")
         suppressFinish = true
         command { try await api.playerCommand("stop") }
     }
@@ -332,6 +377,16 @@ final class PlayerController {
     private(set) var lastOwnTrack: String?
     private var expectedTrack: String?
 
+    /// Takes over a song that was already playing — iTunes was left running
+    /// when the app was closed, say. From here the app owns the queue: the
+    /// end-of-track handoff arms for this song like any it started itself.
+    func adopt(_ id: String) {
+        Self.trace("adopted \(remoteState?.track?.name ?? id)")
+        lastOwnTrack = id
+        expectedTrack = id
+        finishedTrack = nil
+    }
+
     func play(_ track: Track, playlist: String?) {
         lastOwnTrack = track.persistentId
         expectedTrack = track.persistentId
@@ -374,8 +429,31 @@ final class PlayerController {
     }
 
     func play(track: String, playlist: String?) {
-        guard let api = api else { return }
-        command { try await api.play(track: track, playlist: playlist) }
+        guard api != nil else { return }
+        pendingPlay = (track, playlist)
+        pendingSince = Date()
+        pendingRetries = 0
+        sendPendingPlay()
+    }
+
+    /// The song asked for, until iTunes is seen playing it. A handoff at the
+    /// end of a track can miss: the daemon runs one AppleScript at a time, so
+    /// a play can queue behind a library fetch long enough for iTunes to get
+    /// its own next song in — and, before this, nothing asked again, so
+    /// iTunes' choice simply played on.
+    private var pendingPlay: (track: String, playlist: String?)?
+    private var pendingSince: Date?
+    private var pendingRetries = 0
+
+    private func sendPendingPlay() {
+        guard let api = api, let p = pendingPlay else { return }
+        let asked = Date()
+        command { [weak self] in
+            try await api.play(track: p.track, playlist: p.playlist)
+            // What it costs to put a song on is what the next handoff has to
+            // be aimed ahead by.
+            self?.lastPlayLatency = Date().timeIntervalSince(asked)
+        }
     }
 
     func seek(to seconds: Double) {

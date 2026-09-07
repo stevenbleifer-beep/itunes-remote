@@ -109,6 +109,12 @@ through iTunes itself, never to the files behind its back.
   iTunes ever does get a song of its own in first, the app notices on the
   next poll and puts the right one on. Songs *you* start at the MacBook
   Pro are left alone.
+- **It picks up what is already playing.** Close the window mid-song and
+  open it again: the song is on the display straight away (the player is
+  asked for before the 93,000-track library), the row is bold, and the app
+  takes the queue back over — carrying on through the playlist it was
+  playing from, or the album the song is on, whichever it can name. A song
+  you put on at the MacBook Pro while the app is open is still left alone.
 - **Play with nothing playing starts the list on screen** — the selected
   song, or the first (a random one with shuffle on) — instead of handing
   the click to iTunes, whose queue was whatever it last had and, with its
