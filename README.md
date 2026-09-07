@@ -113,6 +113,13 @@ through iTunes itself, never to the files behind its back.
   with it. That playlist, "Queue", lives in an "iTunes Remote" folder in
   iTunes and is hidden from the app's own sidebar. Songs *you* start at the
   MacBook Pro are left alone.
+- **The keyboard's volume keys drive iTunes over there.** While a song is
+  playing on the MacBook Pro, the Mac's own volume is silent, so the app
+  takes the volume, mute, play/pause and track keys itself and sends them
+  to iTunes; the status bar says the new volume. When nothing is playing
+  there the keys are the Mac's again. It needs the Accessibility permission
+  once (System Settings ▸ Privacy & Security ▸ Accessibility); Controls ▸
+  Volume Keys Control iTunes turns it off and on.
 - **It picks up what is already playing.** Close the window mid-song and
   open it again: the song is on the display straight away (the player is
   asked for before the 93,000-track library), the row is bold, and the app

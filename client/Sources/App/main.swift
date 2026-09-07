@@ -350,6 +350,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         identify.keyEquivalentModifierMask = [.command, .shift]
         controlsMenu.addItem(withTitle: "Notify on Song Change",
                              action: #selector(MainWindowController.toggleSongNotifications(_:)), keyEquivalent: "")
+        controlsMenu.addItem(withTitle: "Volume Keys Control \(ServerSettings.appName) on the \(ServerSettings.name)",
+                             action: #selector(MainWindowController.toggleVolumeKeys(_:)), keyEquivalent: "")
         controlsMenu.addItem(.separator())
         let curatorItem = controlsMenu.addItem(withTitle: "Playlist Curator",
                                                action: #selector(MainWindowController.showCurator(_:)), keyEquivalent: "k")

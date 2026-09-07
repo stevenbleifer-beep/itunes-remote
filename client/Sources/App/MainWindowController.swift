@@ -1173,7 +1173,86 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         mediaKeys.onPrevious = { [weak self] in self?.previousPressed() }
         mediaKeys.onSeek = { [weak self] seconds in self?.player.seek(to: seconds) }
         mediaKeys.start()
+        startMediaKeyTap()
         updateStatus()
+    }
+
+    // MARK: Volume keys for the other Mac
+
+    /// The keyboard's volume keys change iTunes' volume over there while it
+    /// is playing there — the Mac's own volume is silent then. Play/pause and
+    /// the track keys are taken the same way in that state, so they work even
+    /// when another app here has become the "now playing" app.
+    private let mediaKeyTap = MediaKeyTap()
+    static var volumeKeysEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "volumeKeysRemote") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "volumeKeysRemote") }
+    }
+    /// The volume before Mute, so the key restores it.
+    private var volumeBeforeMute: Int?
+
+    private func startMediaKeyTap() {
+        guard !ServerSettings.isMusic, MainWindowController.volumeKeysEnabled else { return }
+        mediaKeyTap.shouldHandle = { [weak self] in
+            guard let self = self else { return false }
+            return MainActor.assumeIsolated {
+                self.player.mode == .remote && self.player.state?.isPlaying == true
+            }
+        }
+        mediaKeyTap.onKey = { [weak self] key in
+            Task { @MainActor in self?.mediaKey(key) }
+        }
+        if MediaKeyTap.trusted {
+            mediaKeyTap.start()
+        } else if !UserDefaults.standard.bool(forKey: "volumeKeysAsked") {
+            // Once: the system's dialog sends the user to the Accessibility
+            // list. Chosen again from the Controls menu, it asks again.
+            UserDefaults.standard.set(true, forKey: "volumeKeysAsked")
+            MediaKeyTap.askForTrust()
+            flashStatus("Allow iTunes Remote under Privacy & Security ▸ Accessibility, and the volume keys will drive \(ServerSettings.appName).")
+        }
+    }
+
+    private func mediaKey(_ key: MediaKeyTap.Key) {
+        let current = player.state?.volume ?? 0
+        switch key {
+        case .soundUp, .soundDown:
+            // Sixteen steps, like the Mac's own keys.
+            let step = key == .soundUp ? 6 : -6
+            let v = max(0, min(100, current + step))
+            volumeBeforeMute = nil
+            player.setVolume(v)
+            flashStatus("\(ServerSettings.appName) volume: \(v)%")
+        case .mute:
+            if current == 0, let back = volumeBeforeMute {
+                volumeBeforeMute = nil
+                player.setVolume(back)
+                flashStatus("\(ServerSettings.appName) volume: \(back)%")
+            } else if current > 0 {
+                volumeBeforeMute = current
+                player.setVolume(0)
+                flashStatus("\(ServerSettings.appName) muted.")
+            }
+        case .play: player.playPause()
+        case .next: step(by: 1)
+        case .previous: previousPressed()
+        }
+    }
+
+    @objc func toggleVolumeKeys(_ sender: Any?) {
+        MainWindowController.volumeKeysEnabled.toggle()
+        if MainWindowController.volumeKeysEnabled {
+            if MediaKeyTap.trusted {
+                startMediaKeyTap()
+                flashStatus("The volume keys drive \(ServerSettings.appName) while it is playing on the \(ServerSettings.name).")
+            } else {
+                MediaKeyTap.askForTrust()
+                flashStatus("Allow iTunes Remote under Privacy & Security ▸ Accessibility, then choose this again.")
+            }
+        } else {
+            mediaKeyTap.stop()
+            flashStatus("The volume keys are this Mac's again.")
+        }
     }
 
     // MARK: Finding the iPod
@@ -3068,6 +3147,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         if item.action == #selector(toggleSongNotifications(_:)) {
             item.state = SongNotifier.enabled ? .on : .off
+        }
+        if item.action == #selector(toggleVolumeKeys(_:)) {
+            item.state = MainWindowController.volumeKeysEnabled && mediaKeyTap.isRunning ? .on : .off
         }
         return true
     }

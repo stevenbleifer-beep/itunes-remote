@@ -1619,3 +1619,52 @@ Years|Division" --play-track 88A72FE28BC39F7A` (Picture Perfect, track 9):
 The app the user runs is the build installed at the end of this pass
 (`./build.sh --install`); the daemon on the Pro was deployed with `rsync
 -ac` and `launchctl kickstart -k`.
+
+## Volume keys for the other Mac (2026-09-07, evening)
+
+Steven: "map the media keys to the play pause and volume in the app when
+playing out of the MacBook Pro." Play/pause and the track keys already
+reached the app through `MPRemoteCommandCenter` (MediaKeys.swift) whenever
+the app was the "now playing" app. Volume keys never reach any app: the
+system sets this Mac's volume with them, silent while the sound is over
+there.
+
+`MediaKeyTap` (MediaKeys.swift) is a `CGEvent` tap on `NX_SYSDEFINED`
+events (type 14, subtype 8 = aux control buttons). While
+`player.mode == .remote && player.state?.isPlaying == true` it takes sound
+up/down/mute — and play, next, previous, so they work even when another app
+here has become the now-playing app — and returns nil so the system never
+sees them; otherwise every event passes through untouched. `data1` carries
+the key in the high word and the key-down flag (`0xA`) in bits 8–15 of the
+low word. A swallowing tap needs Accessibility: the app asks once at launch
+(`volumeKeysAsked`), and Controls ▸ "Volume Keys Control iTunes on the
+MacBook Pro" asks again or turns the tap off (`volumeKeysRemote`). The
+Developer ID signature is what keeps the grant across rebuilds — which is
+also why **`./build.sh --install` must always be run with
+`ITR_SIGN_IDENTITY`** (an ad-hoc build loses the keychain token too: that
+was the "says I need to set it up" of this afternoon).
+
+Volume steps are 6 of 100 (about the Mac's sixteen), through
+`player.setVolume`, which already coalesces; mute remembers the level in
+`volumeBeforeMute`. Not on the Apple Music profile (`ServerSettings.isMusic`),
+where the sound is local.
+
+## Bug pass (2026-09-07, evening)
+
+Clicked through the app in the background with the desktop-control tools
+while Steven's song stayed paused: Music, Recently Added (600 songs),
+Duplicates (5,448 songs with copies), Playlist Curator page, Up Next panel
+(continuing from his shuffled playlist), List, Album List, Grid and Cover
+Flow (the last three in a dev instance with `--view … --select-album`),
+Get Info, Connect. Daemon log clean since the 15:53 restart. Found:
+
+- The "error" in the status bar is `LibraryController.statusText` showing
+  "Error: … — retrying" while a library fetch fails; it clears on the next
+  success. It appears while the Pro is reparsing the XML (24 s after any
+  playlist edit) and when the daemon restarts. Not a fault, but worth
+  knowing it is transient.
+- The view-switcher buttons and the View menu ignore synthetic
+  (accessibility) presses from the background; real clicks work. Test the
+  views with `--view` instead.
+- Setting the search field by accessibility does not filter (no
+  `controlTextDidChange`), as noted before.
