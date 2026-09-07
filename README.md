@@ -100,17 +100,19 @@ through iTunes itself, never to the files behind its back.
   coming under "Continuing from … (shuffled)", and playing something from
   the panel moves the shuffle along to it. Repeat All deals a new order
   when the round ends.
-- **The app owns the queue, always.** It hands iTunes a batch of songs — the
-  one you picked and what follows — in a playlist of its own, and iTunes
-  moves through that by itself: gapless, in the app's order, never a song
-  nobody asked for. The next batch is built in a second playlist while the
-  first one plays, so the changeover is one command at the end of a song. The
-  two playlists live in an "iTunes Remote" folder in iTunes and are hidden
-  from the app's own sidebar.
-  Where iTunes cannot help — the last song of a batch, or an order changed
-  under one — the app steps in just before the song ends, and if it is a
-  fraction late the worst that happens is a moment's silence. Songs *you*
-  start at the MacBook Pro are left alone.
+- **The app owns the queue, always.** Every song is one song to iTunes: it
+  plays it and, with nothing behind it, stops — and the app, which knows
+  when the song ends, has the next one on a fraction of a second before
+  that. What follows a song is decided here, by the list on screen, shuffle
+  and Up Next, never by iTunes. The one thing that ever put a stranger in
+  between was a *source* iTunes was holding — a playlist or album it had
+  once been told to play as a whole, which it keeps for days and resumes
+  after every song played by reference. The app never loads one, and when
+  it sees one surface (or picks up a song it did not start), the next song
+  goes out as a one-song playlist that replaces the source and is used up
+  with it. That playlist, "Queue", lives in an "iTunes Remote" folder in
+  iTunes and is hidden from the app's own sidebar. Songs *you* start at the
+  MacBook Pro are left alone.
 - **It picks up what is already playing.** Close the window mid-song and
   open it again: the song is on the display straight away (the player is
   asked for before the 93,000-track library), the row is bold, and the app

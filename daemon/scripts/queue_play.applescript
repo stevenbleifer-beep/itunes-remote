@@ -1,9 +1,10 @@
 -- argv: <queuePersistentID>
 --
--- Plays one of the app's queue playlists — the *playlist*, not a track in it,
--- which is what makes iTunes move through it by itself instead of falling
--- back into the library. Already filled by queue_fill, so this is one fast
--- command and can be run right at the end of a song.
+-- Plays the app's queue playlist — the *playlist*, not a track in it. That
+-- makes the playlist iTunes' standing source, replacing whatever it was
+-- holding; filled with one song by queue_fill, the source is used up as
+-- soon as that song is, and iTunes goes back to stopping after each track
+-- the app plays by reference.
 on run argv
     set US to character id 31
     set qpid to (item 1 of argv) as text

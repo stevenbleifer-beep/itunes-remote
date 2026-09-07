@@ -1,12 +1,16 @@
 -- argv: <folderName> <playlistName> <queuePersistentID or ""> <trackPid1> ...
 --
--- Fills one of the app's two queue playlists and returns it. Nothing is
--- played: iTunes reads a playlist once, when told to play it, and editing the
--- one it is playing from loses its place — so the batch that comes next is
--- built in the *other* playlist while this one plays, and switched to with
--- queue_play, which is one fast command at the boundary.
+-- Empties the app's queue playlist, puts the given tracks in it, and returns
+-- it: persistent ID, name, count. Nothing is played; queue_play does that.
 --
--- Only ever the app's own playlists, and only their membership: no file is
+-- The point of the playlist: a track played by reference is a one-off to
+-- iTunes, and with nothing behind it iTunes stops when it ends — which is
+-- what the app wants, since it decides what follows. But a playlist iTunes
+-- was once told to play stays its standing source for days, resumed after
+-- every one-off. Playing this playlist with one song in it replaces that
+-- source with one that is used up as soon as the song is.
+--
+-- Only ever the app's own playlist, and only its membership: no file is
 -- touched and no other playlist is read or written.
 on run argv
     set US to character id 31

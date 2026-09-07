@@ -1502,3 +1502,120 @@ Nothing in between, either time, and the playlist column shows who is
 driving. Repeat One is iTunes' own repeat now (gapless, and the one thing it
 can do that the app cannot); shuffle stays off in iTunes, since the batch is
 already in the app's shuffled order.
+
+## What iTunes actually does (2026-09-07, afternoon) — supersedes the three sections above
+
+Steven: "the remote can't play albums in order without iTunes cueing a
+random song in between, but it was working fine a few days ago." The three
+sections above (the race, the pickup, the two queue playlists) each rested
+on a guess about what iTunes does when a song ends. This time it was
+measured, on the real iTunes 12.9.5, with `sound volume` at 0 and songs
+seeked to three seconds from their end (scripts were `qtest*.applescript`,
+gone now; the daemon and the app were out of the way). Every line below is
+an observation.
+
+**A track played by reference is a one-off.** `play (track N of playlist
+P)`, `play (first track of library playlist 1 whose persistent ID is X)`,
+with or without `once` — all the same: the song plays and, with nothing
+standing behind it, **iTunes stops**. It does not go on to track N+1 of P.
+It does not "walk on through the library". `next track` after such a play
+stops too. The app's original design — iTunes stops, the app plays the
+next — was right all along.
+
+**`play <playlist>` loads a source, and the source persists.** Played as a
+playlist, iTunes takes the whole playlist as its standing source and moves
+through it. That source survives `stop`, survives the app being closed,
+and survives *days*: after every one-off played later, iTunes resumes the
+source at its next song. The first tests here each consumed one song of
+"Queue 2" in order — a source left by the midday session's `play
+Queue 2` — and the fifth found it empty and stopped. That resumed song is
+the "random song in between", and it is why the takeover, the race and the
+batches all seemed to help a little: they were fighting a source that none
+of them removed.
+
+Where the source came from before today: a bare `play`/`playpause` with
+nothing current makes iTunes play whatever is selected in its own window —
+its library, with its own shuffle on — and that becomes the source.
+`togglePlay` did exactly that until 09-05 ("I played music from a playlist
+and it played a random song"). The trigger was fixed then, but the source it
+had loaded stayed, so every one-off since has been followed by a library
+song whenever the handoff was late, and the midday queue playlists loaded a
+fresh source of their own.
+
+**A source is removed only by playing it out or replacing it.** Playing an
+empty playlist is a "Parameter error" and changes nothing. A source track
+that is interrupted by a one-off, or stopped, is *consumed*: after the
+one-off, iTunes goes to the track after it (never back to the interrupted
+one), so a one-song source is gone as soon as that song is started — played
+out or not. Editing the playlist behind a source was not needed and was not
+retested.
+
+**Playlist edits are expensive on this machine.** Any membership change to
+a playlist makes iTunes rewrite the 162 MB library XML, and the daemon
+reparses it: 22–25 s, ~370 MB, on the 2012 MacBook Pro. `daemon.log` shows
+eight reloads in seventeen minutes during the midday two-playlist tests
+against two in the whole of 09-05 and none on 09-06. That is why the fix
+does not play everything through a playlist.
+
+`index` works for direct addressing: `track (index of t) of library
+playlist 1` is `t` (checked on "All Your Lies", index 95361), and index+1
+was the album's next song — the library's internal order is import order.
+Not used, noted for when a fast fill is wanted.
+
+### The fix
+
+- **Every play is a one-off again** (`play_track` through `library playlist
+  1`), and the app plays the next song `endLead` before the end:
+  `lastPlayLatency + 0.3`, clamped to 0.4…1.5 s. Aimed by the round trip
+  alone, iTunes sat "stopped" for half a second between songs, because the
+  poll the timer is aimed from is itself a few hundred milliseconds old.
+  There is nothing to race any more; the lead is only about the gap.
+- **`PlayerController.sourceStale`** is set when iTunes is seen moving on to
+  a song nobody asked for (the takeover branch in `refresh`), and by
+  `adopt` (a song started elsewhere may have a source behind it). While it
+  is set, `sendPendingPlay` sends the song through `POST /api/queue/play`:
+  the daemon empties its "Queue" playlist, puts that one song in it, and
+  plays the *playlist*. That replaces the source with a one-song one that is
+  used up with the song; the flag clears on success and from then on every
+  one-off ends in a stop. If the daemon cannot (an old daemon), the song is
+  played by itself and the flag stays for the next try.
+- **Daemon:** one queue playlist (`QUEUE_NAME = "Queue"` in folder "iTunes
+  Remote"); `/api/queue/prepare` and `/api/queue/switch` are gone; anything
+  filed in the folder is hidden from `/api/playlists`. "Queue 2" and an
+  empty "iTunes Remote Flush" made during testing were deleted from
+  Steven's library. `player_cmd.applescript` now refuses `play` and
+  `playpause` when iTunes is stopped with no current track, so iTunes is
+  never asked to pick its own source again.
+- **Client:** the two-playlist code (`playInQueue`, `prepareNext`,
+  `markQueueStale`, `followOwnQueue`, `queueUpcoming`) is gone; the
+  `--play-track PID` test flag stays and now also fires after a local row
+  refresh, so `--view grid --select-album "Artist|Album" --play-track PID`
+  plays inside an album context. Repeat One is the app's again (iTunes'
+  repeat stays off).
+
+### Verified on the real library, silently
+
+Three runs, iTunes at volume 0 (put back to 73), a monitor on the Pro
+logging the player twice a second and seeking each song to seven seconds
+from its end, the app launched with `--trace-queue --select-album "10
+Years|Division" --play-track 88A72FE28BC39F7A` (Picture Perfect, track 9):
+
+1. **Clean.** Picture Perfect → All Your Lies → So Long, Good-Bye → Alabama
+   → Proud Of You → "nothing follows in the list — stopping iTunes". No
+   other song at any sample. Gaps of 0–0.5 s of "stopped" between songs.
+2. **Stale source loaded first** (`play Queue`, then `stop`, leaving two
+   songs standing) and the app frozen with SIGSTOP through the end of the
+   first song: iTunes resumed the stale source, as expected; on SIGCONT the
+   app's overdue timer put All Your Lies on, and the rest of the album
+   followed in order. Frozen again through the end of Alabama, **iTunes
+   stopped** — the handoffs had consumed the source.
+3. **Adopt.** Picture Perfect started at the Pro, then the app launched:
+   "adopted", "carrying on through Division: 13 songs, at 8", and the
+   first handoff was "played as a one-song playlist (803AAA05B4D8FFC2) to
+   replace the stale source" — the Pro's playlist column read "Queue" for
+   All Your Lies alone, "Library" for every one-off after it. Album in
+   order, clean stop at the end.
+
+The app the user runs is the build installed at the end of this pass
+(`./build.sh --install`); the daemon on the Pro was deployed with `rsync
+-ac` and `launchctl kickstart -k`.
