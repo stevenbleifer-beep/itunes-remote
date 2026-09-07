@@ -1211,7 +1211,23 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             MediaKeyTap.askForTrust()
             flashStatus("Allow iTunes Remote under Privacy & Security ▸ Accessibility, and the volume keys will drive \(ServerSettings.appName).")
         }
+        // Granted while the app is running (the user comes back from System
+        // Settings): start then, without a relaunch.
+        if !mediaKeyTapWatching {
+            mediaKeyTapWatching = true
+            NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil,
+                                                   queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self = self, MainWindowController.volumeKeysEnabled,
+                          !self.mediaKeyTap.isRunning, MediaKeyTap.trusted else { return }
+                    if self.mediaKeyTap.start() {
+                        self.flashStatus("The volume keys now drive \(ServerSettings.appName) while it is playing on the \(ServerSettings.name).")
+                    }
+                }
+            }
+        }
     }
+    private var mediaKeyTapWatching = false
 
     private func mediaKey(_ key: MediaKeyTap.Key) {
         let current = player.state?.volume ?? 0
@@ -1240,18 +1256,22 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     @objc func toggleVolumeKeys(_ sender: Any?) {
-        MainWindowController.volumeKeysEnabled.toggle()
-        if MainWindowController.volumeKeysEnabled {
-            if MediaKeyTap.trusted {
-                startMediaKeyTap()
-                flashStatus("The volume keys drive \(ServerSettings.appName) while it is playing on the \(ServerSettings.name).")
-            } else {
-                MediaKeyTap.askForTrust()
-                flashStatus("Allow iTunes Remote under Privacy & Security ▸ Accessibility, then choose this again.")
-            }
-        } else {
+        // Ticked means on and working. Unticked is either off, or on but
+        // waiting for the permission — choosing it then asks again rather
+        // than switching the feature off.
+        if MainWindowController.volumeKeysEnabled && mediaKeyTap.isRunning {
+            MainWindowController.volumeKeysEnabled = false
             mediaKeyTap.stop()
             flashStatus("The volume keys are this Mac's again.")
+            return
+        }
+        MainWindowController.volumeKeysEnabled = true
+        if MediaKeyTap.trusted {
+            startMediaKeyTap()
+            flashStatus("The volume keys drive \(ServerSettings.appName) while it is playing on the \(ServerSettings.name).")
+        } else {
+            MediaKeyTap.askForTrust()
+            flashStatus("Allow iTunes Remote under Privacy & Security ▸ Accessibility; the keys take over as soon as it is on.")
         }
     }
 
