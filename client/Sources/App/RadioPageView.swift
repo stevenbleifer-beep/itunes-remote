@@ -55,11 +55,14 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         let coordinate: CLLocationCoordinate2D
         let title: String?
         let subtitle: String?
-        init(_ s: RadioStation) {
+        /// Placed by its stated town or country, not by the directory's coordinates.
+        let approximate: Bool
+        init(_ s: RadioStation, at c: CLLocationCoordinate2D, approximate: Bool) {
             uuid = s.uuid
-            coordinate = CLLocationCoordinate2D(latitude: s.latitude ?? 0, longitude: s.longitude ?? 0)
+            coordinate = c
             title = s.name
-            subtitle = s.place
+            subtitle = approximate ? "near \(s.place)" : s.place
+            self.approximate = approximate
         }
     }
 
@@ -120,15 +123,20 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         ])
 
         // The stations.
-        for (id, title, width, right) in [
-            ("name", "Station", 200.0, false), ("place", "Where", 150.0, false), ("tags", "Style", 170.0, false),
-            ("quality", "Stream", 74.0, true), ("clicks", "Listeners", 62.0, true), ("why", "Why", 180.0, false),
-        ] as [(String, String, CGFloat, Bool)] {
-            table.addTableColumn(AquaTables.column(id, title: title, width: width, min: 40, sortable: false, rightAligned: right))
+        // Station and Why take the spare width; the rest keep theirs, and
+        // Stream and Listeners cannot be squeezed to two letters.
+        for (id, title, width, min, right, stretch) in [
+            ("name", "Station", 190.0, 120.0, false, true), ("place", "Where", 130.0, 80.0, false, false),
+            ("tags", "Style", 160.0, 80.0, false, false), ("quality", "Stream", 80.0, 80.0, true, false),
+            ("clicks", "Listeners", 66.0, 66.0, true, false), ("why", "Why", 170.0, 100.0, false, true),
+        ] as [(String, String, CGFloat, CGFloat, Bool, Bool)] {
+            let c = AquaTables.column(id, title: title, width: width, min: min, sortable: false, rightAligned: right)
+            c.resizingMask = stretch ? [.autoresizingMask, .userResizingMask] : .userResizingMask
+            table.addTableColumn(c)
         }
         AquaTables.style(table, rowHeight: 18, header: true)
         table.allowsMultipleSelection = true
-        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.dataSource = self
         table.delegate = self
         table.target = self
@@ -253,19 +261,62 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         show(list: list)
     }
 
+    private var showing = 0
+
     private func reloadAll() {
+        // Why only when there is a why to show.
+        table.tableColumns.first { $0.identifier.rawValue == "why" }?.isHidden = why.isEmpty
+        table.sizeToFit()
         table.reloadData()
+        showing += 1
+        let generation = showing
         map.removeAnnotations(map.annotations)
-        let pins = stations.filter { $0.hasLocation }.map { StationAnnotation($0) }
+        var pins: [StationAnnotation] = []
+        var wanted: [String] = []
+        for s in stations {
+            if let lat = s.latitude, let long = s.longitude {
+                pins.append(StationAnnotation(s, at: CLLocationCoordinate2D(latitude: lat, longitude: long), approximate: false))
+            } else if let place = RadioGeocoder.query(for: s) {
+                if let c = RadioGeocoder.shared.known(place) {
+                    pins.append(StationAnnotation(s, at: c, approximate: true))
+                } else {
+                    wanted.append(place)
+                }
+            }
+        }
         map.addAnnotations(pins)
-        if pins.count == 1 {
-            // One pin: a region, not a street.
-            map.setRegion(MKCoordinateRegion(center: pins[0].coordinate,
-                                             span: MKCoordinateSpan(latitudeDelta: 6, longitudeDelta: 8)), animated: true)
-        } else if !pins.isEmpty {
-            map.showAnnotations(pins, animated: true)
+        fit(pins)
+        updateButtons()
+        // The places not yet known come in one by one; each adds its pins.
+        guard !wanted.isEmpty else { return }
+        RadioGeocoder.shared.resolve(wanted) { [weak self] place, c in
+            guard let self = self, self.showing == generation else { return }
+            let more = self.stations.filter { !$0.hasLocation && RadioGeocoder.query(for: $0) == place }
+                .map { StationAnnotation($0, at: c, approximate: true) }
+            self.map.addAnnotations(more)
+            self.fit(self.map.annotations.compactMap { $0 as? StationAnnotation })
         }
         updateButtons()
+    }
+
+    /// The map around the pins: the world when there are none, a region
+    /// rather than a street when there is one.
+    private func fit(_ pins: [StationAnnotation]) {
+        if pins.isEmpty {
+            map.setRegion(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 25, longitude: 0),
+                                             span: MKCoordinateSpan(latitudeDelta: 120, longitudeDelta: 200)), animated: true)
+        } else if pins.count == 1 {
+            map.setRegion(MKCoordinateRegion(center: pins[0].coordinate,
+                                             span: MKCoordinateSpan(latitudeDelta: 6, longitudeDelta: 8)), animated: true)
+        } else {
+            // showAnnotations puts the outermost pins on the edge; room for their labels.
+            var rect = MKMapRect.null
+            for pin in pins {
+                let pt = MKMapPoint(pin.coordinate)
+                rect = rect.union(MKMapRect(x: pt.x, y: pt.y, width: 0, height: 0))
+            }
+            map.setVisibleMapRect(rect, edgePadding: NSEdgeInsets(top: 50, left: 60, bottom: 50, right: 60), animated: true)
+        }
     }
 
     var selectedStations: [RadioStation] {
@@ -428,7 +479,8 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         let view = (mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView)
             ?? MKMarkerAnnotationView(annotation: pin, reuseIdentifier: id)
         view.annotation = pin
-        view.markerTintColor = pin.uuid == playingUUID ? NSColor.systemGreen : Aqua.accent
+        view.markerTintColor = pin.uuid == playingUUID ? NSColor.systemGreen
+            : (pin.approximate ? NSColor(srgbRed: 0.45, green: 0.55, blue: 0.70, alpha: 1) : Aqua.accent)
         view.glyphText = "♪"
         view.canShowCallout = true
         view.displayPriority = .required

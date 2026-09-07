@@ -1732,3 +1732,18 @@ a stream's clock runs on the display instead of sitting at 0:00.
 contains` over 1,800 URL tracks takes minutes; the script matches `address
 is` exactly. A stream played by `open location` replaces whatever iTunes
 was playing, paused songs included.
+
+**Radio, second pass (same evening).** Steven: "the columns don't look
+right, and the map isn't working right." Columns: Stream and Listeners had
+been squeezed to two letters while an empty Why column took the width —
+now Station and Why carry `.autoresizingMask`, the rest keep theirs with
+real minimums, Why is hidden when the model gave no reasons, and Where
+uses everyday country names (`shortCountry`: "USA", not "The United States
+Of America"). Map: only one directory station in five carries coordinates
+(3 of 28 for "beatles", 47 of the top 200), so `RadioGeocoder` looks up
+each unique "region, country" once with CLGeocoder — one at a time, newest
+request first, cached in `radio/places.json` — and those stations get a
+greyer pin with "near …" as the subtitle. The first version ignored new
+places while a batch was running, which is why the Beatles list showed one
+pin; it queues now. Pins fit with edge padding so the outermost labels are
+not cut off.

@@ -28,11 +28,31 @@ struct RadioStation: Codable, Equatable {
 
     static func == (a: RadioStation, b: RadioStation) -> Bool { a.uuid == b.uuid }
 
+    /// The directory's country names are the long official ones ("The
+    /// United States Of America"); the column wants the everyday ones.
+    var shortCountry: String {
+        switch country {
+        case "The United States Of America": return "USA"
+        case "The United Kingdom Of Great Britain And Northern Ireland": return "UK"
+        case "The Russian Federation": return "Russia"
+        case "The Netherlands": return "Netherlands"
+        case "The Republic Of Korea": return "South Korea"
+        case "Iran (Islamic Republic Of)": return "Iran"
+        case "Taiwan, Republic Of China": return "Taiwan"
+        case "Bolivia (Plurinational State Of)": return "Bolivia"
+        case "Venezuela (Bolivarian Republic Of)": return "Venezuela"
+        case "The United Arab Emirates": return "UAE"
+        default:
+            return country.hasPrefix("The ") ? String(country.dropFirst(4)) : country
+        }
+    }
+
     /// "Lisbon, Portugal", or just the country.
     var place: String {
         let s = state.trimmingCharacters(in: .whitespaces)
-        if s.isEmpty || s.caseInsensitiveCompare(country) == .orderedSame { return country }
-        return "\(s), \(country)"
+        let c = shortCountry
+        if s.isEmpty || s.caseInsensitiveCompare(country) == .orderedSame || s.caseInsensitiveCompare(c) == .orderedSame { return c }
+        return "\(s), \(c)"
     }
     var tagLine: String { tags.prefix(4).joined(separator: ", ") }
     var quality: String {
@@ -181,5 +201,80 @@ final class RadioBrowserClient {
             }
         }
         throw lastError
+    }
+}
+
+
+import CoreLocation
+
+/// Where a station is when the directory does not say: most entries carry
+/// a country and often a region, but only one in five has coordinates. The
+/// place is looked up once (CLGeocoder, one request at a time) and kept in
+/// Application Support/<app>/radio/places.json, so a map full of pins costs
+/// a few seconds the first time and nothing after.
+@MainActor
+final class RadioGeocoder {
+    static let shared = RadioGeocoder()
+    private var cache: [String: [Double]] = [:]
+    private var failed: Set<String> = []
+    private let url: URL
+    private var running = false
+
+    init() {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(AppIdentity.supportFolder).appendingPathComponent("radio")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        url = dir.appendingPathComponent("places.json")
+        if let data = try? Data(contentsOf: url), let saved = try? JSONDecoder().decode([String: [Double]].self, from: data) {
+            cache = saved
+        }
+    }
+
+    /// The place string worth looking up for a station without coordinates.
+    static func query(for s: RadioStation) -> String? {
+        let c = s.shortCountry
+        guard !c.isEmpty else { return nil }
+        let st = s.state.trimmingCharacters(in: .whitespaces)
+        return st.isEmpty || st.caseInsensitiveCompare(c) == .orderedSame ? c : "\(st), \(c)"
+    }
+
+    func known(_ place: String) -> CLLocationCoordinate2D? {
+        guard let v = cache[place], v.count == 2 else { return nil }
+        return CLLocationCoordinate2D(latitude: v[0], longitude: v[1])
+    }
+
+    /// Looks up every place not yet known, calling `found` as each lands.
+    /// One lookup at a time — the geocoder refuses a burst — with the
+    /// newest request's places first, so the view on screen fills in before
+    /// one that has been left behind.
+    private var pending: [String] = []
+    private var listeners: [String: [(String, CLLocationCoordinate2D) -> Void]] = [:]
+
+    func resolve(_ places: [String], found: @escaping (String, CLLocationCoordinate2D) -> Void) {
+        var fresh: [String] = []
+        for place in places where cache[place] == nil && !failed.contains(place) {
+            listeners[place, default: []].append(found)
+            if !fresh.contains(place) { fresh.append(place) }
+        }
+        guard !fresh.isEmpty else { return }
+        pending.removeAll { fresh.contains($0) }
+        pending.insert(contentsOf: fresh, at: 0)
+        guard !running else { return }
+        running = true
+        Task { @MainActor in
+            defer { running = false }
+            while !pending.isEmpty {
+                let place = pending.removeFirst()
+                let waiting = listeners.removeValue(forKey: place) ?? []
+                if let c = try? await CLGeocoder().geocodeAddressString(place).first?.location?.coordinate {
+                    cache[place] = [c.latitude, c.longitude]
+                    for f in waiting { f(place, c) }
+                } else {
+                    failed.insert(place)
+                }
+                try? await Task.sleep(nanoseconds: 120_000_000)
+            }
+            if let data = try? JSONEncoder().encode(cache) { try? data.write(to: url, options: .atomic) }
+        }
     }
 }
