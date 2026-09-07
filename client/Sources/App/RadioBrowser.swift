@@ -62,6 +62,16 @@ struct RadioStation: Codable, Equatable {
     }
     var hasLocation: Bool { latitude != nil && longitude != nil }
 
+    /// Whether iTunes 12.9.5 over there can read this stream at all: it
+    /// plays MP3 and AAC over HTTP, and cannot open HLS (playlist.m3u8),
+    /// OGG or FLAC. Anything it cannot read plays on this Mac.
+    var playableByITunes: Bool {
+        if hls || url.lowercased().contains(".m3u8") { return false }
+        let c = codec.uppercased()
+        if c.contains("OGG") || c.contains("FLAC") || c.contains("OPUS") { return false }
+        return true
+    }
+
     /// One line for the model: enough to choose by, short enough for many.
     var summary: String {
         var parts = [name, place]
@@ -333,8 +343,50 @@ extension RadioStation {
             guard let song = title else { return nil }
             t = artist.map { "\($0) — \(song)" } ?? song
         }
+        // iHeart's form: Artist - text="Title" song_spot="M" MediaBaseId="…" …
+        if t.contains("=\"") {
+            var title: String?
+            if let r = t.range(of: "text=\""), let e = t.range(of: "\"", range: r.upperBound..<t.endIndex) {
+                let v = t[r.upperBound..<e.lowerBound].trimmingCharacters(in: .whitespaces)
+                if !v.isEmpty { title = v }
+            }
+            let artist = t.components(separatedBy: " - ").first?.trimmingCharacters(in: .whitespaces) ?? ""
+            guard let song = title else { return nil }
+            t = artist.isEmpty || artist.contains("=") ? song : "\(artist) — \(song)"
+        }
         if t.contains("<") || t.lowercased().hasPrefix("http") { return nil }
         if t.count > 90 { t = String(t.prefix(88)) + "…" }
         return t
+    }
+}
+
+
+import Cocoa
+
+/// Station logos, from the `favicon` address the directory lists. Fetched
+/// once per station while the app runs; a broken or missing one is a miss
+/// and is not asked for again.
+@MainActor
+final class RadioArt {
+    static let shared = RadioArt()
+    private var images: [String: NSImage] = [:]
+    private var misses: Set<String> = []
+    private var loading: Set<String> = []
+
+    func cached(_ station: RadioStation) -> NSImage? { images[station.uuid] }
+
+    func image(for station: RadioStation, done: @escaping (NSImage?) -> Void) {
+        if let i = images[station.uuid] { done(i); return }
+        guard !misses.contains(station.uuid), !loading.contains(station.uuid),
+              let url = URL(string: station.favicon), ["http", "https"].contains(url.scheme ?? "") else { done(nil); return }
+        loading.insert(station.uuid)
+        Task { @MainActor in
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 10
+            let image = (try? await URLSession.shared.data(for: req)).flatMap { NSImage(data: $0.0) }
+            loading.remove(station.uuid)
+            if let i = image, i.size.width > 8 { images[station.uuid] = i; done(i) }
+            else { misses.insert(station.uuid); done(nil) }
+        }
     }
 }

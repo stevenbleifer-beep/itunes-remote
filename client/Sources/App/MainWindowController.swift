@@ -1219,8 +1219,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         reloadSourceList()
     }
 
+    /// Stations iTunes over there could not play, remembered across
+    /// launches so the Plays On column and the first attempt both know.
+    private var radioRefused: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "radioRefused") ?? []) {
+        didSet {
+            UserDefaults.standard.set(Array(radioRefused), forKey: "radioRefused")
+            radioPage.refusedOverThere = radioRefused
+        }
+    }
+
     private func wireRadio() {
         radioPage.lists = radioLists.lists
+        radioPage.refusedOverThere = radioRefused
+        radioPage.overThereName = ServerSettings.appName
         radioPage.modelLine = MainWindowController.aiEnabled
             ? "Ask uses \(radioAgent.model) · Search matches names and styles · directory: radio-browser.info"
             : "Search matches names and styles · directory: radio-browser.info"
@@ -1234,11 +1245,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         radioPage.onSearch = { [weak self] text in Task { @MainActor in await self?.searchRadio(text) } }
         radioPage.onFilterChanged = { [weak self] in
-            guard let self = self, self.radioListOpen == nil, !self.radioHistoryOpen else { return }
-            let text = self.radioPage.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            Task { @MainActor in
-                if text.isEmpty { await self.loadPopularStations(force: true) } else { await self.searchRadio(text) }
-            }
+            guard let self = self else { return }
+            // The menus on their own: jazz in the USA, most listened-to
+            // first. The words in the field count when Search or Ask is
+            // pressed, not before — "indie pop" left in the field made a
+            // jazz-in-the-USA choice find nothing.
+            Task { @MainActor in await self.loadPopularStations(force: true) }
         }
         Task { @MainActor in
             if let countries = try? await RadioBrowserClient.shared.countries() { self.radioPage.setCountries(countries) }
@@ -1321,8 +1333,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         rightSplit.isHidden = false
     }
 
+    /// Search results replace whatever the page showed; if that was a saved
+    /// list or the history, the sidebar goes back to Stations with it, or
+    /// the list stays selected over a page that is not the list.
+    private func leaveListForResults() {
+        guard radioListOpen != nil || radioHistoryOpen else { return }
+        radioListOpen = nil
+        radioHistoryOpen = false
+        reloadSourceList()
+    }
+
     /// The directory's most-listened stations, the page's opening view.
     private func loadPopularStations(force: Bool) async {
+        leaveListForResults()
         radioPage.setBusy(true)
         radioPage.setStatus("Asking the directory…")
         do {
@@ -1331,8 +1354,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 RadioBrowserClient.Query(tag: f.tag, countryCode: f.countryCode, order: "clickcount", limit: 60))
             radioLoadedPopular = true
             let what = f.isEmpty ? "in the directory" : "for " + f.description
-            radioPage.show(stations, note: "The \(stations.count) most listened-to stations \(what) right now. Search, or ask for something.",
-                           heading: "Stations")
+            let none = f.isEmpty ? "The directory has nothing to show." : "The directory has no stations for \(f.description)."
+            radioPage.show(stations, note: stations.isEmpty ? none
+                           : "The \(stations.count) most listened-to stations \(what) right now. Search, or ask for something.",
+                           heading: f.isEmpty ? "Stations" : "Stations — \(f.description)")
         } catch {
             radioPage.note("The station directory did not answer: \(error.localizedDescription)")
         }
@@ -1340,6 +1365,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     private func searchRadio(_ text: String) async {
+        leaveListForResults()
         radioPage.setBusy(true)
         radioPage.setStatus("Searching…")
         do {
@@ -1355,6 +1381,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     private func askRadio(_ text: String) async {
+        leaveListForResults()
         radioPage.setBusy(true)
         radioAgent.onStatus = { [weak self] s in self?.radioPage.setStatus(s) }
         do {
@@ -1383,12 +1410,18 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         radioHistory.record(station)
         flashStatus("Tuning to \(station.name)…")
         sourceList.reloadData()
+        updateArtwork()
+        // Known not to play over there: straight to this Mac, no trying.
+        if player.mode == .remote && (!station.playableByITunes || radioRefused.contains(station.uuid)) {
+            playStationHere(station, because: station.playableByITunes ? "it did not play there before" : "\(ServerSettings.appName) cannot read this kind of stream")
+            return
+        }
         player.playStream(station) { [weak self] error in
             guard let self = self, self.playingStation?.uuid == station.uuid else { return }
             if let error = error {
-                // iTunes over there could not open it — no network on that
-                // Mac, or a stream it cannot read. This Mac can.
-                self.playStationHere(station, because: error)
+                // iTunes over there could not open it — a stream it cannot
+                // read (remembered), or no network on that Mac (not).
+                self.playStationHere(station, because: error, remember: error.contains("did not start"))
                 return
             }
             // Opened, but is anything arriving? With no network over there
@@ -1413,7 +1446,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// so Stop can put it back.
     private var modeBeforeRadioFallback: PlayerController.Mode?
 
-    private func playStationHere(_ station: RadioStation, because reason: String) {
+    private func playStationHere(_ station: RadioStation, because reason: String, remember: Bool = false) {
+        // Remembered only when iTunes itself would not open the stream;
+        // nothing arriving may just be that Mac's network.
+        if remember { radioRefused.insert(station.uuid) }
         flashStatus("\(ServerSettings.appName) over on \(ServerSettings.name) could not play \(station.name) (\(reason)) — playing it on this Mac instead.")
         if player.mode != .local && modeBeforeRadioFallback == nil { modeBeforeRadioFallback = player.mode }
         player.setMode(.local)
@@ -3629,6 +3665,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func updateArtwork() {
         var pid: String?
         var caption = "SELECTED ITEM"
+        // A station: its logo, from the directory.
+        if let station = playingStation, player.state?.state != "stopped" {
+            artworkView.caption = "NOW PLAYING"
+            if let logo = RadioArt.shared.cached(station) { artworkView.image = logo; return }
+            artworkToken += 1
+            let token = artworkToken
+            artworkView.image = nil
+            RadioArt.shared.image(for: station) { [weak self] image in
+                guard let self = self, token == self.artworkToken, self.playingStation?.uuid == station.uuid else { return }
+                self.artworkView.image = image
+            }
+            return
+        }
         if let t = player.state?.track, player.state?.state != "stopped" {
             pid = t.persistentId
             caption = "NOW PLAYING"
@@ -3713,6 +3762,38 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 print("radio-play: mode=\(self.player.mode) state=\(st?.state ?? "-") track=\(st?.track?.name ?? "-") artist=\(st?.track?.artist ?? "-") pos=\(Int(self.player.displayPosition)) status=\(self.statusLabel.stringValue)")
                 fflush(stdout)
             }
+        }
+        // `--radio-play-local N`: the N-th station on the page, on this Mac, quietly.
+        if let i = CommandLine.arguments.firstIndex(of: "--radio-play-local"), i + 1 < CommandLine.arguments.count,
+           let n = Int(CommandLine.arguments[i + 1]) {
+            openRadioPage(list: nil)
+            Task { @MainActor in
+                var waited = 0
+                while self.radioPage.stations.isEmpty || self.radioAskPending, waited < 240 {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    waited += 1
+                }
+                guard n >= 0, n < self.radioPage.stations.count else { return }
+                self.player.setMode(.local)
+                self.player.local.volume = 0.05
+                self.playStation(self.radioPage.stations[n])
+            }
+        }
+        // `--radio-filter TAG,CC`: set the Style and Country menus, for checking them.
+        if let i = CommandLine.arguments.firstIndex(of: "--radio-filter"), i + 1 < CommandLine.arguments.count {
+            let parts = CommandLine.arguments[i + 1].split(separator: ",").map { String($0) }
+            openRadioPage(list: nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+                self?.radioPage.setFilter(tag: parts.first.flatMap { $0.isEmpty ? nil : $0 },
+                                          countryCode: parts.count > 1 ? parts[1] : nil)
+            }
+        }
+        // `--radio-list NAME`: open that saved station list, for checking it.
+        if let i = CommandLine.arguments.firstIndex(of: "--radio-list"), i + 1 < CommandLine.arguments.count,
+           let l = radioLists.lists.first(where: { $0.name == CommandLine.arguments[i + 1] }) {
+            radioListOpen = l.id
+            reloadSourceList()
+            openRadioPage(list: l)
         }
         // `--radio-newlist`: the New List sheet over the popular stations, for testing it.
         if CommandLine.arguments.contains("--radio-newlist") {

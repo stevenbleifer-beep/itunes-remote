@@ -21,6 +21,11 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
     var onStop: () -> Void = {}
     /// The Style or Country menu changed.
     var onFilterChanged: () -> Void = {}
+    /// Stations iTunes over there has refused, so the Plays On column can
+    /// say so. Set by the window.
+    var refusedOverThere: Set<String> = [] { didSet { table.reloadData() } }
+    /// The names for the Plays On column: iTunes' Mac, and this one.
+    var overThereName = "iTunes"
 
     static let styles = ["alternative", "ambient", "blues", "chillout", "christian", "classic rock", "classical", "comedy",
                          "country", "dance", "disco", "electronic", "folk", "funk", "gospel", "hip hop", "house", "indie",
@@ -40,6 +45,14 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
             f.countryName = c.name
         }
         return f
+    }
+
+    /// Sets the menus from outside (the `--radio-filter` test flag).
+    func setFilter(tag: String?, countryCode: String?) {
+        if let t = tag, let i = RadioPageView.styles.firstIndex(of: t) { stylePopup.selectItem(at: i + 1) } else { stylePopup.selectItem(at: 0) }
+        if let c = countryCode, let i = countries.firstIndex(where: { $0.code == c.uppercased() }) { countryPopup.selectItem(at: i + 1) }
+        else { countryPopup.selectItem(at: 0) }
+        onFilterChanged()
     }
 
     func setCountries(_ list: [RadioCountry]) {
@@ -71,6 +84,8 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
     private let map = MKMapView()
     private let tableScroll = NSScrollView()
     private let searchButton = AquaPushButton(title: "Search")
+    private let clearButton = AquaPushButton(title: "Clear")
+    private let resetButton = AquaPushButton(title: "Reset")
     private let askButton = AquaPushButton(title: "Ask", isDefault: true)
     private let popularButton = AquaPushButton(title: "Popular")
     private let playButton = AquaPushButton(title: "Play")
@@ -108,7 +123,7 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        for v in [heading as NSView, field, stylePopup, countryPopup, searchButton, askButton, popularButton, noteLabel, split, statusLabel, playButton, stopButton, addPopup, removeButton] {
+        for v in [heading as NSView, field, clearButton, stylePopup, countryPopup, resetButton, searchButton, askButton, popularButton, noteLabel, split, statusLabel, playButton, stopButton, addPopup, removeButton] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -138,6 +153,10 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         removeButton.action = #selector(remove(_:))
         stopButton.target = self
         stopButton.action = #selector(stop(_:))
+        clearButton.target = self
+        clearButton.action = #selector(clearSearch(_:))
+        resetButton.target = self
+        resetButton.action = #selector(resetFilters(_:))
 
         noteLabel.font = Aqua.font(11)
         noteLabel.textColor = Theme.ink(0.35)
@@ -170,8 +189,8 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         for (id, title, width, min, right, stretch) in [
             ("name", "Station", 190.0, 120.0, false, true), ("place", "Where", 130.0, 80.0, false, false),
             ("tags", "Style", 160.0, 80.0, false, false), ("quality", "Stream", 80.0, 80.0, true, false),
-            ("clicks", "Listeners", 66.0, 66.0, true, false), ("why", "Why", 170.0, 100.0, false, true),
-            ("played", "Played", 150.0, 110.0, false, false),
+            ("clicks", "Listeners", 66.0, 66.0, true, false), ("plays", "Plays On", 96.0, 80.0, false, false),
+            ("why", "Why", 170.0, 100.0, false, true), ("played", "Played", 150.0, 110.0, false, false),
         ] as [(String, String, CGFloat, CGFloat, Bool, Bool)] {
             let c = AquaTables.column(id, title: title, width: width, min: min, sortable: false, rightAligned: right)
             c.resizingMask = stretch ? [.autoresizingMask, .userResizingMask] : .userResizingMask
@@ -232,13 +251,17 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
             field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad),
             field.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 8),
             field.heightAnchor.constraint(equalToConstant: 22),
-            field.trailingAnchor.constraint(equalTo: stylePopup.leadingAnchor, constant: -8),
+            field.trailingAnchor.constraint(equalTo: clearButton.leadingAnchor, constant: -2),
+            clearButton.centerYAnchor.constraint(equalTo: field.centerYAnchor),
+            stylePopup.leadingAnchor.constraint(equalTo: clearButton.trailingAnchor, constant: 10),
             stylePopup.centerYAnchor.constraint(equalTo: field.centerYAnchor),
-            stylePopup.widthAnchor.constraint(equalToConstant: 118),
+            stylePopup.widthAnchor.constraint(equalToConstant: 112),
             countryPopup.leadingAnchor.constraint(equalTo: stylePopup.trailingAnchor, constant: 4),
             countryPopup.centerYAnchor.constraint(equalTo: field.centerYAnchor),
-            countryPopup.widthAnchor.constraint(equalToConstant: 140),
-            searchButton.leadingAnchor.constraint(equalTo: countryPopup.trailingAnchor, constant: 6),
+            countryPopup.widthAnchor.constraint(equalToConstant: 132),
+            resetButton.leadingAnchor.constraint(equalTo: countryPopup.trailingAnchor, constant: 2),
+            resetButton.centerYAnchor.constraint(equalTo: field.centerYAnchor),
+            searchButton.leadingAnchor.constraint(equalTo: resetButton.trailingAnchor, constant: 10),
             searchButton.centerYAnchor.constraint(equalTo: field.centerYAnchor),
             askButton.leadingAnchor.constraint(equalTo: searchButton.trailingAnchor, constant: 2),
             askButton.centerYAnchor.constraint(equalTo: field.centerYAnchor),
@@ -270,7 +293,7 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         ])
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         noteLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for b in [searchButton, askButton, popularButton, playButton, stopButton, removeButton] {
+        for b in [searchButton, askButton, popularButton, playButton, stopButton, removeButton, clearButton, resetButton] {
             b.setContentCompressionResistancePriority(.required, for: .horizontal)
             b.setContentHuggingPriority(.required, for: .horizontal)
         }
@@ -486,6 +509,19 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
 
     @objc private func stop(_ sender: Any?) { onStop() }
 
+    /// Clear: the words go, the results go back to the menus' choice.
+    @objc private func clearSearch(_ sender: Any?) {
+        field.stringValue = ""
+        onPopular()
+    }
+
+    /// Reset: both menus back to Any, and the results with them.
+    @objc private func resetFilters(_ sender: Any?) {
+        stylePopup.selectItem(at: 0)
+        countryPopup.selectItem(at: 0)
+        onFilterChanged()
+    }
+
     @objc private func filterChanged(_ sender: Any?) { onFilterChanged() }
 
     @objc private func play(_ sender: Any?) {
@@ -540,6 +576,7 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         case "tags": text = s.tagLine
         case "quality": text = s.quality
         case "clicks": text = s.clicks > 0 ? s.clicks.formatted() : ""
+        case "plays": text = s.playableByITunes && !refusedOverThere.contains(s.uuid) ? overThereName : "This Mac"
         case "why": text = why[s.uuid] ?? ""
         case "played": text = played[s.uuid] ?? ""
         default: text = ""

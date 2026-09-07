@@ -1795,3 +1795,33 @@ the song name in the status bar.
   of that, drops anything else with tags or a URL, and caps the length.
 - Never run a playback test against the Pro while Steven is listening
   through his own copy of the app: the two fight over iTunes.
+
+**Radio, fourth pass (2026-09-07, late evening).** Steven: "the filters
+don't work", "I expected the list to show me the stations in that list",
+then Clear/Reset buttons, a Plays On column, and station art.
+
+- Filters *were* working, literally: "indie pop" left in the field plus
+  jazz+USA searched for that name within jazz in the USA. Now a menu
+  change shows the menus' choice on its own (`loadPopularStations` with
+  the filter); the words count only on Search/Ask. `--radio-filter jazz,US`
+  verified: "Stations — jazz in USA", 60 stations.
+- The list *was* showing (`--radio-list Indie`: 116 stations); the
+  confusion was a search run from inside a list, which replaced the page
+  while the sidebar kept the list selected. `leaveListForResults()` now
+  puts the sidebar back on Stations whenever results replace a list or
+  the history.
+- Clear (words gone, back to the menus' choice) and Reset (menus back to
+  Any) beside the field.
+- "Plays On": `RadioStation.playableByITunes` (no HLS/.m3u8, no
+  OGG/FLAC/Opus) plus `radioRefused` (UserDefaults `radioRefused`),
+  remembered only when the daemon answered that iTunes did not start the
+  stream — not when nothing arrived, which may be that Mac's network.
+  Stations known not to play there go straight to this Mac.
+- Station logos: `RadioArt` fetches the directory's `favicon` once per
+  station; `updateArtwork` shows it in the NOW PLAYING pane. Album art
+  for the song a station is carrying would need an iTunes Search lookup
+  per song — an automatic external call — not done without Steven's say.
+- `songLine` also reads iHeart's `Artist - text="Title" song_spot=…` form.
+- Test flags: `--radio-filter TAG,CC`, `--radio-list NAME`,
+  `--radio-play-local N` (this Mac only, volume 0.05 — the one to use
+  while Steven is listening through his own copy).
