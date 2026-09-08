@@ -1927,3 +1927,44 @@ colour and shading. Read properly:
 - `--view` writes the saved view mode; test runs must put it back
   (`defaults write local.stevenbleifer.itunesremote viewMode -int 3` for
   Steven's Grid).
+
+## Radio: stray playlists named after stream URLs (2026-09-08)
+
+Steven found two empty playlists in the Pro's iTunes named after stream
+addresses (`https://rtvelivestream.rtve.es/…/37_…217448.ts` and
+`06OLEEWQKN4_audio-….ts?txspiseq=…`). Cause: `open location` on an **HLS**
+stream (an M3U8 manifest of `.ts` segments) is treated by iTunes like
+importing an M3U file — it makes a *playlist* named after a segment, finds
+nothing playable, and leaves the empty playlist behind; no URL track, so the
+daemon's per-station cleanup never saw it. The app's `playableByITunes` only
+caught stations Radio Browser flags as HLS or whose URL ends in `.m3u8`.
+
+Fixes, deployed and installed:
+- `server.py` `post_radio_play` calls `Api._stream_is_hls(url)` before the
+  script (skipped when the address already has a remembered URL track):
+  a 6 s GET of the first 512 bytes, judged by Content-Type
+  (`application/vnd.apple.mpegurl`, `…/x-mpegurl`, `audio/mpegurl`…) or a
+  body starting `#EXTM3U`. HLS → **415 "iTunes cannot read this kind of
+  stream (HLS)"**, and iTunes is never touched. Unreachable/slow → not
+  judged, iTunes gets to try. The Pro's `/usr/local/bin/python3` has no CA
+  bundle (`CERTIFICATE_VERIFY_FAILED` on every https), so the probe uses
+  `ssl._create_unverified_context()` — it sends nothing private.
+- `radio_play.applescript`: before `open location` it notes the persistent
+  IDs of every user playlist; afterwards any *new*, non-smart, empty
+  playlist is deleted. (Variable is `seenPl` — `before` is a reserved word.)
+  Compile-check this script on the Pro (`osacompile` over ssh); the Air has
+  no iTunes dictionary and fails on line 29 regardless of the change.
+- Client: the fallback to this Mac now *remembers* the station (marks it
+  "This Mac" in Plays On) when the daemon's error contains "cannot read",
+  as it already did for "did not start".
+
+The two stray playlists were deleted by name (empty, non-smart only). The
+empty "Playlist" … "Playlist 6" in the same list are not the app's; left
+alone. Note the iHeart address `stream.revma.ihrhls.com/zc185` answers plain
+AAC to every User-Agent tried, so which station made the `txspiseq` one is
+unknown; the script-side cleanup covers that case whatever its source.
+
+Test without touching playback: POST `/api/radio/play` with an HLS URL
+(e.g. `https://rtvelivestream.rtve.es/rtvesec/rne/rne_r3_main.m3u8`) →
+expect 415 in ~1 s. Anything else *does* reach iTunes — don't while Steven
+is listening.

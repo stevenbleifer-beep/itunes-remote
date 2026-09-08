@@ -30,8 +30,24 @@ on run argv
                 set played to true
             end try
         end if
-        if not played then open location u
+        set seenPl to {}
+        if not played then
+            -- What `open location` makes of a stream it cannot play (an HLS
+            -- manifest) is an empty playlist named after a segment, not a
+            -- URL track. Note the playlists first, so a new empty one can go.
+            try
+                set seenPl to persistent ID of every user playlist
+            end try
+            open location u
+        end if
         delay 0.5
+        if not played then
+            try
+                repeat with pl in (every user playlist whose special kind is none and smart is false)
+                    if (persistent ID of pl) is not in seenPl and (count of tracks of pl) is 0 then delete pl
+                end repeat
+            end try
+        end if
         set pid to ""
         set nm to ""
         try

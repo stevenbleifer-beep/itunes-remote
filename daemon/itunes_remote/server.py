@@ -9,6 +9,7 @@ import logging
 import os
 import plistlib
 import re
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -16,6 +17,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.request
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from . import artwork as artwork_mod
@@ -947,6 +949,12 @@ class Api(object):
         known = self.radio_tracks.get(url, "")
         name = body.get("name")
         name = name.strip()[:120] if isinstance(name, str) else ""
+        # An HLS stream (a manifest of short segments) is something iTunes
+        # cannot play: `open location` imports it like an M3U file, leaving
+        # an empty playlist named after a segment in the library. Look at
+        # the stream first and refuse those, so the app plays them itself.
+        if not known and self._stream_is_hls(url):
+            raise ApiError(415, "iTunes cannot read this kind of stream (HLS)")
         out = self.itunes.fields(self._script("radio_play", url, known, self.radio_pid, name, timeout=45))
         playing = out[0] if out else ""
         if not playing:
@@ -961,6 +969,29 @@ class Api(object):
         self.radio_tracks[url] = playing
         self.radio_pid = playing
         return {"playing": playing, "name": out[1] if len(out) > 1 else ""}
+
+    HLS_TYPES = ("application/vnd.apple.mpegurl", "application/x-mpegurl",
+                 "audio/mpegurl", "audio/x-mpegurl", "application/mpegurl")
+
+    @staticmethod
+    def _stream_is_hls(url):
+        """True when the address serves an HLS manifest: by content type, or
+        by the first bytes being the M3U header. A stream that cannot be
+        reached, or answers slowly, is not judged here; iTunes gets to try."""
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "iTunes Remote/1.0",
+                                                       "Icy-MetaData": "0", "Range": "bytes=0-511"})
+            # No certificate check: the Pro's Python has no CA bundle, and
+            # nothing private is sent — this only asks what the address is.
+            with urllib.request.urlopen(req, timeout=6, context=ssl._create_unverified_context()) as r:
+                ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                if ctype in Api.HLS_TYPES:
+                    return True
+                head = r.read(512)
+        except Exception as e:
+            log.info("stream check for %s skipped: %s", url, e)
+            return False
+        return head.lstrip().startswith(b"#EXTM3U")
 
     def post_player_cmd(self, params, query, body):
         self._script("player_cmd", params["cmd"], timeout=15)

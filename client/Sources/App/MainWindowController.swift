@@ -1599,7 +1599,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             if let error = error {
                 // iTunes over there could not open it — a stream it cannot
                 // read (remembered), or no network on that Mac (not).
-                self.playStationHere(station, because: error, remember: error.contains("did not start"))
+                self.playStationHere(station, because: error, remember: error.contains("did not start") || error.contains("cannot read"))
                 return
             }
             // Opened, but is anything arriving? With no network over there
