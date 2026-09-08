@@ -21,7 +21,7 @@ enum Aqua {
     static let selectionBottomInactive = Theme.ink(0.58)
 
     // Sidebar
-    static let classicSidebarBackground = NSColor(srgbRed: 0.878, green: 0.902, blue: 0.933, alpha: 1)  // #E0E6EE
+    static let classicSidebarBackground = NSColor(srgbRed: 0.859, green: 0.890, blue: 0.925, alpha: 1)  // #DBE3EC, iTunes 10's source list
     static var sidebarBackground: NSColor { Theme.isModern ? Theme.sidebarBackground : classicSidebarBackground }
     static var sidebarHeaderText: NSColor { Theme.isModern ? Theme.secondaryText : NSColor(srgbRed: 0.40, green: 0.45, blue: 0.52, alpha: 1) }
 
@@ -271,9 +271,9 @@ final class AquaDisplayPanel: NSView {
                    ending: NSColor(srgbRed: 0.93, green: 0.95, blue: 0.87, alpha: 1))!
             .draw(in: r, angle: -90)
         let inset = NSShadow()
-        inset.shadowColor = NSColor.black.withAlphaComponent(0.35)
-        inset.shadowBlurRadius = 3
-        inset.shadowOffset = NSSize(width: 0, height: -2)
+        inset.shadowColor = NSColor.black.withAlphaComponent(0.45)
+        inset.shadowBlurRadius = 4
+        inset.shadowOffset = NSSize(width: 0, height: -2.5)
         inset.set()
         let outer = NSBezierPath(roundedRect: r.insetBy(dx: -6, dy: -6), xRadius: 8, yRadius: 8)
         outer.append(path)

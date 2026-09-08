@@ -1901,3 +1901,29 @@ is compared with its `read()` and toggled if it differs; the two relaunch
 choices (library first, else look) are sent last. Cancel re-reads and
 closes. Layout is frames, not autolayout; `note()` takes a top edge and
 returns its height so groups stack.
+
+**From the iTunes 10 screenshots (2026-09-07, late night).** Steven sent
+iTunes 10's own windows and asked whether they had been read for design,
+colour and shading. Read properly:
+- **Album List = "Album by Artist".** The full-width header row is gone.
+  An `albumBy` column (first, hidden outside Album List) is empty in its
+  cells; `AlbumColumnView`s are laid over it, one per album block, as tall
+  as the block, hosted in the scroll view's clip view above the table (the
+  table discards subviews it does not own). `layoutAlbumColumns()` runs
+  after a reload (and once more on the next run-loop turn, when the rows
+  have their sizes), on every clip-view bounds change and table frame
+  change, and on column resize; only blocks on screen have views.
+  Cover, bold title, artist and five rating dots when the block is tall
+  enough; title and artist for a few rows; the title alone on one row.
+  Clicks fall through (`hitTest` nil).
+- **The playing song** wears iTunes 10's small speaker before its name
+  (`speakerGlyph`, a text attachment) and is no longer bold.
+- **Colour and shading**: measured against the shots, the palette was
+  already within a shade: selection blues, header grey-blue, toolbar
+  gradient, stripe. Changed: the classic sidebar is now #DBE3EC (was
+  #E0E6EE), a touch bluer and darker like iTunes 10's source list; the
+  LCD's inner shadow is deeper (0.45, blur 4). Not copied: iTunes 10.0's
+  vertically stacked traffic lights, and the Apple logo in the idle LCD.
+- `--view` writes the saved view mode; test runs must put it back
+  (`defaults write local.stevenbleifer.itunesremote viewMode -int 3` for
+  Steven's Grid).

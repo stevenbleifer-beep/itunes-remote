@@ -520,6 +520,16 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         rightSplit.addArrangedSubview(topPane)
         let trackScroll = scroll(for: trackTable)
         rightSplit.addArrangedSubview(trackScroll)
+        trackScroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: trackScroll.contentView,
+                                               queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.layoutAlbumColumns() }
+        }
+        trackTable.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: trackTable,
+                                               queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.layoutAlbumColumns() }
+        }
         rightSplit.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
 
         rebuildBrowserPanes()
@@ -561,6 +571,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         rightSplit.layoutSubtreeIfNeeded()
         trackTable.floatsGroupRows = false
         trackTable.gridStyleMask = mode == .albumList ? [] : [.solidVerticalGridLineMask]
+        albumByColumn?.isHidden = mode != .albumList
+        if mode != .albumList { clearAlbumColumns() }
         if mode == .list {
             albums = []
             refreshRows()
@@ -668,10 +680,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         } else {
             rows = controller.tracks
         }
+        displayRows = rows.indices.map { .track($0) }
+        albumBlocks = []
         if viewMode == .albumList {
-            // A header row before each run of tracks from the same album. The
-            // rows arrive sorted by artist, album, disc, track already.
-            var out: [DisplayRow] = []
+            // Each run of songs from one album is a block; the album's
+            // cover and name go in the column beside it. The rows arrive
+            // sorted by artist, album, disc, track already.
             var lookup: [String: AlbumEntry] = [:]
             for a in albums { lookup[a.artist.lowercased() + "\u{1f}" + a.album.lowercased()] = a }
             var lastKey = ""
@@ -682,16 +696,97 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                     let entry = lookup[key] ?? AlbumEntry(
                         album: t.album, artist: t.displayArtist, year: t.year, trackCount: 0, totalTime: 0,
                         coverTrackId: t.persistentId, hasArtwork: false)
-                    out.append(.group(entry))
+                    albumBlocks.append(AlbumBlock(album: entry, firstRow: i, count: 0))
                 }
-                out.append(.track(i))
+                albumBlocks[albumBlocks.count - 1].count += 1
             }
-            displayRows = out
-        } else {
-            displayRows = rows.indices.map { .track($0) }
         }
         trackTable.reloadData()
+        clearAlbumColumns()
+        layoutAlbumColumns()
+        // The table sizes its rows on the next pass; lay the column out again then.
+        DispatchQueue.main.async { [weak self] in self?.layoutAlbumColumns() }
         tryPlayWantedTrack()
+    }
+
+    // MARK: The Album List's album column
+
+    private struct AlbumBlock {
+        let album: AlbumEntry
+        let firstRow: Int
+        var count: Int
+    }
+    private var albumBlocks: [AlbumBlock] = []
+    private var albumByColumn: NSTableColumn?
+    private var albumColumnViews: [Int: AlbumColumnView] = [:]
+
+    private func clearAlbumColumns() {
+        for v in albumColumnViews.values { v.removeFromSuperview() }
+        albumColumnViews = [:]
+    }
+
+    /// Puts an `AlbumColumnView` over the album column for every block on
+    /// screen, as tall as the block, and takes away the ones scrolled off.
+    /// Called after a reload, on every scroll, and when a column is resized.
+    private func layoutAlbumColumns() {
+        guard viewMode == .albumList, let col = albumByColumn, !col.isHidden,
+              let colIndex = trackTable.tableColumns.firstIndex(of: col) else { return }
+        // The views live in the clip view, above the table, which manages
+        // its own subviews and would not keep ours. Frames are the table's
+        // row and column rects, converted; a scroll moves the table under
+        // the clip view and this runs again.
+        guard let clip = trackTable.enclosingScrollView?.contentView else { return }
+        let visible = trackTable.rows(in: trackTable.visibleRect)
+        let colRect = trackTable.rect(ofColumn: colIndex)
+        var keep = Set<Int>()
+        var made = 0
+        for block in albumBlocks {
+            let last = block.firstRow + block.count - 1
+            guard last >= visible.location, block.firstRow < visible.location + visible.length else { continue }
+            keep.insert(block.firstRow)
+            let top = trackTable.rect(ofRow: block.firstRow)
+            let bottom = trackTable.rect(ofRow: last)
+            let inTable = NSRect(x: colRect.minX, y: top.minY, width: colRect.width, height: bottom.maxY - top.minY)
+            let frame = trackTable.convert(inTable, to: clip)
+            if let v = albumColumnViews[block.firstRow] {
+                if v.frame != frame { v.frame = frame; v.needsDisplay = true }
+            } else {
+                let v = AlbumColumnView(frame: frame)
+                v.configure(block.album, cache: artworkCache)
+                clip.addSubview(v, positioned: .above, relativeTo: trackTable)
+                albumColumnViews[block.firstRow] = v
+                made += 1
+            }
+        }
+        if made > 0 { PlayerController.trace("album column: \(made) made, \(keep.count) on screen of \(albumBlocks.count) blocks, rows \(visible.location)…\(visible.location + visible.length)") }
+        for (row, v) in albumColumnViews where !keep.contains(row) {
+            v.removeFromSuperview()
+            albumColumnViews[row] = nil
+        }
+    }
+
+    func tableViewColumnDidResize(_ notification: Notification) {
+        guard (notification.object as? NSTableView) === trackTable else { return }
+        layoutAlbumColumns()
+    }
+
+    /// iTunes 10's speaker beside the playing song: a small horn and two
+    /// sound arcs, in the list's glyph grey.
+    static let speakerGlyph: NSImage = NSImage(size: NSSize(width: 12, height: 11), flipped: false) { rect in
+        let ink = NSColor(srgbRed: 0.30, green: 0.36, blue: 0.45, alpha: 1)
+        ink.setFill()
+        let horn = NSBezierPath()
+        horn.move(to: NSPoint(x: 0.5, y: 3.5)); horn.line(to: NSPoint(x: 2.5, y: 3.5)); horn.line(to: NSPoint(x: 5.5, y: 0.5))
+        horn.line(to: NSPoint(x: 5.5, y: 10.5)); horn.line(to: NSPoint(x: 2.5, y: 7.5)); horn.line(to: NSPoint(x: 0.5, y: 7.5)); horn.close()
+        horn.fill()
+        ink.setStroke()
+        for (r, w) in [(2.2, 1.0), (4.4, 1.0)] as [(CGFloat, CGFloat)] {
+            let arc = NSBezierPath()
+            arc.appendArc(withCenter: NSPoint(x: 6.5, y: 5.5), radius: r, startAngle: -50, endAngle: 50)
+            arc.lineWidth = w
+            arc.stroke()
+        }
+        return true
     }
 
     /// Track index for a table row, or nil for an album header.
@@ -1055,6 +1150,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             guard let self = self, row < self.displayRows.count, case .group = self.displayRows[row] else { return false }
             return true
         }
+        // iTunes 10's Album List: the cover and the album's name in a column
+        // of their own beside the songs. Empty cells; the column views are
+        // laid over it (see layoutAlbumColumns).
+        let albumBy = AquaTables.column("albumBy", title: "Album by Artist", width: 176, min: 120, sortable: false)
+        albumBy.isHidden = true
+        trackTable.addTableColumn(albumBy)
+        albumByColumn = albumBy
         let check = AquaTables.column("enabled", title: "", width: 22, min: 22, sortable: false)
         check.maxWidth = 22
         check.resizingMask = []
@@ -4965,10 +5067,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             case "lastPlayed": text = MainWindowController.shortDate(t.lastPlayed)
             default: text = ""
             }
-            cell.textField?.stringValue = text
-            // The playing track is bold, as iTunes marked it.
+            // The playing song wears iTunes 10's small speaker before its name.
             let isPlaying = t.persistentId == player.state?.track?.persistentId && player.state?.state != "stopped"
-            cell.textField?.font = Aqua.font(11, bold: isPlaying)
+            cell.textField?.font = Aqua.font(11)
+            if id == "name" && isPlaying {
+                let attachment = NSTextAttachment()
+                attachment.image = MainWindowController.speakerGlyph
+                attachment.bounds = NSRect(x: 0, y: -2, width: 12, height: 11)
+                let line = NSMutableAttributedString(attachment: attachment)
+                line.append(NSAttributedString(string: "  " + text, attributes: [.font: Aqua.font(11)]))
+                cell.textField?.attributedStringValue = line
+            } else {
+                cell.textField?.stringValue = text
+            }
             // In Duplicates, the copies the app would let go of are grey.
             let extra = controller.source == .duplicates && controller.duplicateExtras.contains(t.persistentId)
             cell.textField?.textColor = extra ? Theme.ink(0.5) : NSColor.controlTextColor
