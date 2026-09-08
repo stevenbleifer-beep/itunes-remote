@@ -252,6 +252,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About \(AppIdentity.name)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Preferences…", action: #selector(MainWindowController.showPreferences(_:)), keyEquivalent: ",")
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit \(AppIdentity.name)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         let appItem = NSMenuItem()
         appItem.submenu = appMenu
@@ -325,6 +327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         viewMenu.addItem(withTitle: "AI Features", action: #selector(MainWindowController.toggleAIFeatures(_:)), keyEquivalent: "")
         viewMenu.addItem(withTitle: "Playlist Curator", action: #selector(MainWindowController.toggleCuratorVisible(_:)), keyEquivalent: "")
         viewMenu.addItem(withTitle: "Radio", action: #selector(MainWindowController.toggleRadioVisible(_:)), keyEquivalent: "")
+        viewMenu.addItem(withTitle: "Sidebar Counts", action: #selector(MainWindowController.toggleSidebarCounts(_:)), keyEquivalent: "")
         viewMenu.addItem(withTitle: "Show Duplicates", action: #selector(MainWindowController.toggleDuplicatesVisible(_:)), keyEquivalent: "")
         viewMenu.addItem(.separator())
         for (i, title) in ["as List", "as Album List", "as Grid", "as Cover Flow"].enumerated() {

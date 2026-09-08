@@ -1239,6 +1239,26 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         set { UserDefaults.standard.set(newValue, forKey: "radioHidden") }
     }
 
+    /// View ▸ Sidebar Counts: the capsules beside playlists and the radio's lists.
+    static var sidebarCountsShown: Bool {
+        get { UserDefaults.standard.object(forKey: "sidebarCounts") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "sidebarCounts") }
+    }
+
+    @objc func toggleSidebarCounts(_ sender: Any?) {
+        MainWindowController.sidebarCountsShown.toggle()
+        sourceList.reloadData()
+    }
+
+    /// The app menu's Preferences…, one window kept while the app runs.
+    private var preferences: PreferencesWindow?
+
+    @objc func showPreferences(_ sender: Any?) {
+        let p = preferences ?? PreferencesWindow(main: self)
+        preferences = p
+        p.show()
+    }
+
     /// View ▸ Radio: the section comes and goes from the sidebar.
     @objc func toggleRadioVisible(_ sender: Any?) {
         let hide = !MainWindowController.radioHidden
@@ -3663,6 +3683,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         if item.action == #selector(toggleRadioVisible(_:)) {
             item.state = MainWindowController.radioHidden ? .off : .on
         }
+        if item.action == #selector(toggleSidebarCounts(_:)) {
+            item.state = MainWindowController.sidebarCountsShown ? .on : .off
+        }
         if item.action == #selector(toggleVolumeKeys(_:)) {
             item.state = MainWindowController.volumeKeysEnabled && mediaKeyTap.isRunning ? .on : .off
         }
@@ -3898,6 +3921,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 self?.radioPage.setFilter(tag: parts.first.flatMap { $0.isEmpty ? nil : $0 },
                                           countryCode: parts.count > 1 ? parts[1] : nil)
             }
+        }
+        // `--prefs`: open the Preferences window, for a screenshot.
+        if CommandLine.arguments.contains("--prefs") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.showPreferences(nil) }
         }
         // `--flip-artwork`: select the first song and turn the artwork pane
         // over to its lyrics, for checking the back of the pane.
@@ -4842,7 +4869,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                     ? .speaker : (p.folder ? .folder : (p.smart ? .smartPlaylist : .playlist))
                 let cell = sidebarCell(tableView, text: p.name, icon: icon)
                 cell.indent = CGFloat(playlistDepth[p.persistentId] ?? 0) * 14
-                if !p.folder && p.count > 0 { cell.badge = p.count.formatted() }
+                if !p.folder && p.count > 0 && MainWindowController.sidebarCountsShown { cell.badge = p.count.formatted() }
                 if p.folder {
                     cell.disclosure = !collapsedFolders.contains(p.persistentId)
                     let pid = p.persistentId
@@ -4855,11 +4882,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 return sidebarCell(tableView, text: "Stations", icon: .radio)
             case .radioFavorites:
                 let cell = sidebarCell(tableView, text: "Favorites", icon: .playlist)
-                if !radioFavorites.stations.isEmpty { cell.badge = radioFavorites.stations.count.formatted() }
+                if !radioFavorites.stations.isEmpty && MainWindowController.sidebarCountsShown { cell.badge = radioFavorites.stations.count.formatted() }
                 return cell
             case .radioHistory:
                 let cell = sidebarCell(tableView, text: "Recently Played", icon: .recent)
-                if !radioHistory.plays.isEmpty { cell.badge = radioHistory.plays.count.formatted() }
+                if !radioHistory.plays.isEmpty && MainWindowController.sidebarCountsShown { cell.badge = radioHistory.plays.count.formatted() }
                 return cell
             case .device(let d):
                 var text = d.name

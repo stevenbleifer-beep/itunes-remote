@@ -133,6 +133,10 @@ through iTunes itself, never to the files behind its back.
   first. Delete takes a station off either. The Plays On column says
   whether a stream can play in iTunes over there or only on this Mac.
   View ▸ Radio hides the section.
+- **Preferences** (⌘,) gathers the lasting choices: the look, what the
+  sidebar shows (curator, radio, duplicates, the count capsules beside
+  playlists and the radio's lists), song notifications, the volume keys,
+  and the AI features switch. The menu items remain as shortcuts.
 - **The keyboard's volume keys drive iTunes over there.** While a song is
   playing on the MacBook Pro, the Mac's own volume is silent, so the app
   takes the volume, mute, play/pause and track keys itself and sends them

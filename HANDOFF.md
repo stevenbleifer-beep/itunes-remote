@@ -1873,3 +1873,15 @@ only), and the LCD already draws a barber pole during an iPod sync. New:
 - Trap: a System Events `click at` does not deliver real mouse events to a
   background test instance (the row it "hit" never selected); drive test
   instances with flags.
+
+**Preferences (2026-09-07, night).** Steven: sidebar counts should toggle,
+and with this many settings, a Preferences page. `PreferencesWindow.swift`
+(app menu ▸ Preferences…, ⌘,): Look (Appearance popup → the AppDelegate's
+`useClassicLook:`/`useModernLook:` through the responder chain, a relaunch),
+Sidebar (curator, radio, duplicates, counts), Playing (song notifications,
+volume keys — iTunes profile only), Models (AI features). Each checkbox
+reads its default and calls the same `toggle…` action the menu item does,
+so the two never disagree; `refresh()` re-reads after every change. The
+menu items stay as shortcuts. `sidebarCountsShown` (default true, View ▸
+Sidebar Counts) gates the badges. `--prefs` opens the window for a
+screenshot.
