@@ -27,8 +27,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         case device(DeviceSource)
         case curator
         case radio
+        case radioFavorites
         case radioHistory
-        case radioList(RadioList)
     }
 
     private var sourceRows: [SourceRow] = [.header("LIBRARY"), .library, .header("PLAYLISTS")]
@@ -1193,12 +1193,12 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// in the sidebar. Stations play in iTunes over there (its own URL
     /// track) or, when that Mac cannot open the stream, on this one.
     private let radioPage = RadioPageView()
-    private let radioLists = RadioLists()
+    private let radioFavorites = RadioFavorites()
     private let radioHistory = RadioHistory()
     private var radioHistoryOpen = false
+    private var radioFavoritesOpen = false
     private lazy var radioAgent = RadioAgent(ollama: curator.ollama)
     private var radioOpen = false
-    private var radioListOpen: String?
     private var playingStation: RadioStation?
     private var radioLoadedPopular = false
     private var radioAskPending = false
@@ -1229,19 +1229,16 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     private func wireRadio() {
-        radioPage.lists = radioLists.lists
+        radioPage.favorites = radioFavorites.uuids
         radioPage.refusedOverThere = radioRefused
         radioPage.overThereName = ServerSettings.appName
         radioPage.modelLine = MainWindowController.aiEnabled
             ? "Ask uses \(radioAgent.model) · Search matches names and styles · directory: radio-browser.info"
             : "Search matches names and styles · directory: radio-browser.info"
-        radioLists.onChange = { [weak self] in
+        radioFavorites.onChange = { [weak self] in
             guard let self = self else { return }
-            self.radioPage.lists = self.radioLists.lists
-            if let id = self.radioListOpen {
-                if let l = self.radioLists.list(id) { self.radioPage.refresh(list: l) } else { self.openRadioPage(list: nil) }
-            }
-            self.reloadSourceList()
+            self.radioPage.favorites = self.radioFavorites.uuids
+            if self.radioFavoritesOpen { self.radioPage.show(favorites: self.radioFavorites.stations) }
         }
         radioPage.onSearch = { [weak self] text in Task { @MainActor in await self?.searchRadio(text) } }
         radioPage.onFilterChanged = { [weak self] in
@@ -1274,17 +1271,27 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             self.updateStatus()
         }
         radioPage.onPlay = { [weak self] s in self?.playStation(s) }
-        radioPage.onAdd = { [weak self] stations, id in self?.addStations(stations, to: id) }
+        radioPage.onToggleFavorite = { [weak self] stations in
+            guard let self = self, !stations.isEmpty else { return }
+            if stations.allSatisfy({ self.radioFavorites.contains($0) }) {
+                self.radioFavorites.remove(Set(stations.map { $0.uuid }))
+                self.flashStatus(stations.count == 1 ? "“\(stations[0].name)” is no longer a favorite." : "\(stations.count) stations are no longer favorites.")
+            } else {
+                let n = self.radioFavorites.add(stations)
+                self.flashStatus(n == 1 && stations.count == 1 ? "“\(stations[0].name)” is a favorite — it is under RADIO ▸ Favorites."
+                                 : "\(n) station\(n == 1 ? "" : "s") added to Favorites, under RADIO in the sidebar.")
+            }
+        }
         radioPage.onRemove = { [weak self] stations in
             guard let self = self else { return }
+            let ids = Set(stations.map { $0.uuid })
             if self.radioHistoryOpen {
-                self.radioHistory.remove(Set(stations.map { $0.uuid }))
+                self.radioHistory.remove(ids)
                 self.flashStatus(stations.count == 1 ? "Took “\(stations[0].name)” off the history." : "Took \(stations.count) stations off the history.")
-                return
+            } else if self.radioFavoritesOpen {
+                self.radioFavorites.remove(ids)
+                self.flashStatus(stations.count == 1 ? "“\(stations[0].name)” is no longer a favorite." : "\(stations.count) stations are no longer favorites.")
             }
-            guard let id = self.radioListOpen else { return }
-            self.radioLists.remove(Set(stations.map { $0.uuid }), from: id)
-            self.flashStatus(stations.count == 1 ? "Took “\(stations[0].name)” off the list." : "Took \(stations.count) stations off the list.")
         }
         radioHistory.onChange = { [weak self] in
             guard let self = self, self.radioHistoryOpen else { return }
@@ -1292,12 +1299,25 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
     }
 
+    /// Favorites: the stations marked with the Favorite button.
+    private func openRadioFavorites() {
+        closeDevicePage()
+        closeCuratorPage()
+        radioOpen = true
+        radioFavoritesOpen = true
+        radioHistoryOpen = false
+        rightSplit.isHidden = true
+        radioPage.isHidden = false
+        radioPage.playingUUID = playingStation?.uuid
+        radioPage.show(favorites: radioFavorites.stations)
+    }
+
     /// Recently Played: the stations tuned to, newest first.
     private func openRadioHistory() {
         closeDevicePage()
         closeCuratorPage()
         radioOpen = true
-        radioListOpen = nil
+        radioFavoritesOpen = false
         radioHistoryOpen = true
         rightSplit.isHidden = true
         radioPage.isHidden = false
@@ -1305,21 +1325,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         radioPage.show(history: radioHistory.plays)
     }
 
-    private func openRadioPage(list: RadioList?) {
+    private func openRadioPage() {
         closeDevicePage()
         closeCuratorPage()
         radioOpen = true
-        radioListOpen = list?.id
+        radioFavoritesOpen = false
         radioHistoryOpen = false
         rightSplit.isHidden = true
         radioPage.isHidden = false
         radioPage.playingUUID = playingStation?.uuid
-        if let l = list {
-            radioPage.show(list: l)
-        } else if !radioLoadedPopular {
+        if !radioLoadedPopular || radioPage.favoritesOpen || radioPage.historyOpen {
             Task { @MainActor in await loadPopularStations(force: false) }
-        } else if radioPage.listId != nil {
-            radioPage.show(radioPage.stations, note: "", heading: "Stations")
         }
         radioPage.focusField()
     }
@@ -1327,7 +1343,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func closeRadioPage() {
         guard radioOpen else { return }
         radioOpen = false
-        radioListOpen = nil
+        radioFavoritesOpen = false
         radioHistoryOpen = false
         radioPage.isHidden = true
         rightSplit.isHidden = false
@@ -1337,8 +1353,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// list or the history, the sidebar goes back to Stations with it, or
     /// the list stays selected over a page that is not the list.
     private func leaveListForResults() {
-        guard radioListOpen != nil || radioHistoryOpen else { return }
-        radioListOpen = nil
+        guard radioFavoritesOpen || radioHistoryOpen else { return }
+        radioFavoritesOpen = false
         radioHistoryOpen = false
         reloadSourceList()
     }
@@ -1472,42 +1488,6 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         sourceList.reloadData()
         flashStatus("Stopped \(station.name).")
         updateStatus()
-    }
-
-    private func addStations(_ stations: [RadioStation], to id: String?) {
-        guard !stations.isEmpty else { return }
-        if let id = id, let l = radioLists.list(id) {
-            let n = radioLists.add(stations, to: id)
-            flashStatus(n == 0 ? "Already in “\(l.name)”." : "Added \(n) station\(n == 1 ? "" : "s") to “\(l.name)”.")
-            return
-        }
-        let prompt = NamePrompt(title: "New Station List", prompt: "Name for the list:",
-                                placeholder: "Late-night jazz", acceptTitle: "Create")
-        prompt.onAccept = { [weak self] name, done in
-            guard let self = self else { return }
-            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { done("Give the list a name."); return }
-            let l = self.radioLists.create(trimmed, stations: stations)
-            self.flashStatus("“\(l.name)” made with \(l.stations.count) station\(l.stations.count == 1 ? "" : "s") — it is under RADIO in the sidebar.")
-            done(nil)
-            // Show it where it went: the sidebar row selected, the list on the page.
-            self.radioListOpen = l.id
-            self.reloadSourceList()
-            self.openRadioPage(list: l)
-        }
-        if let w = window { prompt.present(in: w) }
-    }
-
-    private func deleteRadioList(_ list: RadioList) {
-        let alert = NSAlert()
-        alert.messageText = "Delete the station list “\(list.name)”?"
-        alert.informativeText = "The stations stay in the directory; only the list goes."
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        if radioListOpen == list.id { openRadioPage(list: nil) }
-        radioLists.delete(list.id)
-        flashStatus("Deleted “\(list.name)”.")
     }
 
     // MARK: Volume keys for the other Mac
@@ -2680,8 +2660,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         if !MainWindowController.radioHidden {
             sourceRows.append(.header("RADIO"))
             sourceRows.append(.radio)
+            sourceRows.append(.radioFavorites)
             sourceRows.append(.radioHistory)
-            sourceRows += radioLists.lists.map { .radioList($0) }
         }
         sourceRows.append(.header("PLAYLISTS"))
         // Playlists as a tree: a folder's playlists sit under it, stepped in,
@@ -2730,14 +2710,14 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             select = i
             if curatorPage.isHidden { openCuratorPage() }
         } else if radioOpen, let i = sourceRows.firstIndex(where: {
-            if case .radio = $0 { return radioListOpen == nil && !radioHistoryOpen }
+            if case .radio = $0 { return !radioFavoritesOpen && !radioHistoryOpen }
+            if case .radioFavorites = $0 { return radioFavoritesOpen }
             if case .radioHistory = $0 { return radioHistoryOpen }
-            if case .radioList(let l) = $0 { return l.id == radioListOpen }
             return false
         }) {
             select = i
             if radioPage.isHidden {
-                if radioHistoryOpen { openRadioHistory() } else { openRadioPage(list: radioListOpen.flatMap { radioLists.list($0) }) }
+                if radioHistoryOpen { openRadioHistory() } else if radioFavoritesOpen { openRadioFavorites() } else { openRadioPage() }
             }
         } else if controller.source == .recentlyAdded {
             select = 2
@@ -3734,7 +3714,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         // `--radio-ask TEXT`: the radio agent on one request, its picks printed.
         if let i = CommandLine.arguments.firstIndex(of: "--radio-ask"), i + 1 < CommandLine.arguments.count {
             let text = CommandLine.arguments[i + 1]
-            openRadioPage(list: nil)
+            openRadioPage()
             radioAskPending = true
             Task { @MainActor in
                 await self.askRadio(text)
@@ -3747,7 +3727,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         // `--radio-ask`, or the popular list), quietly, and print the player.
         if let i = CommandLine.arguments.firstIndex(of: "--radio-play"), i + 1 < CommandLine.arguments.count,
            let n = Int(CommandLine.arguments[i + 1]) {
-            openRadioPage(list: nil)
+            openRadioPage()
             Task { @MainActor in
                 var waited = 0
                 while self.radioPage.stations.isEmpty || self.radioAskPending, waited < 240 {
@@ -3766,7 +3746,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         // `--radio-play-local N`: the N-th station on the page, on this Mac, quietly.
         if let i = CommandLine.arguments.firstIndex(of: "--radio-play-local"), i + 1 < CommandLine.arguments.count,
            let n = Int(CommandLine.arguments[i + 1]) {
-            openRadioPage(list: nil)
+            openRadioPage()
             Task { @MainActor in
                 var waited = 0
                 while self.radioPage.stations.isEmpty || self.radioAskPending, waited < 240 {
@@ -3782,30 +3762,17 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         // `--radio-filter TAG,CC`: set the Style and Country menus, for checking them.
         if let i = CommandLine.arguments.firstIndex(of: "--radio-filter"), i + 1 < CommandLine.arguments.count {
             let parts = CommandLine.arguments[i + 1].split(separator: ",").map { String($0) }
-            openRadioPage(list: nil)
+            openRadioPage()
             DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
                 self?.radioPage.setFilter(tag: parts.first.flatMap { $0.isEmpty ? nil : $0 },
                                           countryCode: parts.count > 1 ? parts[1] : nil)
             }
         }
-        // `--radio-list NAME`: open that saved station list, for checking it.
-        if let i = CommandLine.arguments.firstIndex(of: "--radio-list"), i + 1 < CommandLine.arguments.count,
-           let l = radioLists.lists.first(where: { $0.name == CommandLine.arguments[i + 1] }) {
-            radioListOpen = l.id
+        // `--radio-favorites`: open the favorites page, for checking it.
+        if CommandLine.arguments.contains("--radio-favorites") {
+            radioFavoritesOpen = true
             reloadSourceList()
-            openRadioPage(list: l)
-        }
-        // `--radio-newlist`: the New List sheet over the popular stations, for testing it.
-        if CommandLine.arguments.contains("--radio-newlist") {
-            openRadioPage(list: nil)
-            Task { @MainActor in
-                var waited = 0
-                while self.radioPage.stations.isEmpty, waited < 120 {
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    waited += 1
-                }
-                self.addStations(Array(self.radioPage.stations.prefix(3)), to: nil)
-            }
+            openRadioFavorites()
         }
         // `--shuffle-preview`: the shuffled order the queue would show, printed.
         if CommandLine.arguments.contains("--shuffle-preview") {
@@ -4127,11 +4094,6 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             if self.radioOpen, self.window?.firstResponder === self.radioPage.table {
                 if event.keyCode == 51 || event.keyCode == 117 { self.radioPage.removeSelection(); return nil }
                 if event.keyCode == 36 { self.radioPage.playSelection(); return nil }
-            }
-            if (event.keyCode == 51 || event.keyCode == 117), self.window?.firstResponder === self.sourceList,
-               self.sourceList.selectedRow >= 0, case .radioList(let l) = self.sourceRows[self.sourceList.selectedRow] {
-                self.deleteRadioList(l)
-                return nil
             }
             // The curator's list: Delete drops songs, Return plays the selection.
             if self.curatorOpen, self.window?.firstResponder === self.curatorPage.table {
@@ -4747,12 +4709,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 return sidebarCell(tableView, text: "Playlist Curator", icon: .curator)
             case .radio:
                 return sidebarCell(tableView, text: "Stations", icon: .radio)
+            case .radioFavorites:
+                return sidebarCell(tableView, text: "Favorites", icon: .playlist)
             case .radioHistory:
                 return sidebarCell(tableView, text: "Recently Played", icon: .recent)
-            case .radioList(let l):
-                let cell = sidebarCell(tableView, text: l.name, icon: playingStation != nil && radioListOpen == l.id ? .speaker : .playlist)
-                cell.indent = 14
-                return cell
             case .device(let d):
                 var text = d.name
                 if let free = d.freeSpace, let cap = d.capacity, cap > 0 {
@@ -4923,9 +4883,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             case .playlist(let p): closeDevicePage(); closeCuratorPage(); closeRadioPage(); controller.source = .playlist(p)
             case .device(let d): closeCuratorPage(); closeRadioPage(); openDevicePage(for: d)
             case .curator: openCuratorPage()
-            case .radio: openRadioPage(list: nil)
+            case .radio: openRadioPage()
+            case .radioFavorites: openRadioFavorites()
             case .radioHistory: openRadioHistory()
-            case .radioList(let l): openRadioPage(list: l)
             case .header: break
             }
         case .browser:

@@ -1825,3 +1825,11 @@ then Clear/Reset buttons, a Plays On column, and station art.
 - Test flags: `--radio-filter TAG,CC`, `--radio-list NAME`,
   `--radio-play-local N` (this Mac only, volume 0.05 — the one to use
   while Steven is listening through his own copy).
+
+**Favorites instead of lists (2026-09-07, 8 pm).** Steven: "instead of
+having lists can you have a favorites section." `RadioFavorites`
+(radio/favorites.json) replaces `RadioLists`; the page has a Favorite /
+Unfavorite button for the selection and a ♥ column; RADIO is Stations,
+Favorites, Recently Played. The old lists.json (Indie 116, Japan 3, USA)
+is left on disk, not shown, not imported — Steven decides. `--radio-favorites`
+opens the page.

@@ -127,10 +127,12 @@ through iTunes itself, never to the files behind its back.
   While a station plays, the song it is carrying is on the display and in
   the status bar, when the station says. The Style and Country menus fix a
   genre or a country for every search and for Ask. Next and Previous move
-  along the stations on the page. Add to List keeps stations in lists of
-  your own under RADIO, and Recently Played there is every station you
-  have tuned to, newest first; Delete takes a station off a list or the
-  history, or a list off the sidebar. View ▸ Radio hides the section.
+  along the stations on the page. Favorite marks the selected stations
+  (a heart in the first column) and Favorites under RADIO lists them;
+  Recently Played there is every station you have tuned to, newest
+  first. Delete takes a station off either. The Plays On column says
+  whether a stream can play in iTunes over there or only on this Mac.
+  View ▸ Radio hides the section.
 - **The keyboard's volume keys drive iTunes over there.** While a song is
   playing on the MacBook Pro, the Mac's own volume is silent, so the app
   takes the volume, mute, play/pause and track keys itself and sends them

@@ -13,8 +13,8 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
     var onSearch: (String) -> Void = { _ in }
     var onAsk: (String) -> Void = { _ in }
     var onPlay: (RadioStation) -> Void = { _ in }
-    /// Add these stations to the list with this id, or to a new one (nil).
-    var onAdd: ([RadioStation], String?) -> Void = { _, _ in }
+    /// Mark these as favorites, or unmark them when they all are.
+    var onToggleFavorite: ([RadioStation]) -> Void = { _ in }
     var onRemove: ([RadioStation]) -> Void = { _ in }
     var onPopular: () -> Void = {}
     /// Stop the station and leave the radio.
@@ -70,14 +70,14 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
     /// What the table shows, with the model's reason where it gave one.
     private(set) var stations: [RadioStation] = []
     private var why: [String: String] = [:]
-    /// The list on show, when it is one of the saved ones.
-    private(set) var listId: String?
+    /// The favorites page is on show.
+    private(set) var favoritesOpen = false
+    /// Which stations are favorites, for the heart column and the button.
+    var favorites: Set<String> = [] { didSet { table.reloadData(); updateButtons() } }
     /// The listening history on show: when each station was last played.
     private(set) var historyOpen = false
     private var played: [String: String] = [:]
     var playingUUID: String? { didSet { if playingUUID != oldValue { table.reloadData(); updateButtons() } } }
-    /// The saved lists, for the Add to menu.
-    var lists: [RadioList] = [] { didSet { rebuildAddMenu() } }
 
     let table = AquaTableView()
     let field = NSTextField()
@@ -91,7 +91,7 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
     private let playButton = AquaPushButton(title: "Play")
     private let stopButton = AquaPushButton(title: "Stop")
     private let removeButton = AquaPushButton(title: "Remove")
-    private let addPopup = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let favoriteButton = AquaPushButton(title: "Favorite")
     private let heading = NSTextField(labelWithString: "Radio")
     private let statusLabel = NSTextField(labelWithString: "")
     private let noteLabel = NSTextField(labelWithString: "")
@@ -123,7 +123,7 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        for v in [heading as NSView, field, clearButton, stylePopup, countryPopup, resetButton, searchButton, askButton, popularButton, noteLabel, split, statusLabel, playButton, stopButton, addPopup, removeButton] {
+        for v in [heading as NSView, field, clearButton, stylePopup, countryPopup, resetButton, searchButton, askButton, popularButton, noteLabel, split, statusLabel, playButton, stopButton, favoriteButton, removeButton] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -155,6 +155,8 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         stopButton.action = #selector(stop(_:))
         clearButton.target = self
         clearButton.action = #selector(clearSearch(_:))
+        favoriteButton.target = self
+        favoriteButton.action = #selector(toggleFavorite(_:))
         resetButton.target = self
         resetButton.action = #selector(resetFilters(_:))
 
@@ -187,7 +189,7 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         // Station and Why take the spare width; the rest keep theirs, and
         // Stream and Listeners cannot be squeezed to two letters.
         for (id, title, width, min, right, stretch) in [
-            ("name", "Station", 190.0, 120.0, false, true), ("place", "Where", 130.0, 80.0, false, false),
+            ("fav", "♥", 24.0, 24.0, false, false), ("name", "Station", 190.0, 120.0, false, true), ("place", "Where", 130.0, 80.0, false, false),
             ("tags", "Style", 160.0, 80.0, false, false), ("quality", "Stream", 80.0, 80.0, true, false),
             ("clicks", "Listeners", 66.0, 66.0, true, false), ("plays", "Plays On", 96.0, 80.0, false, false),
             ("why", "Why", 170.0, 100.0, false, true), ("played", "Played", 150.0, 110.0, false, false),
@@ -226,10 +228,6 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         rightPane.frame = NSRect(x: 461, y: 0, width: 600, height: 400)
         split.addSubview(leftPane)
         split.addSubview(rightPane)
-
-        addPopup.font = Aqua.font(11)
-        addPopup.controlSize = .small
-        rebuildAddMenu()
 
         // Style and country: fixed for every search until changed back.
         for popup in [stylePopup, countryPopup] {
@@ -282,10 +280,9 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
             stopButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -pad + 4),
             playButton.trailingAnchor.constraint(equalTo: stopButton.leadingAnchor, constant: 2),
             playButton.centerYAnchor.constraint(equalTo: stopButton.centerYAnchor),
-            addPopup.trailingAnchor.constraint(equalTo: playButton.leadingAnchor, constant: -6),
-            addPopup.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
-            addPopup.widthAnchor.constraint(equalToConstant: 150),
-            removeButton.trailingAnchor.constraint(equalTo: addPopup.leadingAnchor, constant: -2),
+            favoriteButton.trailingAnchor.constraint(equalTo: playButton.leadingAnchor, constant: 2),
+            favoriteButton.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
+            removeButton.trailingAnchor.constraint(equalTo: favoriteButton.leadingAnchor, constant: 2),
             removeButton.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
             statusLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad + 2),
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: removeButton.leadingAnchor, constant: -10),
@@ -293,7 +290,7 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         ])
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         noteLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for b in [searchButton, askButton, popularButton, playButton, stopButton, removeButton, clearButton, resetButton] {
+        for b in [searchButton, askButton, popularButton, playButton, stopButton, removeButton, clearButton, resetButton, favoriteButton] {
             b.setContentCompressionResistancePriority(.required, for: .horizontal)
             b.setContentHuggingPriority(.required, for: .horizontal)
         }
@@ -322,7 +319,7 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
     func show(_ stations: [RadioStation], why: [String: String] = [:], note: String, heading title: String) {
         self.stations = stations
         self.why = why
-        listId = nil
+        favoritesOpen = false
         historyOpen = false
         played = [:]
         heading.stringValue = title
@@ -334,7 +331,7 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
     func show(history: [RadioPlay]) {
         stations = history.map { $0.station }
         why = [:]
-        listId = nil
+        favoritesOpen = false
         historyOpen = true
         played = Dictionary(history.map { ($0.station.uuid, RadioHistory.when($0.date) + ($0.plays > 1 ? " · \($0.plays) times" : "")) },
                             uniquingKeysWith: { a, _ in a })
@@ -345,23 +342,17 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         reloadAll()
     }
 
-    func show(list: RadioList) {
-        stations = list.stations
+    func show(favorites: [RadioStation]) {
+        stations = favorites
         why = [:]
-        listId = list.id
+        favoritesOpen = true
         historyOpen = false
         played = [:]
-        heading.stringValue = list.name
-        noteLabel.stringValue = list.stations.isEmpty ? "Nothing here yet. Search or ask, pick some stations, and add them to “\(list.name)”."
-            : "\(list.stations.count) station\(list.stations.count == 1 ? "" : "s"). Double-click to listen; Delete takes one off the list."
+        heading.stringValue = "Favorites"
+        noteLabel.stringValue = favorites.isEmpty ? "Nothing yet. Select a station and press Favorite, and it is kept here."
+            : "\(favorites.count) favorite station\(favorites.count == 1 ? "" : "s"). Double-click to listen; Delete takes one off."
         removeButton.isHidden = false
         reloadAll()
-    }
-
-    /// The stations on show as a list keep up with an edit elsewhere.
-    func refresh(list: RadioList) {
-        guard listId == list.id else { return }
-        show(list: list)
     }
 
     private var showing = 0
@@ -464,34 +455,13 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
     private func updateButtons() {
         playButton.isEnabled = !stations.isEmpty
         stopButton.isEnabled = playingUUID != nil
-        addPopup.isEnabled = !stations.isEmpty
-        removeButton.isEnabled = (listId != nil || historyOpen) && !table.selectedRowIndexes.isEmpty
-    }
-
-    private func rebuildAddMenu() {
-        let menu = NSMenu()
-        let titleItem = NSMenuItem(title: "Add to List", action: nil, keyEquivalent: "")
-        menu.addItem(titleItem)   // a pull-down shows its first item as the title
-        for l in lists {
-            let item = NSMenuItem(title: l.name, action: #selector(addToList(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = l.id
-            menu.addItem(item)
-        }
-        if !lists.isEmpty { menu.addItem(.separator()) }
-        let new = NSMenuItem(title: "New List…", action: #selector(addToNewList(_:)), keyEquivalent: "")
-        new.target = self
-        menu.addItem(new)
-        addPopup.menu = menu
+        removeButton.isEnabled = (favoritesOpen || historyOpen) && !table.selectedRowIndexes.isEmpty
+        let sel = selectedStations
+        favoriteButton.isEnabled = !sel.isEmpty
+        favoriteButton.title = !sel.isEmpty && sel.allSatisfy { favorites.contains($0.uuid) } ? "Unfavorite" : "Favorite"
     }
 
     // MARK: Actions
-
-    /// The selection, or everything on show when nothing is selected.
-    private var actionable: [RadioStation] {
-        let sel = selectedStations
-        return sel.isEmpty ? stations : sel
-    }
 
     @objc private func search(_ sender: Any?) {
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -538,18 +508,17 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         if let s = selectedStations.first { onPlay(s) }
     }
 
-    @objc private func addToList(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        onAdd(actionable, id)
+    @objc private func toggleFavorite(_ sender: Any?) {
+        let sel = selectedStations
+        guard !sel.isEmpty else { return }
+        onToggleFavorite(sel)
     }
-
-    @objc private func addToNewList(_ sender: Any?) { onAdd(actionable, nil) }
 
     @objc private func remove(_ sender: Any?) { removeSelection() }
 
     func removeSelection() {
         let sel = selectedStations
-        guard listId != nil || historyOpen, !sel.isEmpty else { return }
+        guard favoritesOpen || historyOpen, !sel.isEmpty else { return }
         onRemove(sel)
     }
 
@@ -571,6 +540,7 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         let cell = AquaTables.labelCell(tableView, id: id, rightAligned: right)
         let text: String
         switch id {
+        case "fav": text = favorites.contains(s.uuid) ? "♥" : ""
         case "name": text = s.name
         case "place": text = s.place
         case "tags": text = s.tagLine
