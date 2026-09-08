@@ -1270,6 +1270,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         reloadSourceList()
     }
 
+    /// Preferences ▸ Radio ▸ Forget Refused Stations.
+    func forgetRefusedStations() {
+        let n = radioRefused.count
+        radioRefused = []
+        flashStatus(n == 0 ? "No stations were marked as refused." : "Forgot \(n) refused station\(n == 1 ? "" : "s"); each gets another try on \(ServerSettings.name).")
+    }
+
     /// Stations iTunes over there could not play, remembered across
     /// launches so the Plays On column and the first attempt both know.
     private var radioRefused: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "radioRefused") ?? []) {

@@ -1885,3 +1885,19 @@ so the two never disagree; `refresh()` re-reads after every change. The
 menu items stay as shortcuts. `sidebarCountsShown` (default true, View ▸
 Sidebar Counts) gates the badges. `--prefs` opens the window for a
 screenshot.
+
+**Preferences, iTunes 10's shape (same night).** Steven sent iTunes 10's
+own Preferences: icon tabs across the top, groups divided by rules,
+Cancel and OK. `PreferencesWindow` now is an `NSToolbar` in
+`.preference` style with four drawn icons (General: two slider tracks;
+Playback: a play disc; Radio: the sidebar's set; Advanced: a gear) over
+panes: General (Look popup, Show: curator/duplicates/radio in two
+columns, sidebar counts), Playback (song notifications, volume keys),
+Radio (show, a note on the directory, Forget Refused Stations →
+`forgetRefusedStations()`), Advanced (AI features, Library popup, a
+Connect… button that goes through the responder chain to the app
+delegate's `showConnectPanel:`). Nothing applies until OK: each checkbox
+is compared with its `read()` and toggled if it differs; the two relaunch
+choices (library first, else look) are sent last. Cancel re-reads and
+closes. Layout is frames, not autolayout; `note()` takes a top edge and
+returns its height so groups stack.
