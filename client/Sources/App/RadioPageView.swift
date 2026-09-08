@@ -100,6 +100,7 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
     private let rightPane = NSView()
 
     private var busy = false
+    var isBusy: Bool { busy }
     private var busySince: Date?
     private var busyText = ""
     private var busyTimer: Timer?
@@ -559,6 +560,10 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
     // MARK: Table
 
     func numberOfRows(in tableView: NSTableView) -> Int { stations.count }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        AquaTables.rowView(tableView, row: row, striped: true, background: Theme.paper, selection: .blue)
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard row < stations.count, let id = tableColumn?.identifier.rawValue else { return nil }

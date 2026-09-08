@@ -13,7 +13,7 @@ enum Aqua {
     }
 
     // Lists
-    static let stripe = NSColor(srgbRed: 0.953, green: 0.965, blue: 0.980, alpha: 1)      // #F3F6FA
+    static let stripe = NSColor(srgbRed: 0.929, green: 0.953, blue: 0.996, alpha: 1)      // #EDF3FE, iTunes 10's row
     static let gridLine = Theme.ink(0.87)
     static let selectionTopKey = NSColor(srgbRed: 0.45, green: 0.62, blue: 0.89, alpha: 1)
     static let selectionBottomKey = NSColor(srgbRed: 0.20, green: 0.41, blue: 0.79, alpha: 1)
@@ -567,19 +567,132 @@ final class ArtworkView: NSView {
     /// Thumbnail mode: the cover fills the view with no background or caption.
     var fillsBounds = false { didSet { needsDisplay = true } }
 
-    override func draw(_ dirtyRect: NSRect) {
-        let side: CGFloat
-        let box: NSRect
+    /// The back of the pane: the song's lyrics, the way iTunes 10's pane
+    /// flipped between the cover and the visualiser. A click turns it over.
+    var lyrics: String? { didSet { lyricsText.string = lyrics ?? ""; lyricsText.scrollToBeginningOfDocument(nil) } }
+    private(set) var showingLyrics = false
+    /// Called with the new side when the pane has been turned.
+    var onFlip: (Bool) -> Void = { _ in }
+    private let lyricsScroll = NSScrollView()
+    private let lyricsText = NSTextView()
+    private var flipping = false
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        lyricsText.isEditable = false
+        lyricsText.isSelectable = true
+        lyricsText.drawsBackground = true
+        lyricsText.backgroundColor = Theme.paper
+        lyricsText.font = Aqua.font(11)
+        lyricsText.textColor = Theme.ink(0.2)
+        lyricsText.textContainerInset = NSSize(width: 6, height: 6)
+        lyricsText.isVerticallyResizable = true
+        lyricsText.isHorizontallyResizable = false
+        lyricsText.autoresizingMask = [.width]
+        lyricsText.textContainer?.widthTracksTextView = true
+        lyricsText.alignment = .center
+        lyricsScroll.documentView = lyricsText
+        lyricsScroll.hasVerticalScroller = true
+        lyricsScroll.scrollerStyle = .overlay
+        lyricsScroll.drawsBackground = true
+        lyricsScroll.backgroundColor = Theme.paper
+        lyricsScroll.borderType = .noBorder
+        lyricsScroll.isHidden = true
+        addSubview(lyricsScroll)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// The square the cover (or the lyrics) sits in.
+    private var box: NSRect {
         if fillsBounds {
-            side = min(bounds.width, bounds.height) - 2
-            box = NSRect(x: round(bounds.midX - side / 2), y: round(bounds.midY - side / 2), width: side, height: side)
-        } else {
+            let side = min(bounds.width, bounds.height) - 2
+            return NSRect(x: round(bounds.midX - side / 2), y: round(bounds.midY - side / 2), width: side, height: side)
+        }
+        let side = min(bounds.width, bounds.height - 16) - 16
+        return NSRect(x: round(bounds.midX - side / 2), y: bounds.maxY - side - 6, width: side, height: side)
+    }
+
+    override func layout() {
+        super.layout()
+        lyricsScroll.frame = box.insetBy(dx: 1, dy: 1)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard !fillsBounds, !flipping, box.width > 12 else { return }
+        flip()
+    }
+
+    private static func turned(_ angle: CGFloat) -> CATransform3D {
+        var t = CATransform3DIdentity
+        t.m34 = -1 / 500
+        return CATransform3DRotate(t, angle, 0, 1, 0)
+    }
+
+    /// Turns the pane over: out to the edge, swap the face, back in.
+    func flip() {
+        let toLyrics = !showingLyrics
+        guard let layer = layer else { showSide(lyrics: toLyrics); return }
+        flipping = true
+        // Turn about the middle: the layer's anchor moves, so its position must too.
+        let mid = CGPoint(x: frame.midX, y: frame.midY)
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.position = mid
+        let out = CABasicAnimation(keyPath: "transform")
+        out.fromValue = CATransform3DIdentity
+        out.toValue = ArtworkView.turned(.pi / 2)
+        out.duration = 0.17
+        out.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        out.fillMode = .forwards
+        out.isRemovedOnCompletion = false
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            guard let self = self, let layer = self.layer else { return }
+            layer.removeAnimation(forKey: "flipOut")
+            self.showSide(lyrics: toLyrics)
+            let back = CABasicAnimation(keyPath: "transform")
+            back.fromValue = ArtworkView.turned(-.pi / 2)
+            back.toValue = CATransform3DIdentity
+            back.duration = 0.17
+            back.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            CATransaction.begin()
+            CATransaction.setCompletionBlock { [weak self] in self?.flipping = false }
+            layer.add(back, forKey: "flipIn")
+            CATransaction.commit()
+        }
+        layer.add(out, forKey: "flipOut")
+        CATransaction.commit()
+    }
+
+    private func showSide(lyrics toLyrics: Bool) {
+        showingLyrics = toLyrics
+        lyricsScroll.isHidden = !toLyrics
+        needsLayout = true
+        needsDisplay = true
+        onFlip(toLyrics)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let box = self.box
+        let side = box.width
+        if !fillsBounds {
             Aqua.sidebarBackground.setFill()
             bounds.fill()
-            side = min(bounds.width, bounds.height - 16) - 16
-            box = NSRect(x: round(bounds.midX - side / 2), y: bounds.maxY - side - 6, width: side, height: side)
         }
         guard side > 12 else { return }
+
+        if showingLyrics {
+            // The back: paper with a frame; the text view sits on it.
+            Theme.paper.setFill()
+            (Theme.isModern ? NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6) : NSBezierPath(rect: box)).fill()
+            if !Theme.isModern {
+                Theme.ink(0.55).setStroke()
+                NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5)).stroke()
+            }
+            drawCaption("LYRICS")
+            return
+        }
 
         if let img = image {
             NSGraphicsContext.saveGraphicsState()
@@ -616,7 +729,10 @@ final class ArtworkView: NSView {
             Theme.ink(0.55).setStroke()
             NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5)).stroke()
         }
+        drawCaption(caption)
+    }
 
+    private func drawCaption(_ caption: String) {
         if !caption.isEmpty {
             let style = NSMutableParagraphStyle()
             style.alignment = .center
@@ -632,6 +748,55 @@ final class ArtworkView: NSView {
                 .shadow: emboss,
             ])
         }
+    }
+}
+
+/// Aqua's "something is happening" bar: diagonal blue stripes sliding to
+/// the right in a small groove. It runs only while it is on screen.
+final class AquaBarberPole: NSView {
+    private var phase: CGFloat = 0
+    private var timer: Timer?
+
+    var animating = false {
+        didSet {
+            guard animating != oldValue else { return }
+            timer?.invalidate()
+            timer = nil
+            if animating {
+                timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+                    guard let self = self else { return }
+                    self.phase = (self.phase + 1).truncatingRemainder(dividingBy: 14)
+                    self.needsDisplay = true
+                }
+            }
+        }
+    }
+
+    override var isHidden: Bool { didSet { if isHidden { animating = false } } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let g = bounds.insetBy(dx: 0.5, dy: 2.5)
+        let groove = NSBezierPath(roundedRect: g, xRadius: g.height / 2, yRadius: g.height / 2)
+        NSGraphicsContext.saveGraphicsState()
+        groove.addClip()
+        NSGradient(starting: NSColor(srgbRed: 0.55, green: 0.70, blue: 0.92, alpha: 1),
+                   ending: NSColor(srgbRed: 0.42, green: 0.60, blue: 0.88, alpha: 1))!.draw(in: g, angle: -90)
+        NSColor(srgbRed: 0.26, green: 0.46, blue: 0.80, alpha: 1).setFill()
+        var x = g.minX - 14 + phase
+        while x < g.maxX + 14 {
+            let stripe = NSBezierPath()
+            stripe.move(to: NSPoint(x: x, y: g.minY - 1))
+            stripe.line(to: NSPoint(x: x + 6, y: g.minY - 1))
+            stripe.line(to: NSPoint(x: x + 12, y: g.maxY + 1))
+            stripe.line(to: NSPoint(x: x + 6, y: g.maxY + 1))
+            stripe.close()
+            stripe.fill()
+            x += 14
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        (Theme.isModern ? Theme.hairline : Theme.ink(0.56)).setStroke()
+        groove.lineWidth = 1
+        groove.stroke()
     }
 }
 

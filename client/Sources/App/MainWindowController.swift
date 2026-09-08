@@ -43,6 +43,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private let searchField = NSSearchField()
     private let statusBar = ChromeView()
     private let statusLabel = NSTextField(labelWithString: "")
+    /// Aqua's barber pole, beside the status text while the app waits on
+    /// something: the library arriving, a sync, the curator or the radio
+    /// thinking.
+    private let busyPole = AquaBarberPole()
     private let titleLabel = NSTextField(labelWithString: "")
     private let viewCaption = AquaCaption("View")
     private let searchCaption = AquaCaption("Search")
@@ -340,6 +344,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         statusLabel.font = Aqua.font(11)
         statusLabel.textColor = Theme.ink(0.2)
         statusBar.addSubview(statusLabel)
+        busyPole.isHidden = true
+        statusBar.addSubview(busyPole)
 
         var bx: CGFloat = 8
         for (button, action, tip) in [
@@ -1158,6 +1164,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         }
         controller.onStatusChanged = { [weak self] in self?.updateStatus() }
         controller.onFirstLoad = { [weak self] in self?.firstLoadDone() }
+        // The barber pole follows the load; the status text alone did not
+        // always change when loading began.
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.updateBusyPole() }
+        }
         player.onChange = { [weak self] in self?.updatePlayerUI() }
         player.onOutputsChanged = { [weak self] in self?.updateAirPlayButton() }
         player.onError = { [weak self] message in self?.flashStatus(message) }
@@ -1198,6 +1209,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         mediaKeys.onSeek = { [weak self] seconds in self?.player.seek(to: seconds) }
         mediaKeys.start()
         startMediaKeyTap()
+        artworkView.onFlip = { [weak self] showing in
+            guard let self = self else { return }
+            if showing { self.lyricsShownFor = nil; self.loadArtworkLyrics() } else { self.updateArtwork() }
+        }
         updateStatus()
     }
 
@@ -1255,6 +1270,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             guard let self = self else { return }
             self.radioPage.favorites = self.radioFavorites.uuids
             if self.radioFavoritesOpen { self.radioPage.show(favorites: self.radioFavorites.stations) }
+            self.sourceList.reloadData()
         }
         radioPage.onSearch = { [weak self] text in Task { @MainActor in await self?.searchRadio(text) } }
         radioPage.onFilterChanged = { [weak self] in
@@ -1310,8 +1326,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             }
         }
         radioHistory.onChange = { [weak self] in
-            guard let self = self, self.radioHistoryOpen else { return }
-            self.radioPage.show(history: self.radioHistory.plays)
+            guard let self = self else { return }
+            if self.radioHistoryOpen { self.radioPage.show(history: self.radioHistory.plays) }
+            self.sourceList.reloadData()
         }
     }
 
@@ -1830,8 +1847,22 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         // refresh button on the right, and truncates rather than running
         // under either.
         let left: CGFloat = 8 + 5 * 36 + 6
-        statusLabel.frame = NSRect(x: left, y: 4, width: max(40, refreshButton.frame.minX - 8 - left), height: 16)
+        let poleW: CGFloat = busyPole.isHidden ? 0 : 66
+        busyPole.frame = NSRect(x: left, y: 5, width: 60, height: 14)
+        statusLabel.frame = NSRect(x: left + poleW, y: 4, width: max(40, refreshButton.frame.minX - 8 - left - poleW), height: 16)
         statusLabel.lineBreakMode = .byTruncatingTail
+    }
+
+    /// Shows the barber pole while anything is being waited for.
+    private func updateBusyPole() {
+        let connecting = controller.api != nil && controller.info == nil
+        let busy = connecting || (controller.loading && controller.tracks.isEmpty) || (player.syncProgress?.active ?? false)
+            || (curatorOpen && curatorPage.isBusy) || (radioOpen && radioPage.isBusy)
+        guard busy == busyPole.isHidden else { return }
+        PlayerController.trace("busy pole \(busy ? "on" : "off") (connecting \(connecting), loading \(controller.loading), radio \(radioOpen && radioPage.isBusy))")
+        busyPole.isHidden = !busy
+        busyPole.animating = busy
+        layoutStatusRight()
     }
 
     // MARK: The main split: the sidebar keeps a readable width
@@ -2856,6 +2887,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     private func updateStatus() {
         statusLabel.stringValue = statusOverride ?? streamStatus ?? controller.statusText
         updateLibraryStamp()
+        updateBusyPole()
         updatePlayerUI()
     }
 
@@ -3267,6 +3299,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
 
     private func updatePlayerUI() {
         miniPlayer?.update()
+        updateBusyPole()
         let ss = streamStatus
         if ss != lastStreamStatus {
             lastStreamStatus = ss
@@ -3710,7 +3743,37 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     // MARK: Artwork
 
     /// Shows the playing track's art, or the selected row's when nothing plays.
+    /// Lyrics for the song behind the artwork pane, fetched when the pane
+    /// is turned over and again when the song changes while it is.
+    private var lyricsCache: [String: String] = [:]
+    private var lyricsShownFor: String?
+
+    private func loadArtworkLyrics() {
+        guard artworkView.showingLyrics else { return }
+        if playingStation != nil {
+            artworkView.lyrics = "A radio station has no lyrics to show."
+            lyricsShownFor = nil
+            return
+        }
+        var pid: String?
+        if let t = player.state?.track, player.state?.state != "stopped" { pid = t.persistentId }
+        else if let i = trackIndex(forRow: trackTable.selectedRow) { pid = rows[i].persistentId }
+        guard let id = pid else { artworkView.lyrics = ""; lyricsShownFor = nil; return }
+        guard id != lyricsShownFor else { return }
+        lyricsShownFor = id
+        if let known = lyricsCache[id] { artworkView.lyrics = known; return }
+        guard let api = controller.api else { return }
+        artworkView.lyrics = "Loading…"
+        Task { @MainActor in
+            let text = (try? await api.lyrics(for: id)) ?? ""
+            let shown = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No lyrics for this song." : text
+            self.lyricsCache[id] = shown
+            if self.lyricsShownFor == id { self.artworkView.lyrics = shown }
+        }
+    }
+
     private func updateArtwork() {
+        if artworkView.showingLyrics { loadArtworkLyrics() }
         var pid: String?
         var caption = "SELECTED ITEM"
         // A station: its logo, from the directory.
@@ -3834,6 +3897,15 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
                 self?.radioPage.setFilter(tag: parts.first.flatMap { $0.isEmpty ? nil : $0 },
                                           countryCode: parts.count > 1 ? parts[1] : nil)
+            }
+        }
+        // `--flip-artwork`: select the first song and turn the artwork pane
+        // over to its lyrics, for checking the back of the pane.
+        if CommandLine.arguments.contains("--flip-artwork") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self = self, let r = self.tableRow(forTrackIndex: 0) else { return }
+                self.trackTable.selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
+                self.artworkView.flip()
             }
         }
         // `--radio-favorites`: open the favorites page, for checking it.
@@ -4770,6 +4842,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                     ? .speaker : (p.folder ? .folder : (p.smart ? .smartPlaylist : .playlist))
                 let cell = sidebarCell(tableView, text: p.name, icon: icon)
                 cell.indent = CGFloat(playlistDepth[p.persistentId] ?? 0) * 14
+                if !p.folder && p.count > 0 { cell.badge = p.count.formatted() }
                 if p.folder {
                     cell.disclosure = !collapsedFolders.contains(p.persistentId)
                     let pid = p.persistentId
@@ -4781,9 +4854,13 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             case .radio:
                 return sidebarCell(tableView, text: "Stations", icon: .radio)
             case .radioFavorites:
-                return sidebarCell(tableView, text: "Favorites", icon: .playlist)
+                let cell = sidebarCell(tableView, text: "Favorites", icon: .playlist)
+                if !radioFavorites.stations.isEmpty { cell.badge = radioFavorites.stations.count.formatted() }
+                return cell
             case .radioHistory:
-                return sidebarCell(tableView, text: "Recently Played", icon: .recent)
+                let cell = sidebarCell(tableView, text: "Recently Played", icon: .recent)
+                if !radioHistory.plays.isEmpty { cell.badge = radioHistory.plays.count.formatted() }
+                return cell
             case .device(let d):
                 var text = d.name
                 if let free = d.freeSpace, let cap = d.capacity, cap > 0 {
@@ -4876,6 +4953,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         cell.indent = 0
         cell.disclosure = nil
         cell.onToggle = nil
+        cell.badge = nil
         return cell
     }
 

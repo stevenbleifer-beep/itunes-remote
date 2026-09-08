@@ -34,10 +34,57 @@ final class SidebarDisclosureView: NSView {
 
 /// The sidebar row: a small drawn icon and a label, as iTunes 10 laid out
 /// its source list. The icons are paths, not images.
+/// The count capsule at the right of a sidebar row, the way Mail and the
+/// Finder's sidebar wore them: grey-blue with white figures, and white
+/// with blue figures on a selected row.
+final class SidebarBadgeView: NSView {
+    var text = "" { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
+    var selected = false { didSet { needsDisplay = true } }
+    static let font = Aqua.font(10, bold: true)
+
+    override var intrinsicContentSize: NSSize {
+        guard !text.isEmpty else { return NSSize(width: 0, height: 14) }
+        let w = ceil((text as NSString).size(withAttributes: [.font: SidebarBadgeView.font]).width)
+        return NSSize(width: max(20, w + 12), height: 14)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard !text.isEmpty else { return }
+        let capsule = NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
+        let fill: NSColor, ink: NSColor
+        if Theme.isModern {
+            fill = selected ? Theme.controlFillPressed : Theme.controlFill
+            ink = Theme.secondaryText
+        } else if selected {
+            fill = NSColor(white: 1, alpha: 0.92)
+            ink = NSColor(srgbRed: 0.22, green: 0.40, blue: 0.72, alpha: 1)
+        } else {
+            fill = NSColor(srgbRed: 0.55, green: 0.62, blue: 0.73, alpha: 1)
+            ink = .white
+        }
+        fill.setFill()
+        capsule.fill()
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        (text as NSString).draw(in: NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - 1),
+                                withAttributes: [.font: SidebarBadgeView.font, .foregroundColor: ink, .paragraphStyle: style])
+    }
+}
+
 final class SidebarCellView: NSTableCellView {
     let iconView = SidebarIconView()
     let label = NSTextField(labelWithString: "")
     let triangle = SidebarDisclosureView()
+    let badgeView = SidebarBadgeView()
+    /// A count shown in a capsule at the right; nil for none.
+    var badge: String? {
+        didSet {
+            badgeView.text = badge ?? ""
+            badgeView.isHidden = badge == nil
+            badgeTrailing.constant = badge == nil ? 0 : -4
+        }
+    }
+    private var badgeTrailing: NSLayoutConstraint!
     private var iconLeading: NSLayoutConstraint!
     private var triangleLeading: NSLayoutConstraint!
 
@@ -59,6 +106,9 @@ final class SidebarCellView: NSTableCellView {
         addSubview(triangle)
         addSubview(iconView)
         addSubview(label)
+        badgeView.translatesAutoresizingMaskIntoConstraints = false
+        badgeView.isHidden = true
+        addSubview(badgeView)
         textField = label
         iconLeading = iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6)
         triangleLeading = triangle.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4)
@@ -72,9 +122,15 @@ final class SidebarCellView: NSTableCellView {
             triangle.widthAnchor.constraint(equalToConstant: 10),
             triangle.heightAnchor.constraint(equalToConstant: 12),
             label.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 5),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            badgeView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            badgeView.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+        badgeTrailing = label.trailingAnchor.constraint(equalTo: badgeView.leadingAnchor, constant: 0)
+        badgeTrailing.isActive = true
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        badgeView.setContentCompressionResistancePriority(.required, for: .horizontal)
+        badgeView.setContentHuggingPriority(.required, for: .horizontal)
     }
 
     private func relayout() {
@@ -91,6 +147,7 @@ final class SidebarCellView: NSTableCellView {
             let selected = backgroundStyle == .emphasized
             label.font = Aqua.font(12, bold: selected && !Theme.isModern)
             iconView.selected = selected
+            badgeView.selected = selected
         }
     }
 }

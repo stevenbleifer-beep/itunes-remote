@@ -1849,3 +1849,27 @@ wrapping; `window.minSize` is 960 × 560. Trap: clearing autoresizing
 masks via `display.superview` hit the toolbar itself in the classic look
 and the whole toolbar stopped following the window. The radio map keeps
 its share of the width (`mapFraction`, saved as `radioMapFraction`).
+
+**Five Aqua touches (2026-09-07, night).** Steven: "do all of them." Two
+were already there and are noted so nobody adds them twice: the default
+push button already pulses (`AquaPushButton.updatePulse`, classic look
+only), and the LCD already draws a barber pole during an iPod sync. New:
+- **Row stripes** at iTunes 10's blue-white (`Aqua.stripe` = #EDF3FE, was
+  #F3F6FA) and the radio list striped like the song list and the curator's.
+- **Sidebar badges**: `SidebarBadgeView` (a capsule, grey-blue with white
+  figures, white with blue figures on a selected row) via
+  `SidebarCellView.badge`; playlists show their count, Favorites and
+  Recently Played theirs. The label yields to the badge.
+- **`AquaBarberPole`** in the status bar beside the text while anything is
+  waited for: connecting (`api != nil && info == nil`), the first library
+  load, an iPod sync, the curator or the radio thinking (`isBusy` on both
+  pages). Checked every half second by a timer, since the status text does
+  not always change when a wait begins.
+- **The artwork pane flips** (`ArtworkView.flip`, a Core Animation turn about
+  the y axis, 0.17 s each way) to a LYRICS face: an `NSTextView` on paper,
+  fed by `loadArtworkLyrics` through `GET /api/tracks/<id>/lyrics`, cached
+  per song, refetched when the song changes while the back is showing; a
+  station says it has none. `--flip-artwork` turns it for a screenshot.
+- Trap: a System Events `click at` does not deliver real mouse events to a
+  background test instance (the row it "hit" never selected); drive test
+  instances with flags.

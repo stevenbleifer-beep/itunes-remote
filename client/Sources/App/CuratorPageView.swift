@@ -37,6 +37,7 @@ final class CuratorPageView: NSView, NSTableViewDataSource, NSTableViewDelegate,
     var modelLine = "" { didSet { if !busy { statusLabel.stringValue = modelLine } } }
 
     private var busy = false
+    var isBusy: Bool { busy }
     private var busySince: Date?
     private var busyText = ""
     private var busyTimer: Timer?
