@@ -222,7 +222,6 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
 
         split.isVertical = true
         split.dividerStyle = .thin
-        split.autosaveName = "radioSplit"
         split.delegate = self
         leftPane.frame = NSRect(x: 0, y: 0, width: 460, height: 400)
         rightPane.frame = NSRect(x: 461, y: 0, width: 600, height: 400)
@@ -253,10 +252,13 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
             clearButton.centerYAnchor.constraint(equalTo: field.centerYAnchor),
             stylePopup.leadingAnchor.constraint(equalTo: clearButton.trailingAnchor, constant: 10),
             stylePopup.centerYAnchor.constraint(equalTo: field.centerYAnchor),
-            stylePopup.widthAnchor.constraint(equalToConstant: 112),
+            stylePopup.widthAnchor.constraint(lessThanOrEqualToConstant: 112),
+            stylePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 76),
+            field.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
             countryPopup.leadingAnchor.constraint(equalTo: stylePopup.trailingAnchor, constant: 4),
             countryPopup.centerYAnchor.constraint(equalTo: field.centerYAnchor),
-            countryPopup.widthAnchor.constraint(equalToConstant: 132),
+            countryPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 132),
+            countryPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 90),
             resetButton.leadingAnchor.constraint(equalTo: countryPopup.trailingAnchor, constant: 2),
             resetButton.centerYAnchor.constraint(equalTo: field.centerYAnchor),
             searchButton.leadingAnchor.constraint(equalTo: resetButton.trailingAnchor, constant: 10),
@@ -290,6 +292,12 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         ])
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         noteLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // In a narrow window the menus give way before the field does.
+        stylePopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        countryPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        stylePopup.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(200), for: .horizontal)
+        countryPopup.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(200), for: .horizontal)
+        field.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(300), for: .horizontal)
         for b in [searchButton, askButton, popularButton, playButton, stopButton, removeButton, clearButton, resetButton, favoriteButton] {
             b.setContentCompressionResistancePriority(.required, for: .horizontal)
             b.setContentHuggingPriority(.required, for: .horizontal)
@@ -304,13 +312,32 @@ final class RadioPageView: NSView, NSTableViewDataSource, NSTableViewDelegate, N
         bounds.fill()
     }
 
+    /// The map's share of the width. The divider keeps its proportion when
+    /// the window is resized, so the map grows and shrinks with it, and a
+    /// drag of the divider sets a new proportion that is remembered.
+    private var mapFraction: CGFloat = {
+        let saved = UserDefaults.standard.double(forKey: "radioMapFraction")
+        return saved > 0 ? CGFloat(saved) : 0.42
+    }()
+    private var resizingWithWindow = false
+
     func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
         let w = splitView.bounds.width, h = splitView.bounds.height, d = splitView.dividerThickness
-        var left = leftPane.frame.width
-        if left < 200 { left = round(w * 0.42) }
+        var left = round(w * mapFraction)
         left = min(max(240, left), max(240, w - 420 - d))
+        resizingWithWindow = true
         leftPane.frame = NSRect(x: 0, y: 0, width: left, height: h)
         rightPane.frame = NSRect(x: left + d, y: 0, width: max(0, w - left - d), height: h)
+        resizingWithWindow = false
+    }
+
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        // Not from the window: the divider was dragged. Keep that proportion.
+        guard !resizingWithWindow, split.bounds.width > 0 else { return }
+        let f = leftPane.frame.width / split.bounds.width
+        guard f > 0.1, f < 0.9, abs(f - mapFraction) > 0.001 else { return }
+        mapFraction = f
+        UserDefaults.standard.set(Double(f), forKey: "radioMapFraction")
     }
 
     // MARK: Showing stations
