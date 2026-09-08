@@ -170,7 +170,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         window.title = AppIdentity.name
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.minSize = NSSize(width: 900, height: 560)
+        window.minSize = NSSize(width: 960, height: 560)
         window.appearance = Theme.appearance
         window.backgroundColor = Theme.isModern ? Theme.windowBackground : Theme.ink(0.80)
         buildViews()
@@ -312,6 +312,21 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         searchField.target = self
         searchField.action = #selector(searchFieldAction(_:))
         toolbar.addSubview(searchField)
+        // Laid out by hand on every resize (see layoutToolbar): with fixed
+        // masks the display stayed 440 wide and centred and the right-hand
+        // group stayed at the edge, and in a narrow window they overlapped.
+        for v in [display as NSView, airPlayButton, viewSwitcher, searchField, viewCaption, searchCaption] {
+            v.autoresizingMask = []
+        }
+        // The glass wrapper around the display in the modern look, never the toolbar.
+        if let host = display.superview, host !== toolbar { host.autoresizingMask = [] }
+        NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                self?.layoutToolbar()
+                self?.layoutStatusRight()
+            }
+        }
+        layoutToolbar()
 
         // Status bar
         statusBar.frame = NSRect(x: 0, y: 0, width: W, height: statusH)
@@ -320,7 +335,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         statusBar.usesMaterial = true
         content.addSubview(statusBar)
         statusLabel.frame = NSRect(x: 0, y: 4, width: W, height: 16)
-        statusLabel.autoresizingMask = [.width]
+        statusLabel.autoresizingMask = []
         statusLabel.alignment = .center
         statusLabel.font = Aqua.font(11)
         statusLabel.textColor = Theme.ink(0.2)
@@ -456,6 +471,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         content.addSubview(devicePage)
         mainSplit.addArrangedSubview(rightContainer)
         mainSplit.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
+        mainSplit.delegate = self
 
         // Browser panes (or Cover Flow) over the track table
         topPane.frame = NSRect(x: 0, y: 0, width: rightSplit.bounds.width, height: 150)
@@ -1767,6 +1783,42 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// The right end of the status bar: the badge against the iPod buttons'
     /// space, the library stamp to its left. Both change width, so both are
     /// placed together whenever either changes.
+    /// The toolbar for the window's width. The transport and volume stay on
+    /// the left; the search field, AirPlay and the view switcher sit at the
+    /// right edge; the display takes up to 440 points of what is left,
+    /// centred in the window when that fits and centred in the gap when it
+    /// does not. Below 1,150 points the search field gives way first, down
+    /// to 110, and the display down to 260.
+    private func layoutToolbar() {
+        let W = toolbar.bounds.width
+        let midY: CGFloat = 28
+        let leftEnd = volumeSlider.frame.maxX + 10
+        let rightMargin: CGFloat = 14
+        let gap: CGFloat = W < 1150 ? 8 : 14
+        let searchWidth = min(200, max(110, 200 - (1150 - W) * 0.5))
+        let searchX = W - rightMargin - searchWidth
+        searchField.frame = NSRect(x: searchX, y: round(midY - 10), width: searchWidth, height: 19)
+        let apSize = airPlayButton.intrinsicContentSize
+        airPlayButton.frame = NSRect(x: searchX - gap - apSize.width, y: round(midY - apSize.height / 2),
+                                     width: apSize.width, height: apSize.height)
+        let vs = viewSwitcher.intrinsicContentSize
+        viewSwitcher.frame = NSRect(x: airPlayButton.frame.minX - gap - vs.width, y: round(midY - vs.height / 2),
+                                    width: vs.width, height: vs.height)
+        viewCaption.frame = NSRect(x: viewSwitcher.frame.minX - 10, y: 2, width: viewSwitcher.frame.width + 20, height: 13)
+        searchCaption.frame = NSRect(x: searchField.frame.minX, y: 2, width: searchField.frame.width, height: 13)
+        let rightStart = viewSwitcher.frame.minX
+        let room = rightStart - gap - (leftEnd + gap)
+        let displayW = max(260, min(440, room))
+        var x = round((W - displayW) / 2)
+        x = min(max(x, leftEnd + gap), rightStart - gap - displayW)
+        // In the modern look the display sits inside a glass wrapper, which
+        // is the view to move; the display fills it.
+        let host: NSView = (display.superview === toolbar) ? display : (display.superview ?? display)
+        host.frame = NSRect(x: x, y: round(midY - 22), width: displayW, height: 44)
+        if host !== display { display.frame = host.bounds }
+        display.needsDisplay = true
+    }
+
     private func layoutStatusRight() {
         let W = statusBar.bounds.width
         let bs = connectionBadge.intrinsicContentSize
@@ -1774,6 +1826,22 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         let sw = ceil((libraryStamp.stringValue as NSString).size(withAttributes: [.font: Aqua.font(11)]).width) + 4
         libraryStamp.frame = NSRect(x: connectionBadge.frame.minX - 16 - sw, y: 4, width: sw, height: 16)
         refreshButton.frame = NSRect(x: libraryStamp.frame.minX - 6 - 34, y: 2, width: 34, height: 20)
+        // The text lives between the button group on the left and the
+        // refresh button on the right, and truncates rather than running
+        // under either.
+        let left: CGFloat = 8 + 5 * 36 + 6
+        statusLabel.frame = NSRect(x: left, y: 4, width: max(40, refreshButton.frame.minX - 8 - left), height: 16)
+        statusLabel.lineBreakMode = .byTruncatingTail
+    }
+
+    // MARK: The main split: the sidebar keeps a readable width
+
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        splitView === mainSplit ? max(proposedMinimumPosition, 160) : proposedMinimumPosition
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        splitView === mainSplit ? min(proposedMaximumPosition, splitView.bounds.width - 560) : proposedMaximumPosition
     }
 
     @objc private func refreshLibrary(_ sender: Any?) {
@@ -4684,8 +4752,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 emboss.shadowColor = NSColor.white.withAlphaComponent(Theme.isModern ? 0 : 0.9)
                 emboss.shadowOffset = NSSize(width: 0, height: -1)
                 emboss.shadowBlurRadius = 0
+                let oneLine = NSMutableParagraphStyle()
+                oneLine.lineBreakMode = .byTruncatingTail
                 cell.textField?.attributedStringValue = NSAttributedString(string: s, attributes: [
                     .font: Aqua.font(11, bold: true), .foregroundColor: Aqua.sidebarHeaderText, .shadow: emboss,
+                    .paragraphStyle: oneLine,
                 ])
                 return cell
             case .library:

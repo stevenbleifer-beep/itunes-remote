@@ -1833,3 +1833,19 @@ Unfavorite button for the selection and a ♥ column; RADIO is Stations,
 Favorites, Recently Played. The old lists.json (Indie 116, Japan 3, USA)
 is left on disk, not shown, not imported — Steven decides. `--radio-favorites`
 opens the page.
+
+**A narrow window (2026-09-07, late).** Steven's screenshots at ~900
+points: the LCD, view switcher and search field overlapped, the sidebar
+collapsed to icons with wrapped headers, and the status text ran under the
+refresh button. The toolbar had been laid out once with autoresizing
+masks. Now `layoutToolbar()` runs on every `didResizeNotification`: the
+right-hand group sits at the edge, the search field gives way first
+(200 → 110 below 1,150 points), the display takes up to 440 of what is
+left and never less than 260, centred in the window when that fits. The
+main split has a delegate minimum of 160 for the sidebar and keeps 560 for
+the content; the status label lives between the button group and the
+refresh button and truncates; sidebar headers truncate instead of
+wrapping; `window.minSize` is 960 × 560. Trap: clearing autoresizing
+masks via `display.superview` hit the toolbar itself in the classic look
+and the whole toolbar stopped following the window. The radio map keeps
+its share of the width (`mapFraction`, saved as `radioMapFraction`).
