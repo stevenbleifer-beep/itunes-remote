@@ -1,6 +1,32 @@
 import Foundation
 import Network
 
+/// Where the app's own requests actually leave from. URLSession reports the
+/// local address of every connection it makes, and the interface that owns
+/// that address is the link to name.
+///
+/// This has to follow the API's own connection rather than a probe of its
+/// own: the other Mac answers to its name on both the Thunderbolt bridge and
+/// Wi-Fi, so two requests made a moment apart can land on different
+/// networks. The badge read "Wi-Fi" on a Mac whose library was coming down
+/// the Thunderbolt cable all along.
+final class LinkWatcher: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    static let shared = LinkWatcher()
+
+    private let lock = NSLock()
+    private var address: String?
+    private var seen = Date.distantPast
+
+    /// The local address the last request left from, and how long ago.
+    var localAddress: String? { lock.lock(); defer { lock.unlock() }; return address }
+    var age: TimeInterval { lock.lock(); defer { lock.unlock() }; return Date().timeIntervalSince(seen) }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        guard let a = metrics.transactionMetrics.last?.localAddress else { return }
+        lock.lock(); address = a; seen = Date(); lock.unlock()
+    }
+}
+
 /// Works out whether the daemon is reachable on the local network or only
 /// through the Tailscale tunnel, and says so whenever that changes.
 ///
@@ -90,21 +116,31 @@ final class ConnectionMonitor {
         }
     }
 
-    /// Which interface the probe's own request left on, so the badge
-    /// describes the path the app's requests take rather than a separate
-    /// guess: the probe and the API share the resolver and the routing.
+    /// Which link the app's requests are really taking. The API's own
+    /// connection is the one to describe — it carries the library, the
+    /// player and the artwork — and the probe's address stands in only
+    /// until the API has made a request, or if it has gone quiet.
     private func linkName() async -> String {
-        guard let local = metrics.lastLocalAddress else { return "" }
-        guard let name = ConnectionMonitor.interfaceName(forLocalAddress: local) else { return "" }
+        let watcher = LinkWatcher.shared
+        let local = (watcher.age < 30 ? watcher.localAddress : nil) ?? metrics.lastLocalAddress
+        guard let local = local,
+              let name = ConnectionMonitor.interfaceName(forLocalAddress: local) else { return "" }
+        return ConnectionMonitor.describe(interface: name, types: interfaceTypes)
+    }
+
+    /// The name for an interface. A Thunderbolt bridge is plain Ethernet as
+    /// far as the system is concerned, so its name is the only thing that
+    /// gives it away. Anything unrecognised is left unnamed rather than
+    /// guessed: "en0" is Wi-Fi on a laptop and the Ethernet socket on a
+    /// desktop, and guessing got it wrong on the Mac mini.
+    static func describe(interface name: String, types: [String: NWInterface.InterfaceType]) -> String {
         if name.hasPrefix("bridge") { return "Thunderbolt" }
-        if let type = interfaceTypes[name] {
-            switch type {
-            case .wifi: return "Wi-Fi"
-            case .wiredEthernet: return name.hasPrefix("bridge") ? "Thunderbolt" : "Ethernet"
-            default: return ""
-            }
+        switch types[name] {
+        case .some(.wifi): return "Wi-Fi"
+        case .some(.wiredEthernet): return "Ethernet"
+        case .some(.cellular): return "Cellular"
+        default: return ""
         }
-        return name.hasPrefix("en0") ? "Wi-Fi" : ""
     }
 
     /// The interface that owns a local address, from getifaddrs.

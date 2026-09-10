@@ -21,7 +21,10 @@ final class APIClient {
         cfg.timeoutIntervalForRequest = 30
         cfg.timeoutIntervalForResource = 120
         cfg.httpAdditionalHeaders = ["Accept": "application/json"]
-        session = URLSession(configuration: cfg)
+        // The delegate only watches: it keeps the local address of each
+        // connection, so the status bar can name the link the app is really
+        // using rather than probing separately and sometimes disagreeing.
+        session = URLSession(configuration: cfg, delegate: LinkWatcher.shared, delegateQueue: nil)
         // Covers get their own session with more connections, so a screen
         // full of them neither queues behind one another nor holds up the
         // player poll on the main session.

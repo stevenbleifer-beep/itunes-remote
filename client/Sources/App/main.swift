@@ -59,6 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var settings = ServerSettings.load()
         var overridden = false
         if let h = arg("--host") { settings.host = h; overridden = true }
+        // `--lan-host H`: the address the home probe uses, for checking that
+        // the status bar names the link the app is really on. Never write
+        // serverLANHost to test that — it is the listener's live setting.
+        if let h = arg("--lan-host") { settings.lanHost = h; overridden = true }
         if let p = arg("--port"), let n = Int(p) { settings.port = n; overridden = true }
         if let t = arg("--token") { settings.token = t; overridden = true }
 

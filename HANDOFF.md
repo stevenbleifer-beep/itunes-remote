@@ -2010,3 +2010,31 @@ main-window snapshot paths bail out when `--prefs` is present).
 use it rather than writing `curatorModel`, which is Steven's live setting.
 `note()` in PreferencesWindow now measures with `sizeThatFits`;
 `intrinsicContentSize` silently clipped anything past two lines.
+
+## Status bar: the link badge named the wrong network (2026-09-10)
+
+On the Mac mini the badge read "Home · Wi-Fi" while every byte was going
+over the Thunderbolt bridge — `lsof` showed the app's connections as
+10.10.10.1 → 10.10.10.2, 0.58 ms, against 94 ms for the Wi-Fi route.
+
+Two causes, both from the move off the Air:
+
+1. **The badge described a different connection from the one in use.**
+   `ConnectionMonitor` probed with an ephemeral `URLSession` of its own and
+   named the interface *that* request left on. The Pro answers to
+   `Stevens-MacBook-Pro.local` on both the bridge and Wi-Fi, so the probe
+   and the API could land on different networks — and did. There is now a
+   shared `LinkWatcher` (in ConnectionMonitor.swift) set as the delegate of
+   `APIClient`'s main session; it keeps the local address of the app's own
+   connections and the badge uses that, falling back to the probe's address
+   only when the API's is older than 30 s.
+2. **`en0` was assumed to be Wi-Fi.** True on a laptop; on the mini en0 is
+   the Ethernet socket and en1 is Wi-Fi. `ConnectionMonitor.describe(
+   interface:types:)` now names a `bridge*` interface Thunderbolt and
+   otherwise trusts `NWPathMonitor`'s interface types, returning "" rather
+   than guessing when it does not recognise one.
+
+Verified both ways: as it stands the badge reads "Home · Thunderbolt", and
+with `--lan-host 192.168.1.131` (the Pro's Wi-Fi address) it reads
+"Home · Wi-Fi". **Use `--lan-host` for this** — the old note about writing
+`serverLANHost` to defaults touches Steven's live setting; the flag does not.
