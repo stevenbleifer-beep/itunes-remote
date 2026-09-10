@@ -1053,27 +1053,48 @@ class Api(object):
         would collide."""
         if getattr(self, "device_quiet_until", 0) > time.time():
             return None
+        pods = self._connected_pods()
+        return pods[0] if pods else None
+
+    def _connected_pods(self):
+        """The connected iPods, cached for a few seconds: reading each one's
+        detail costs about a second of iTunes' time."""
+        if self.app != "iTunes":
+            return []
         cached = getattr(self, "_pod_cache", None)
         if cached and time.time() - cached[0] < self.POD_CACHE_SECONDS:
             return cached[1]
-        pod = self._read_connected_pod()
-        self._pod_cache = (time.time(), pod)
-        return pod
+        pods = self._read_connected_pods()
+        self._pod_cache = (time.time(), pods)
+        return pods
 
     def _read_connected_pod(self):
+        pods = self._read_connected_pods()
+        return pods[0] if pods else None
+
+    def _read_connected_pods(self):
+        """Every iPod iTunes has open, not just the first. Two can be plugged
+        in at once and iTunes shows both as sources; anything that has to
+        pick one has to say which, rather than taking whichever came back
+        first."""
         try:
             devices = self.get_devices({}, None, None)["devices"]
         except ApiError:
-            return None
-        pod = next((d for d in devices if d["kind"] == "iPod" and d.get("itunesSource")), None)
-        if pod is None:
-            return None
-        detail = self.get_device({"name": quote(pod["name"], safe="")}, None, None)
-        return {
-            "name": detail.get("name"),
-            "serial": detail.get("deviceSerialNumber") or detail.get("serialNumber"),
-            "detail": detail,
-        }
+            return []
+        out = []
+        for d in devices:
+            if d["kind"] != "iPod" or not d.get("itunesSource"):
+                continue
+            try:
+                detail = self.get_device({"name": quote(d["name"], safe="")}, None, None)
+            except ApiError:
+                continue
+            out.append({
+                "name": detail.get("name"),
+                "serial": detail.get("deviceSerialNumber") or detail.get("serialNumber"),
+                "detail": detail,
+            })
+        return out
 
     def _plan_track_ids(self, plan):
         """Every library track the plan covers, matched the way the rebuild
@@ -1109,10 +1130,13 @@ class Api(object):
         key = (body or {}).get("device") or self._one(query or {}, "device")
         label = (body or {}).get("label")
         if not key:
-            pod = self._connected_pod()
-            if pod is None or not pod["serial"]:
+            pods = [p for p in self._connected_pods() if p["serial"]]
+            if not pods:
                 raise ApiError(404, "no iPod is connected; pass a device serial")
-            key, label = pod["serial"], label or pod["name"]
+            if len(pods) > 1:
+                raise ApiError(409, "%d iPods are connected (%s); pass a device serial to say which"
+                               % (len(pods), ", ".join(p["name"] for p in pods)))
+            key, label = pods[0]["serial"], label or pods[0]["name"]
         try:
             plan = self.plans.plan_for(key, label=label, create=create)
         except ValueError as e:
@@ -1127,13 +1151,15 @@ class Api(object):
         existing = next((p for p in lib.playlist_summaries()
                          if p["name"] == plan.playlist_name), None)
         on_device = None
-        pod = self._connected_pod()
+        # The plan's own iPod, if it is one of the ones plugged in. Another
+        # iPod being connected says nothing about this plan.
+        pods = self._connected_pods()
+        pod = next((p for p in pods if p["serial"] and p["serial"] == plan.key), None)
+        if pod is None and len(pods) == 1 and not pods[0]["serial"]:
+            pod = pods[0]                 # one iPod, and iTunes gave no serial
         if pod is not None:
-            if pod["serial"] and pod["serial"] != plan.key:
-                on_device = None          # a different iPod is plugged in
-            else:
-                on_device = any(p["name"] == plan.playlist_name
-                                for p in pod["detail"].get("playlists", []))
+            on_device = any(p["name"] == plan.playlist_name
+                            for p in pod["detail"].get("playlists", []))
         return {
             "playlistExists": existing is not None,
             "playlistId": existing["persistentId"] if existing else None,
@@ -1161,10 +1187,15 @@ class Api(object):
         a plan is the union of the playlists, artists, album artists, genres
         and albums it names. Ticking an artist means that artist, not a
         shorthand for its albums."""
-        pod = self._connected_pod()
+        pods = self._connected_pods()
+        pod = pods[0] if pods else None
         out = self.plans.to_dict()
         out["connected"] = {"name": pod["name"], "serial": pod["serial"]} if pod else None
-        wanted = self._one(query or {}, "device") or (pod["serial"] if pod else None)
+        # Every iPod plugged in, so the page can offer a plan for each rather
+        # than assuming the first one is the one meant.
+        out["connectedDevices"] = [{"name": p["name"], "serial": p["serial"]} for p in pods]
+        # With two connected there is no sensible default: the caller says which.
+        wanted = self._one(query or {}, "device") or (pod["serial"] if len(pods) == 1 else None)
         if wanted:
             plan = self.plans.plan_for(wanted, label=(pod["name"] if pod else None))
             out["plan"] = plan.to_dict()
@@ -1485,19 +1516,26 @@ class Api(object):
                 raise
             sources = []                             # iTunes down; USB still tells us something
         usb = self._usb_devices()
-        claimed = set()
+        opened = [s for s in sources if s["kind"] in self.DEVICE_KINDS]
+        pairs, claimed = self._pair_usb(opened, usb)
         out = []
-        for s in sources:
-            if s["kind"] not in self.DEVICE_KINDS:
-                continue
+        for i, s in enumerate(opened):
             dev = dict(s, itunesSource=True, syncable=s["kind"] == "iPod")
-            match = self._match_usb(s["name"], usb, claimed)
+            match = usb[pairs[i]] if i in pairs else None
             if match:
                 dev.update({k: v for k, v in match.items()
                             if v is not None and k not in ("capacity", "freeSpace")})
             out.append(dev)
+        # A device on the bus earns a row of its own only when there are more
+        # of them than iTunes has sources to account for. Two iPods plugged
+        # in used to give four rows: iTunes' two, and the two bus entries
+        # that nothing had claimed.
+        spare = len(opened) - len(pairs)
         for i, u in enumerate(usb):
             if i in claimed:
+                continue
+            if spare > 0:
+                spare -= 1                # this is one of the open ones
                 continue
             out.append(dict(u,
                             name=u.get("volumeName") or u["productName"],
@@ -1505,6 +1543,53 @@ class Api(object):
                             itunesSource=False,
                             syncable=False))
         return {"devices": out}
+
+    @staticmethod
+    def _pair_usb(sources, usb):
+        """Which USB record belongs to each iTunes source, as {source index:
+        usb index}, and the set of usb indexes spoken for.
+
+        iTunes shows the name its owner gave the device and the USB bus shows
+        the model, so the two rarely agree. With one iPod that never mattered
+        — whatever was on the bus had to be it — and the old rule said as
+        much: take the only unclaimed device. With two plugged in that rule
+        never fires, so neither got its serial and both turned up twice. So:
+        three passes, surest first."""
+        pairs, claimed = {}, set()
+
+        def take(si, ui):
+            pairs[si] = ui
+            claimed.add(ui)
+
+        # 1. The mounted volume is named after the device.
+        for si, s in enumerate(sources):
+            folded = (s.get("name") or "").strip().casefold()
+            for ui, u in enumerate(usb):
+                if ui in claimed or not folded:
+                    continue
+                if (u.get("volumeName") or "").strip().casefold() == folded:
+                    take(si, ui)
+                    break
+
+        # 2. The same capacity to the byte. An iPod that mounts as a disk
+        # reports its size both ways; an iOS device mounts nothing and has
+        # none here, so this passes it over.
+        for si, s in enumerate(sources):
+            if si in pairs or not s.get("capacity"):
+                continue
+            for ui, u in enumerate(usb):
+                if ui in claimed:
+                    continue
+                if u.get("capacity") == s["capacity"]:
+                    take(si, ui)
+                    break
+
+        # 3. One source and one device left over: they are each other.
+        left_s = [i for i in range(len(sources)) if i not in pairs]
+        left_u = [i for i in range(len(usb)) if i not in claimed]
+        if len(left_s) == 1 and len(left_u) == 1:
+            take(left_s[0], left_u[0])
+        return pairs, claimed
 
     @staticmethod
     def _screen_locked():
@@ -1598,25 +1683,6 @@ class Api(object):
                           "can force. Unplug it and plug it back in; if that fails, reset the iPod (hold Menu and the centre "
                           "button until the Apple logo) and let it charge a while first if the battery is low." % name)
         return out
-
-    @staticmethod
-    def _match_usb(source_name, usb, claimed):
-        """Pair an iTunes source with a USB device. The names rarely agree —
-        iTunes shows the user's device name, USB shows the model — so match on
-        the mounted volume name first and fall back to the only unclaimed
-        Apple device."""
-        folded = source_name.strip().casefold()
-        for i, u in enumerate(usb):
-            if i in claimed:
-                continue
-            if (u.get("volumeName") or "").strip().casefold() == folded:
-                claimed.add(i)
-                return u
-        free = [i for i in range(len(usb)) if i not in claimed]
-        if len(free) == 1:
-            claimed.add(free[0])
-            return usb[free[0]]
-        return None
 
     # iTunes' own names for the media a device holds, in the order its
     # capacity bar drew them.

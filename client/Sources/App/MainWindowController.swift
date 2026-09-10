@@ -116,8 +116,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// The playlists that actually reach the iPod, so "add to the sync" can
     /// mean something concrete. iTunes keeps the sync selection to itself, but
     /// the playlists sitting on the device say which ones it is.
-    private var syncedPlaylists: [DeviceSync.SyncedPlaylist] = []
-    private var syncedDevice: String?
+    /// Which playlists reach each connected iPod, by device name. Two can be
+    /// plugged in at once, and they rarely sync the same playlists.
+    private var syncedPlaylists: [String: [DeviceSync.SyncedPlaylist]] = [:]
 
     // View mode
     enum ViewMode: Int {
@@ -2156,7 +2157,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             // iPad sitting on the USB bus that iTunes has not opened as a
             // source, so the device still gets a row and a page that explains
             // itself rather than silently not appearing.
-            guard let list = try? await api.devices() else { return }
+            guard var list = try? await api.devices() else { return }
+            // `--fake-ipod NAME`: a second iPod that is not there, for
+            // checking the two-iPod paths — the sidebar, the chooser under
+            // Sync and Eject, and the per-device menus. Its page and its
+            // playlists come back empty, which is the point: nothing else
+            // in the app may assume there is only one.
+            if let i = CommandLine.arguments.firstIndex(of: "--fake-ipod"), i + 1 < CommandLine.arguments.count {
+                let name = CommandLine.arguments[i + 1]
+                if !list.contains(where: { $0.name == name }) {
+                    list.append(DeviceSource(name: name, kind: "iPod", freeSpace: 6_000_000_000,
+                                             capacity: 32_000_000_000, itunesSource: true))
+                }
+            }
             if list != devices {
                 devices = list
                 reloadSourceList()
@@ -2761,22 +2774,29 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     }
 
     @objc private func syncDevice(_ sender: Any?) {
-        // The iPod, not whatever USB device happens to be listed first.
-        guard let device = devices.first(where: { $0.isIPod }), let api = controller.api else { return }
-        syncButton.isEnabled = false
-        Task { @MainActor in
-            defer { syncButton.isEnabled = true }
-            do {
-                try await api.syncSource(device.name)
-                flashStatus("Sync started on \(device.name). iTunes reports no progress; watch the iPod.")
-            } catch {
-                flashStatus("Sync failed: \(error.localizedDescription)")
+        // The iPod whose page is open, or the only one plugged in; with two
+        // connected and neither open, the button asks which.
+        chooseIPod(under: sender as? NSView) { [weak self] device in
+            guard let self = self, let api = self.controller.api else { return }
+            self.syncButton.isEnabled = false
+            Task { @MainActor in
+                defer { self.syncButton.isEnabled = true }
+                do {
+                    try await api.syncSource(device.name)
+                    self.flashStatus("Sync started on \(device.name). iTunes reports no progress; watch the iPod.")
+                } catch {
+                    self.flashStatus("Sync failed: \(error.localizedDescription)")
+                }
             }
         }
     }
 
     @objc private func ejectDevice(_ sender: Any?) {
-        guard let device = devices.first(where: { $0.isIPod }), let api = controller.api else { return }
+        chooseIPod(under: sender as? NSView) { [weak self] d in self?.eject(d) }
+    }
+
+    private func eject(_ device: DeviceSource) {
+        guard let api = controller.api else { return }
         ejectButton.isEnabled = false
         flashStatus("Ejecting \(device.name)…")
         stopDevicePolling()
@@ -4459,15 +4479,19 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// what "add it to the sync" actually means here — iTunes' own checkbox
     /// list lives in its library database and cannot be set from outside.
     private func buildIPodMenus() {
-        let haveDevice = syncedDevice != nil && !syncedPlaylists.isEmpty
-        addToIPodItem?.isHidden = !haveDevice
-        removeFromIPodItem?.isHidden = !haveDevice
-        guard haveDevice else { return }
-        let editable = syncedPlaylists.filter { !$0.smart }
-        func build(_ action: Selector) -> NSMenu {
+        // The iPods that have told us what they sync. With two plugged in
+        // each gets a level of its own, because they rarely sync the same
+        // playlists and "the iPod" would be a guess.
+        let pods = connectedIPods.filter { !(syncedPlaylists[$0.name] ?? []).isEmpty }
+        addToIPodItem?.isHidden = pods.isEmpty
+        removeFromIPodItem?.isHidden = pods.isEmpty
+        guard !pods.isEmpty else { return }
+
+        func playlists(of device: DeviceSource, _ action: Selector) -> NSMenu {
             let m = NSMenu()
+            let editable = (syncedPlaylists[device.name] ?? []).filter { !$0.smart }
             if editable.isEmpty {
-                let none = NSMenuItem(title: "The iPod syncs only smart playlists", action: nil, keyEquivalent: "")
+                let none = NSMenuItem(title: "\(device.name) syncs only smart playlists", action: nil, keyEquivalent: "")
                 none.isEnabled = false
                 m.addItem(none)
                 return m
@@ -4482,17 +4506,45 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             }
             return m
         }
+
+        func build(_ action: Selector) -> NSMenu {
+            if pods.count == 1 { return playlists(of: pods[0], action) }
+            let m = NSMenu()
+            for d in pods {
+                let item = NSMenuItem(title: d.name, action: nil, keyEquivalent: "")
+                item.submenu = playlists(of: d, action)
+                m.addItem(item)
+            }
+            return m
+        }
+
         addToIPodItem?.submenu = build(#selector(addToIPodPicked(_:)))
         removeFromIPodItem?.submenu = build(#selector(removeFromIPodPicked(_:)))
+        // One iPod: name it, the way iTunes named the device it meant. Two:
+        // the name belongs on the level below, one per device.
+        let addTitle = pods.count == 1 ? "Add to \(pods[0].name)" : "Add to iPod"
+        let removeTitle = pods.count == 1 ? "Remove from \(pods[0].name)" : "Remove from iPod"
+        addToIPodItem?.title = addTitle
+        removeFromIPodItem?.title = removeTitle
+        addToIPodItem?.attributedTitle = NSAttributedString(string: addTitle, attributes: [.font: Aqua.font(13)])
+        removeFromIPodItem?.attributedTitle = NSAttributedString(string: removeTitle, attributes: [.font: Aqua.font(13)])
         addToIPodItem?.isEnabled = !selectedTracks.isEmpty
         removeFromIPodItem?.isEnabled = !selectedTracks.isEmpty
+    }
+
+    /// A playlist by id across every connected iPod, for the status line.
+    private func syncedPlaylistName(_ playlistId: String) -> String {
+        for (_, list) in syncedPlaylists {
+            if let p = list.first(where: { $0.playlistId == playlistId }) { return p.name }
+        }
+        return "the playlist"
     }
 
     @objc private func addToIPodPicked(_ sender: NSMenuItem) {
         guard let playlistId = sender.representedObject as? String, let api = controller.api else { return }
         let ids = selectedTracks.map { $0.persistentId }
         guard !ids.isEmpty else { return }
-        let name = syncedPlaylists.first { $0.playlistId == playlistId }?.name ?? "the playlist"
+        let name = syncedPlaylistName(playlistId)
         Task { @MainActor in
             do {
                 let change = try await api.addToPlaylist(playlistId, ids: ids)
@@ -4509,7 +4561,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         guard let playlistId = sender.representedObject as? String, let api = controller.api else { return }
         let ids = selectedTracks.map { $0.persistentId }
         guard !ids.isEmpty else { return }
-        let name = syncedPlaylists.first { $0.playlistId == playlistId }?.name ?? "the playlist"
+        let name = syncedPlaylistName(playlistId)
         Task { @MainActor in
             do {
                 let change = try await api.removeFromPlaylist(playlistId, ids: ids)
@@ -4526,18 +4578,63 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
     /// costs about a second of iTunes' time, so it is not on the 30-second
     /// device poll.
     private func loadSyncedPlaylists() {
-        guard let api = controller.api,
-              let device = devices.first(where: { $0.isIPod && ($0.itunesSource ?? true) }) else {
-            syncedDevice = nil
-            syncedPlaylists = []
-            return
+        guard let api = controller.api else { syncedPlaylists = [:]; return }
+        let pods = connectedIPods
+        // Anything unplugged since last time goes.
+        let names = Set(pods.map { $0.name })
+        for gone in syncedPlaylists.keys where !names.contains(gone) { syncedPlaylists[gone] = nil }
+        for device in pods where syncedPlaylists[device.name] == nil {
+            Task { @MainActor in
+                guard let detail = try? await api.deviceDetail(device.name), let sync = detail.sync else { return }
+                self.syncedPlaylists[device.name] = sync.playlists
+                self.buildIPodMenus()
+            }
         }
-        guard device.name != syncedDevice else { return }
-        Task { @MainActor in
-            guard let detail = try? await api.deviceDetail(device.name), let sync = detail.sync else { return }
-            self.syncedDevice = device.name
-            self.syncedPlaylists = sync.playlists
+    }
+
+    /// The iPods iTunes has open, in the order the sidebar shows them.
+    private var connectedIPods: [DeviceSource] {
+        devices.filter { $0.isIPod && ($0.itunesSource ?? true) }
+    }
+
+    /// The iPod a toolbar button should act on: the one whose page is open,
+    /// or the only one there is. Nil when two are connected and neither is
+    /// open, in which case the button asks which.
+    private var impliedIPod: DeviceSource? {
+        if let open = openDevice, let d = connectedIPods.first(where: { $0.name == open }) { return d }
+        let pods = connectedIPods
+        return pods.count == 1 ? pods[0] : nil
+    }
+
+    /// Asks which iPod, under the button that was clicked.
+    private func chooseIPod(under view: NSView?, then act: @escaping (DeviceSource) -> Void) {
+        if let d = impliedIPod { act(d); return }
+        let pods = connectedIPods
+        guard !pods.isEmpty else { return }
+        let menu = NSMenu()
+        for d in pods {
+            let item = NSMenuItem(title: d.name, action: #selector(iPodChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = DeviceChoice(device: d, act: act)
+            menu.addItem(item)
         }
+        if let view = view {
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 4), in: view)
+        } else {
+            menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        }
+    }
+
+    /// A device and what to do with it, carried on the menu item.
+    private final class DeviceChoice: NSObject {
+        let device: DeviceSource
+        let act: (DeviceSource) -> Void
+        init(device: DeviceSource, act: @escaping (DeviceSource) -> Void) { self.device = device; self.act = act }
+    }
+
+    @objc private func iPodChosen(_ sender: NSMenuItem) {
+        guard let c = sender.representedObject as? DeviceChoice else { return }
+        c.act(c.device)
     }
 
     // MARK: Search

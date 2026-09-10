@@ -2067,3 +2067,36 @@ Verified: with `radioModel` set to qwen3.5:4b and the curator on gemma4:12b,
 an Ask logged its turns against qwen3.5:4b while the curator stayed on
 Medium. The test key was removed afterwards. Test flags `--pick-model` and
 `--pick-radio-model` preselect a picker for a screenshot without saving.
+
+## Two iPods at once (2026-09-10)
+
+Steven had an iPod classic and an iPod touch 7 plugged into the Pro at the
+same time and asked whether the app could read both. It listed **four** rows
+for the two of them, and several things quietly meant "the first iPod".
+
+- **`Api._pair_usb`** replaces `_match_usb`. The old rule paired an iTunes
+  source with a USB record by the mounted volume's name, and otherwise took
+  *the only unclaimed Apple device* — which can never fire with two plugged
+  in, so neither got its serial and both turned up again as unclaimed bus
+  rows. Now three passes over the whole set: volume name, then equal
+  capacity to the byte (a disk-mode iPod reports its size both ways; an iOS
+  device mounts nothing and is skipped), then one-source-one-device left
+  over. A bus device earns a row of its own only when there are more of them
+  than iTunes has sources to account for.
+- **`_connected_pods()`** (list) beside `_connected_pod()` (the first).
+  `_resolve_plan` raises **409** naming both when no device key is given and
+  two are connected, rather than planning for whichever came back first.
+  `_plan_status` looks for the plan's *own* iPod among those connected.
+  `/api/sync/plans` gained `connectedDevices`, and only defaults `device`
+  when exactly one is plugged in.
+- **Client**: `syncedPlaylists` is now `[deviceName: [SyncedPlaylist]]` and
+  is loaded for every connected iPod. "Add to iPod" names the device when
+  there is one and grows a level per device when there are two. The toolbar
+  Sync and Eject buttons act on the iPod whose page is open, or the only one
+  connected, and otherwise pop a menu asking which (`chooseIPod`).
+
+Verified against the two real iPods: the sidebar shows one row each with the
+right capacities, `/api/devices` gives each its own USB serial (the classic
+paired on capacity, the touch by elimination), and each device page reads its
+own serial and software version. `--fake-ipod NAME` adds a device that is not
+there, for exercising these paths with only one to hand.
