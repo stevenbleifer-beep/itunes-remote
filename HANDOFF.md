@@ -1968,3 +1968,45 @@ Test without touching playback: POST `/api/radio/play` with an HLS URL
 (e.g. `https://rtvelivestream.rtve.es/rtvesec/rne/rne_r3_main.m3u8`) →
 expect 415 in ~1 s. Anything else *does* reach iTunes — don't while Steven
 is listening.
+
+## Curator: choosing the picker, and how fast it is here (2026-09-10)
+
+The Mac mini M4 Pro (48 GB) arrived with `curatorModel` still set to
+`qwen3.5:4b` — the tier the 16 GB Air was given — because the setting is
+written to defaults once and then never reconsidered. The picker lived only
+in the setup assistant, so changing it meant re-running setup.
+
+- **Preferences ▸ Curator** (new pane, between Radio and Advanced) has the
+  picker: every tier this Mac has the memory for, which one is recommended,
+  what it is like, how long a turn takes here, whether it is downloaded, and
+  a **Download** button (with a progress bar) when it is not. The choice is
+  staged like the rest of the window and written on OK; nothing relaunches.
+  `PreferencesWindow.show(pane:)` opens it by name.
+- **`CuratorEngine.ask`** no longer throws when the chosen picker is missing;
+  it downloads it, reporting progress on the status line (`download(_:)`).
+- **Speed is measured, not guessed.** `OllamaClient.chatJSON` records
+  tokens a second per model in defaults (`curatorTokensPerSecond`, a
+  weighted running mean). **Use Ollama's `eval_duration`, never the wall
+  clock** — the wall clock includes loading the model into memory (~2 s for
+  4b, longer for the big ones) and reads about a tenth of the true rate; the
+  first attempt recorded 3.9 tok/s where the real figure is 52. Before a
+  model has run here, `CuratorModels.estimatedRate` stands in: `k /
+  billions^0.75`, with k by chip class (intel 15, base 70, Pro 145, Max 250,
+  Ultra 430). Fitted to measurements on this M4 Pro and checked against the
+  old Air; it is within a few seconds of the truth for both models here.
+- **`CuratorModels.chip`** reads `machdep.cpu.brand_string`. `recommended()`
+  now considers it: a Max or Ultra with 36 GB+ gets Large, and a Pro with
+  16 GB+ gets Medium, since bandwidth and not memory is what sets the wait.
+  48 GB M4 Pro → Medium (gemma4:12b), with Large (gemma4:26b) one click away.
+
+Measured on the mini, a real curator-sized turn (~3,900 prompt, ~500 out):
+qwen3.5:4b 7.5 s (50 tok/s), gemma4:12b 26.6 s (23 tok/s). gemma4:26b is a
+19 GB download and was **not** fetched — that is Steven's click to make.
+
+Test flags: `--prefs [PANE]` now takes a pane name and, with `--snapshot`,
+photographs the Preferences window instead of the main one (both of the
+main-window snapshot paths bail out when `--prefs` is present).
+`--pick-model NAME` preselects a picker in that pane without saving it —
+use it rather than writing `curatorModel`, which is Steven's live setting.
+`note()` in PreferencesWindow now measures with `sizeThatFits`;
+`intrinsicContentSize` silently clipped anything past two lines.

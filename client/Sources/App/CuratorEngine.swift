@@ -63,6 +63,14 @@ final class OllamaClient {
         let text = ((obj["message"] as? [String: Any])?["content"] as? String) ?? ""
         let result = ChatResult(text: text, promptTokens: obj["prompt_eval_count"] as? Int ?? 0,
                                 outputTokens: obj["eval_count"] as? Int ?? 0, seconds: Date().timeIntervalSince(started))
+        // What this Mac actually managed, so the model picker can quote a
+        // real wait rather than an estimate. Ollama's own eval_duration is
+        // the figure to use: the wall clock also counts loading the model
+        // into memory, which happens once and would read as a tenth of the
+        // true speed.
+        if let evalNanos = obj["eval_duration"] as? Double, evalNanos > 0 {
+            CuratorModels.record(model: model, outputTokens: result.outputTokens, seconds: evalNanos / 1_000_000_000)
+        }
         OllamaClient.log("\(model) prompt \(result.promptTokens) tok, output \(result.outputTokens) tok (cap \(maxTokens)), \(String(format: "%.1f", result.seconds)) s\n--- prompt ---\n\(prompt.prefix(3000))\n--- reply ---\n\(text.prefix(6000))\n")
         return result
     }
@@ -137,26 +145,59 @@ enum CuratorModels {
         let model: String
         let downloadGB: Double
         let minRAMGB: Int          // where it runs without swapping
+        /// Thousands of millions of parameters: what the speed estimate
+        /// scales on until this Mac has actually run the thing.
+        let billions: Double
         let note: String
     }
 
     static let tiers: [Tier] = [
-        Tier(name: "Small", model: "qwen3.5:4b", downloadGB: 3.4, minRAMGB: 8,
-             note: "about half a minute a turn on an M-series Mac"),
-        Tier(name: "Medium", model: "gemma4:12b", downloadGB: 7.6, minRAMGB: 16,
-             note: "better taste, about a minute a turn"),
-        Tier(name: "Large", model: "gemma4:26b", downloadGB: 19, minRAMGB: 32,
-             note: "the most taste, two minutes or more a turn"),
+        Tier(name: "Small", model: "qwen3.5:4b", downloadGB: 3.4, minRAMGB: 8, billions: 4,
+             note: "quick, and enough for a plain request"),
+        Tier(name: "Medium", model: "gemma4:12b", downloadGB: 7.6, minRAMGB: 16, billions: 12,
+             note: "better taste, and holds on to a long request"),
+        Tier(name: "Large", model: "gemma4:26b", downloadGB: 19, minRAMGB: 32, billions: 26,
+             note: "the most taste, and the longest wait"),
     ]
 
     static var physicalRAMGB: Int { Int((Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824).rounded()) }
 
-    /// The tier for this Mac: the biggest that leaves room to breathe.
-    /// 8 GB gets Small; 16 and 24 get Small too (Medium runs on 24 but the
-    /// wait doubles for a modest gain); 32 GB and up get Medium; 64 gets Large.
-    static func recommended(ramGB: Int = physicalRAMGB) -> Tier {
-        if ramGB >= 64 { return tiers[2] }
-        if ramGB >= 32 { return tiers[1] }
+    /// What kind of Apple silicon this is. How fast a model answers is set
+    /// by memory bandwidth rather than by cores, and bandwidth goes up with
+    /// the chip's class — a Pro answers about twice as fast as the plain
+    /// chip of the same generation, a Max about four times.
+    enum Chip: Int, Sendable {
+        case intel = 0, base = 1, pro = 2, max = 3, ultra = 4
+
+        /// Its name, as the Mac reports it: "Apple M4 Pro".
+        var described: String { Chip.brand.isEmpty ? "this Mac" : Chip.brand }
+
+        static let brand: String = {
+            var size = 0
+            guard sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0) == 0, size > 0 else { return "" }
+            var buf = [CChar](repeating: 0, count: size)
+            guard sysctlbyname("machdep.cpu.brand_string", &buf, &size, nil, 0) == 0 else { return "" }
+            return String(cString: buf)
+        }()
+    }
+
+    static let chip: Chip = {
+        let name = Chip.brand
+        guard name.contains("Apple") else { return .intel }
+        if name.contains("Ultra") { return .ultra }
+        if name.contains("Max") { return .max }
+        if name.contains("Pro") { return .pro }
+        return .base
+    }()
+
+    /// The tier for this Mac: the biggest that answers in a reasonable time
+    /// and still leaves memory to work in. Memory alone does not settle it —
+    /// a Pro, Max or Ultra has the bandwidth to run the next size up without
+    /// the wait the plain chip would have.
+    static func recommended(ramGB: Int = physicalRAMGB, chip: Chip = chip) -> Tier {
+        let fast = chip.rawValue >= Chip.max.rawValue
+        if ramGB >= 64 || (fast && ramGB >= 36) { return tiers[2] }
+        if ramGB >= 32 || (chip.rawValue >= Chip.pro.rawValue && ramGB >= 16) { return tiers[1] }
         return tiers[0]
     }
 
@@ -164,6 +205,59 @@ enum CuratorModels {
 
     /// The tiers that fit in this Mac's memory at all.
     static func available(ramGB: Int = physicalRAMGB) -> [Tier] { tiers.filter { $0.minRAMGB <= ramGB } }
+
+    // MARK: How long a turn takes here
+
+    private static let speedKey = "curatorTokensPerSecond"
+
+    /// Tokens a second, as this Mac actually managed them, kept per model so
+    /// the picker can say what the wait really is instead of guessing. A
+    /// running mean over the turns so far, weighted towards the recent ones.
+    static func record(model: String, outputTokens: Int, seconds: Double) {
+        guard outputTokens >= 20, seconds > 0.2 else { return }   // too short to time
+        let rate = Double(outputTokens) / seconds
+        let d = UserDefaults.standard
+        var all = d.dictionary(forKey: speedKey) as? [String: Double] ?? [:]
+        all[model] = all[model].map { $0 * 0.7 + rate * 0.3 } ?? rate
+        d.set(all, forKey: speedKey)
+    }
+
+    static func measuredRate(for model: String) -> Double? {
+        (UserDefaults.standard.dictionary(forKey: speedKey) as? [String: Double])?[model]
+    }
+
+    /// Tokens a second to expect from a model of this size on this chip,
+    /// before it has ever run here. Fitted to measurements: the rate falls
+    /// off roughly as the three-quarter power of the parameter count, and
+    /// the constant is the chip class's bandwidth.
+    static func estimatedRate(billions: Double, chip: Chip = chip) -> Double {
+        let k: Double
+        switch chip {
+        case .intel: k = 15
+        case .base: k = 70
+        case .pro: k = 145
+        case .max: k = 250
+        case .ultra: k = 430
+        }
+        return k / pow(max(billions, 1), 0.75)
+    }
+
+    /// About how long one turn takes: measured if this Mac has run the model,
+    /// estimated from its size if not. A turn is roughly 550 tokens out.
+    /// Returns the seconds and whether the figure was measured.
+    static func secondsPerTurn(_ tier: Tier) -> (seconds: Double, measured: Bool) {
+        if let r = measuredRate(for: tier.model), r > 0 { return (550 / r + 2, true) }
+        return (550 / estimatedRate(billions: tier.billions) + 2, false)
+    }
+
+    /// "about 30 seconds a turn on this Mac" — the phrase the pickers use.
+    static func speedPhrase(_ tier: Tier) -> String {
+        let (s, measured) = secondsPerTurn(tier)
+        let time: String
+        if s < 90 { time = "about \(Int((s / 5).rounded()) * 5) seconds" }
+        else { time = "about \(String(format: "%.1f", s / 60).replacingOccurrences(of: ".0", with: "")) minutes" }
+        return measured ? "\(time) a turn on this Mac, measured" : "\(time) a turn on this Mac"
+    }
 }
 
 @MainActor
@@ -320,6 +414,26 @@ final class CuratorEngine {
     }
 
     /// Whether the server has a model, by name with or without a tag.
+    /// Fetches a picker that has been chosen but never downloaded — the
+    /// case when the listener picks a bigger one in Preferences. The wait is
+    /// long and silent otherwise, so the progress goes to the status line.
+    func download(_ name: String) async throws {
+        let size = CuratorModels.tier(for: name).map { " (about \(Int($0.downloadGB.rounded())) GB)" } ?? ""
+        onStatus("Downloading \(name)\(size)…")
+        do {
+            try await ollama.pull(model: name) { [weak self] fraction, text in
+                Task { @MainActor in
+                    guard let self = self else { return }
+                    let pct = fraction >= 0 ? " \(Int(fraction * 100))%" : ""
+                    self.onStatus("Downloading \(name)\(size):\(pct) \(text)")
+                }
+            }
+        } catch {
+            throw CuratorError("Could not download \(name): \(error.localizedDescription)")
+        }
+        onStatus("Downloaded \(name).")
+    }
+
     func hasModel(_ name: String) async -> Bool {
         let have = (try? await ollama.models()) ?? []
         return have.contains { $0 == name || $0.hasPrefix(name + ":") || name.hasPrefix($0 + ":") }
@@ -465,9 +579,7 @@ final class CuratorEngine {
         guard await OllamaRuntime.shared.ensureRunning() != nil else {
             throw CuratorError("No model server could be started. Check ~/Library/Logs/iTunesRemote/ollama.log.")
         }
-        guard await hasModel(model) else {
-            throw CuratorError("The model \(model) is not downloaded yet. File ▸ Set Up \(AppIdentity.name)… fetches it (about 3.5 GB).")
-        }
+        if await !hasModel(model) { try await download(model) }
         asking = true
         defer { asking = false }
         let started = Date()

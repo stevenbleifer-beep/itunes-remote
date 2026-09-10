@@ -2695,6 +2695,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                 fflush(stdout)
                 return
             }
+            // --prefs takes the picture itself, of the Preferences window.
+            if CommandLine.arguments.contains("--prefs") { return }
             if let path = snapshotPath, let content = window?.contentView {
                 try? await Task.sleep(nanoseconds: 700_000_000)
                 capture(to: path, content: content)
@@ -4031,9 +4033,21 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
                                           countryCode: parts.count > 1 ? parts[1] : nil)
             }
         }
-        // `--prefs`: open the Preferences window, for a screenshot.
-        if CommandLine.arguments.contains("--prefs") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.showPreferences(nil) }
+        // `--prefs [PANE]`: open the Preferences window, on that pane if
+        // named, for a screenshot. With --snapshot the pane is written to the
+        // file and the app quits, instead of the main window.
+        if let i = CommandLine.arguments.firstIndex(of: "--prefs") {
+            let next = i + 1 < CommandLine.arguments.count ? CommandLine.arguments[i + 1] : ""
+            let pane = next.hasPrefix("--") ? "" : next
+            let shot = snapshotPath
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                guard let self = self else { return }
+                self.showPreferences(nil)
+                if !pane.isEmpty { self.preferences?.show(pane: pane) }
+                guard let shot = shot, let content = self.preferences?.window?.contentView else { return }
+                // The pane asks Ollama what is downloaded; let it answer.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.capture(to: shot, content: content) }
+            }
         }
         // `--flip-artwork`: select the first song and turn the artwork pane
         // over to its lyrics, for checking the back of the pane.
@@ -4113,6 +4127,9 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
             }
             return
         }
+        // --prefs photographs the Preferences window instead, and does it
+        // from the flag's own block.
+        if CommandLine.arguments.contains("--prefs") { return }
         guard let path = snapshotPath, let content = window?.contentView else { return }
         window?.makeKeyAndOrderFront(nil)
         if let want = snapshotDevice {
@@ -4136,7 +4153,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource, NST
         capture(to: path, content: content)
     }
 
-    private func capture(to path: String, content: NSView) {
+    func capture(to path: String, content: NSView) {
         content.layoutSubtreeIfNeeded()
         content.displayIfNeeded()
         let b = content.bounds
