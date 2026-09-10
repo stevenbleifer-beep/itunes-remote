@@ -17,7 +17,9 @@ final class RadioAgent {
     }
 
     var onStatus: (String) -> Void = { _ in }
-    var model: String { UserDefaults.standard.string(forKey: "curatorModel") ?? CuratorEngine.defaultModel }
+    /// Ask's own model: the radio's setting when it has one, else whatever
+    /// the curator is on.
+    var model: String { CuratorModels.radioModel }
     private let ollama: OllamaClient
     private let browser: RadioBrowserClient
 
@@ -48,6 +50,7 @@ final class RadioAgent {
 
     func ask(_ text: String, filter: RadioFilter = RadioFilter(), want: Int = 15) async throws -> Result {
         let started = Date()
+        try await ensureModel()
         onStatus("Working out what to search for…")
         var plan = try await makePlan(text, filter: filter, broaden: nil)
         var found = try await run(plan.queries)
@@ -71,6 +74,26 @@ final class RadioAgent {
         let (picks, note) = await choose(text, from: candidates, want: want)
         return Result(picks: picks, found: found, note: note.isEmpty ? plan.note : note,
                       seconds: Date().timeIntervalSince(started))
+    }
+
+    /// Fetches Ask's model when it has been chosen but never downloaded —
+    /// the case when the radio is given a picker of its own in Preferences.
+    private func ensureModel() async throws {
+        let name = model
+        let have = (try? await ollama.models()) ?? []
+        guard !have.contains(where: { $0 == name || $0.hasPrefix(name + ":") }) else { return }
+        let size = CuratorModels.tier(for: name).map { " (about \(Int($0.downloadGB.rounded())) GB)" } ?? ""
+        onStatus("Downloading \(name)\(size)…")
+        do {
+            try await ollama.pull(model: name) { [weak self] fraction, text in
+                Task { @MainActor in
+                    let pct = fraction >= 0 ? " \(Int(fraction * 100))%" : ""
+                    self?.onStatus("Downloading \(name)\(size):\(pct) \(text)")
+                }
+            }
+        } catch {
+            throw CuratorError("Could not download \(name): \(error.localizedDescription)")
+        }
     }
 
     /// A plain search, no model: the words as a station name, and as a

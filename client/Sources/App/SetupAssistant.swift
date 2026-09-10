@@ -50,7 +50,11 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
     private static let W: CGFloat = 560, H: CGFloat = 440
     /// The picker chosen (or recommended) plus the search model.
     static var curatorModels: [String] {
-        [UserDefaults.standard.string(forKey: "curatorModel") ?? CuratorEngine.defaultModel, CuratorEngine.embedModel]
+        var list = [CuratorModels.curatorModel, CuratorEngine.embedModel]
+        // The radio may have been given a picker of its own.
+        let radio = CuratorModels.radioModel
+        if !list.contains(radio) { list.insert(radio, at: 1) }
+        return list
     }
     private let modelLabel = NSTextField(labelWithString: "Model:")
     private let modelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -190,7 +194,7 @@ final class SetupAssistant: NSObject, NSTableViewDataSource, NSTableViewDelegate
         modelPopup.removeAllItems()
         let ram = CuratorModels.physicalRAMGB
         let rec = CuratorModels.recommended()
-        let chosen = UserDefaults.standard.string(forKey: "curatorModel") ?? rec.model
+        let chosen = UserDefaults.standard.string(forKey: CuratorModels.curatorKey) ?? rec.model
         for t in CuratorModels.available() {
             let gb = t.downloadGB == t.downloadGB.rounded() ? String(Int(t.downloadGB)) : String(format: "%.1f", t.downloadGB)
             var title = "\(t.name) — \(t.model), \(gb) GB download, \(t.note)"

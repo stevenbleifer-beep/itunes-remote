@@ -25,16 +25,17 @@ final class PreferencesWindow: NSWindowController, NSToolbarDelegate {
     private var current: Pane = .general
     private let lookPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let libraryPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    /// The curator's picker: which model chooses the songs.
-    private let modelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let modelNote = NSTextField(wrappingLabelWithString: "")
+    /// The two pickers: the curator's, and the radio's, which follows the
+    /// curator's until it is given one of its own.
+    private let curatorChooser = ModelChooser(key: CuratorModels.curatorKey,
+                                              purpose: "The curator chooses the songs with it.",
+                                              testFlag: "--pick-model")
+    private let radioChooser = ModelChooser(key: CuratorModels.radioKey,
+                                            purpose: "Ask turns your words into station searches with it.",
+                                            testFlag: "--pick-radio-model",
+                                            follows: (CuratorModels.curatorKey, "Playlist Curator"))
     private let machineNote = NSTextField(wrappingLabelWithString: "")
-    private let downloadButton = AquaPushButton(title: "Download")
-    private let downloadProgress = NSProgressIndicator()
-    /// Which pickers Ollama already has on disk; empty until it answers.
-    private var downloaded: Set<String> = []
-    private var pulling = false
-    private let content = ChromeView(frame: NSRect(x: 0, y: 0, width: 500, height: 330))
+    private let content = ChromeView(frame: NSRect(x: 0, y: 0, width: 500, height: 372))
     private let paneHost = NSView()
     private let okButton = AquaPushButton(title: "OK", isDefault: true)
     private let cancelButton = AquaPushButton(title: "Cancel")
@@ -255,9 +256,15 @@ final class PreferencesWindow: NSWindowController, NSToolbarDelegate {
         var y = v.bounds.height - 30
         check("Show Radio in the sidebar", pane: .radio, x: 30, y: y, in: v,
               read: { !MainWindowController.radioHidden }, toggle: { [main] in main.toggleRadioVisible(nil) })
-        y -= 28
+        y -= 26
+        separator(y: y, in: v); y -= 24
+        // Ask has a picker of its own: it writes a few short searches rather
+        // than choosing from a long list, so a small quick model does the job
+        // the curator would want a bigger one for.
+        y = radioChooser.build(label: "Ask uses:", in: v, y: y)
+        y -= 6
         separator(y: y, in: v); y -= 16
-        y -= note("Stations come from the Radio Browser directory. Ask uses the curator's model to search it.", x: 30, y: y, in: v) + 16
+        y -= note("Stations come from the Radio Browser directory. Search matches names and styles there directly, with no model at all.", x: 30, y: y, in: v) + 16
         let forget = AquaPushButton(title: "Forget Refused Stations")
         forget.target = self
         forget.action = #selector(forgetRefused(_:))
@@ -275,35 +282,8 @@ final class PreferencesWindow: NSWindowController, NSToolbarDelegate {
     /// chosen for the old one until somebody says otherwise.
     private func buildCurator(_ v: NSView) {
         var y = v.bounds.height - 30
-        fieldRow("Picker:", y: y, in: v) { x in
-            self.modelPopup.frame = NSRect(x: x, y: 0, width: 360, height: 24)
-            self.modelPopup.target = self
-            self.modelPopup.action = #selector(self.modelPicked(_:))
-            return self.modelPopup
-        }
-        y -= 22
-        modelNote.font = Aqua.font(11)
-        modelNote.textColor = Theme.ink(0.45)
-        let noteWidth = v.bounds.width - 132
-        modelNote.preferredMaxLayoutWidth = noteWidth
-        modelNote.frame = NSRect(x: 112, y: y - 30, width: noteWidth, height: 30)
-        v.addSubview(modelNote)
-        y -= 38
-        downloadButton.target = self
-        downloadButton.action = #selector(downloadModel(_:))
-        let ds = downloadButton.intrinsicContentSize
-        downloadButton.frame = NSRect(x: 108, y: y - ds.height, width: ds.width, height: ds.height)
-        downloadButton.isHidden = true
-        v.addSubview(downloadButton)
-        downloadProgress.frame = NSRect(x: 112 + ds.width + 8, y: y - ds.height + 6, width: 190, height: 12)
-        downloadProgress.isIndeterminate = false
-        downloadProgress.minValue = 0
-        downloadProgress.maxValue = 1
-        downloadProgress.controlSize = .small
-        downloadProgress.style = .bar
-        downloadProgress.isHidden = true
-        v.addSubview(downloadProgress)
-        y -= ds.height + 14
+        y = curatorChooser.build(label: "Picker:", in: v, y: y)
+        y -= 8
         separator(y: y, in: v); y -= 16
         y -= note("A bigger picker chooses with more taste and takes longer. Every song still comes from your own library — the picker only chooses, and it never sees the library itself.", x: 30, y: y, in: v) + 12
         machineNote.font = Aqua.font(11)
@@ -393,70 +373,9 @@ final class PreferencesWindow: NSWindowController, NSToolbarDelegate {
         for list in settings.values { for s in list { s.button.state = s.read() ? .on : .off } }
         lookPopup.selectItem(at: Theme.isModern ? 1 : 0)
         libraryPopup.selectItem(at: ServerSettings.isMusicProfile ? 1 : 0)
-        fillModelPopup()
+        curatorChooser.refresh()
+        radioChooser.refresh()
         describeMachine()
-        describeModel()
-        Task { await self.findDownloadedModels() }
-    }
-
-    // MARK: The curator's picker
-
-    /// Every picker this Mac has the memory for, plus a trained one if the
-    /// training window made it. The chosen one is selected.
-    private func fillModelPopup() {
-        guard !pulling else { return }
-        let chosen = UserDefaults.standard.string(forKey: "curatorModel") ?? CuratorEngine.defaultModel
-        let recommended = CuratorModels.recommended()
-        modelPopup.removeAllItems()
-        for t in CuratorModels.available() {
-            let gb = t.downloadGB == t.downloadGB.rounded() ? String(Int(t.downloadGB)) : String(format: "%.1f", t.downloadGB)
-            var title = "\(t.name) — \(t.model), \(gb) GB"
-            if t.model == recommended.model { title += " (recommended)" }
-            modelPopup.addItem(withTitle: title)
-            modelPopup.lastItem?.representedObject = t.model
-        }
-        if CuratorModels.tier(for: chosen) == nil {
-            modelPopup.addItem(withTitle: "Trained on your edits — \(chosen)")
-            modelPopup.lastItem?.representedObject = chosen
-        }
-        if let i = modelPopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == chosen }) {
-            modelPopup.selectItem(at: i)
-        }
-        // `--pick-model NAME`: show the page with that picker chosen, for a
-        // screenshot of a picker that is not downloaded. Nothing is saved.
-        if let i = CommandLine.arguments.firstIndex(of: "--pick-model"), i + 1 < CommandLine.arguments.count,
-           let j = modelPopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == CommandLine.arguments[i + 1] }) {
-            modelPopup.selectItem(at: j)
-        }
-    }
-
-    private var selectedModel: String {
-        (modelPopup.selectedItem?.representedObject as? String)
-            ?? UserDefaults.standard.string(forKey: "curatorModel") ?? CuratorEngine.defaultModel
-    }
-
-    /// The line under the picker: what it is like, and whether it is here.
-    private func describeModel() {
-        guard !pulling else { return }
-        let model = selectedModel
-        let tier = CuratorModels.tier(for: model)
-        var line = tier.map { "\($0.note.prefix(1).uppercased() + $0.note.dropFirst()); \(CuratorModels.speedPhrase($0))." }
-            ?? "Trained on your own edits."
-        if downloaded.isEmpty {
-            line += " Checking what is downloaded…"
-        } else if downloaded.contains(model) {
-            line += " Downloaded."
-        } else if let t = tier {
-            line += " Not downloaded yet — \(Int(t.downloadGB.rounded())) GB."
-        } else {
-            line += " Not downloaded yet."
-        }
-        modelNote.stringValue = line
-        // The button is there only when there is something to fetch; a
-        // greyed-out "Downloaded" button is just furniture.
-        let needed = !downloaded.isEmpty && !downloaded.contains(model)
-        downloadButton.isHidden = !needed
-        downloadButton.isEnabled = needed
     }
 
     /// The last line: what this Mac is, and what suits it.
@@ -465,77 +384,10 @@ final class PreferencesWindow: NSWindowController, NSToolbarDelegate {
         let machine = chip.isEmpty ? "This Mac" : chip
         let rec = CuratorModels.recommended()
         var line = "\(machine), \(CuratorModels.physicalRAMGB) GB — \(rec.name) suits it."
-        let chosen = UserDefaults.standard.string(forKey: "curatorModel") ?? CuratorEngine.defaultModel
-        if let now = CuratorModels.tier(for: chosen), now.billions < rec.billions {
+        if let now = CuratorModels.tier(for: CuratorModels.curatorModel), now.billions < rec.billions {
             line += " The curator is on \(now.name), which was chosen for a smaller Mac."
         }
         machineNote.stringValue = line
-    }
-
-    private func findDownloadedModels() async {
-        guard let url = await OllamaRuntime.shared.ensureRunning() else {
-            modelNote.stringValue = "No model server is running, so nothing can be downloaded or run. Advanced ▸ AI features turns this off entirely."
-            downloadButton.isEnabled = false
-            return
-        }
-        let have = (try? await OllamaClient(baseURL: url).models()) ?? []
-        downloaded = Set(CuratorModels.tiers.map { $0.model }.filter { m in
-            have.contains { $0 == m || $0.hasPrefix(m + ":") }
-        })
-        // A trained picker counts as here too.
-        let chosen = selectedModel
-        if CuratorModels.tier(for: chosen) == nil,
-           have.contains(where: { $0 == chosen || $0.hasPrefix(chosen + ":") }) { downloaded.insert(chosen) }
-        describeModel()
-    }
-
-    @objc private func modelPicked(_ sender: Any?) {
-        describeModel()
-    }
-
-    /// Fetches the chosen picker now. Nothing else in this window acts
-    /// before OK, but a download is not a setting — it is a long errand,
-    /// and waiting for OK to start it would only make it longer.
-    @objc private func downloadModel(_ sender: Any?) {
-        guard !pulling else { return }
-        let model = selectedModel
-        pulling = true
-        modelPopup.isEnabled = false
-        downloadButton.isEnabled = false
-        downloadProgress.isHidden = false
-        downloadProgress.doubleValue = 0
-        modelNote.stringValue = "Downloading \(model)…"
-        Task { [weak self] in
-            guard let self = self, let url = await OllamaRuntime.shared.ensureRunning() else {
-                self?.finishDownload("The model server would not start.")
-                return
-            }
-            do {
-                try await OllamaClient(baseURL: url).pull(model: model) { [weak self] fraction, text in
-                    Task { @MainActor in
-                        guard let self = self else { return }
-                        if fraction >= 0 { self.downloadProgress.doubleValue = fraction }
-                        self.modelNote.stringValue = "\(model): \(text)"
-                    }
-                }
-                self.finishDownload(nil)
-            } catch {
-                self.finishDownload("Download failed: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    private func finishDownload(_ problem: String?) {
-        pulling = false
-        modelPopup.isEnabled = true
-        downloadProgress.isHidden = true
-        if let problem = problem {
-            modelNote.stringValue = problem
-            downloadButton.isHidden = false
-            downloadButton.isEnabled = true
-            return
-        }
-        Task { await self.findDownloadedModels() }
     }
 
     /// Applies every checkbox that differs from its setting, then the two
@@ -545,9 +397,9 @@ final class PreferencesWindow: NSWindowController, NSToolbarDelegate {
         for list in settings.values {
             for s in list where s.read() != (s.button.state == .on) { s.toggle() }
         }
-        // The picker takes effect on the curator's next question; nothing
-        // has to relaunch for it.
-        UserDefaults.standard.set(selectedModel, forKey: "curatorModel")
+        // The pickers take effect on the next question; nothing relaunches.
+        curatorChooser.apply()
+        radioChooser.apply()
         close()
         let wantModern = lookPopup.indexOfSelectedItem == 1
         let wantMusic = libraryPopup.indexOfSelectedItem == 1

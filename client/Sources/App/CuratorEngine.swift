@@ -203,6 +203,25 @@ enum CuratorModels {
 
     static func tier(for model: String) -> Tier? { tiers.first { $0.model == model } }
 
+    // MARK: Who runs on what
+
+    static let curatorKey = "curatorModel"
+    static let radioKey = "radioModel"
+
+    /// The model the Playlist Curator chooses songs with.
+    static var curatorModel: String {
+        UserDefaults.standard.string(forKey: curatorKey) ?? recommended().model
+    }
+
+    /// The model the radio's Ask writes its searches with. The two jobs are
+    /// not alike — the curator reads a long candidate list and chooses with
+    /// taste, Ask turns a sentence into a few directory queries — so the
+    /// radio may be given a model of its own. With none, it follows the
+    /// curator, which is what it always did.
+    static var radioModel: String {
+        UserDefaults.standard.string(forKey: radioKey) ?? curatorModel
+    }
+
     /// The tiers that fit in this Mac's memory at all.
     static func available(ramGB: Int = physicalRAMGB) -> [Tier] { tiers.filter { $0.minRAMGB <= ramGB } }
 
@@ -278,7 +297,7 @@ final class CuratorEngine {
     /// The picker: chosen in setup (defaults key `curatorModel`), else the
     /// one recommended for this Mac's memory. Read each time, so a change
     /// in setup takes effect on the next question.
-    var model: String { UserDefaults.standard.string(forKey: "curatorModel") ?? CuratorEngine.defaultModel }
+    var model: String { CuratorModels.curatorModel }
     var onStatus: (String) -> Void = { _ in }
     /// Called as the index grows: (done, total).
     var onIndexProgress: (Int, Int) -> Void = { _, _ in }

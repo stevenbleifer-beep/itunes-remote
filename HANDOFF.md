@@ -2038,3 +2038,32 @@ Verified both ways: as it stands the badge reads "Home · Thunderbolt", and
 with `--lan-host 192.168.1.131` (the Pro's Wi-Fi address) it reads
 "Home · Wi-Fi". **Use `--lan-host` for this** — the old note about writing
 `serverLANHost` to defaults touches Steven's live setting; the flag does not.
+
+## The curator and the radio each get their own model (2026-09-10)
+
+They are not the same job. The curator reads a candidate list of a hundred
+songs and chooses with taste, which rewards a bigger model; the radio's Ask
+turns a sentence into two to five directory queries, which a small quick one
+does well. Steven asked to be able to set them separately.
+
+- `CuratorModels.curatorKey` / `.radioKey` ("curatorModel" / "radioModel"),
+  with `CuratorModels.curatorModel` and `.radioModel` resolving them.
+  **The radio key's absence means "follow the curator"** — that is how it
+  always behaved, and it stays the default. Never write `radioModel` just to
+  make the two agree; leave it unset.
+- `ModelChooser` (new file) is the picker as a reusable piece: popup, the
+  line underneath, a Download button and progress. Preferences ▸ Curator has
+  one, Preferences ▸ Radio has another whose first item is "The same as the
+  Playlist Curator — <model>" (represented object "", which `apply()` turns
+  into removing the key). Nothing is written until OK.
+- `RadioAgent.ask` now calls `ensureModel()` first, so a picker chosen for
+  the radio but never downloaded is fetched with progress on the status line
+  rather than failing. `SetupAssistant.curatorModels` includes both models
+  when they differ, so setup fetches what is actually needed.
+- The Preferences window is 372 tall now (was 330) to fit the extra row, and
+  `ModelChooser`'s note reserves three lines — two clipped the sentence.
+
+Verified: with `radioModel` set to qwen3.5:4b and the curator on gemma4:12b,
+an Ask logged its turns against qwen3.5:4b while the curator stayed on
+Medium. The test key was removed afterwards. Test flags `--pick-model` and
+`--pick-radio-model` preselect a picker for a screenshot without saving.
