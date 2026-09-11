@@ -2100,3 +2100,40 @@ right capacities, `/api/devices` gives each its own USB serial (the classic
 paired on capacity, the touch by elimination), and each device page reads its
 own serial and software version. `--fake-ipod NAME` adds a device that is not
 there, for exercising these paths with only one to hand.
+
+## The curator ignored "100 songs" (2026-09-10)
+
+Steven asked for "a long study jazz playlist", then "make the playlist 100
+songs long", twice, and got 20 both times. The model was not at fault: its
+plan said `"length": 100` and its choose step returned 89 songs. The app
+threw them away.
+
+Two faults in `CuratorEngine`, each enough on its own:
+
+1. **`requestedCount(in:)` read at most two digits** — `[1-9][0-9]?` — so
+   "100 songs" matched nothing at all and the length rule in `applyEdit`
+   never ran. Now `[1-9][0-9]{0,2}`.
+2. **`grows` did not include "long"**, only "longer". With no count and no
+   growth word, `applyEdit` fell to its swap rule — additions with no
+   growth word mean a swap — and cut the list back to `current.count`, which
+   is exactly the 20 it started with. The word list now has long, lengthen
+   and bigger.
+
+Also `CuratorEngine.maxLength` (100) replaces two disagreeing ceilings: the
+plan clamped the model's length to 60 while a count in the words clamped to
+100. `applyEdit` clamps to the same constant.
+
+Verified headlessly against his own words, `--curate "…" --curate "…"`:
+"a long study jazz playlist that i can use as ambient music" then "make the
+playlist 100 songs long" now gives 100 then 97 (the two-per-artist rule and
+the candidate pool stop it reaching exactly 100, which is fine). Regression:
+"upbeat 90s rock" → 20, "keep it to 12" → 12, "swap out the slow ones" → 12.
+
+A 100-song turn is slow — the choose step asks the model for length + a
+third and caps tokens at `600 + 60 ×` that, so it can run into minutes on
+the 12b model. Nothing is wrong when it sits there.
+
+The **New** button was not at fault: `startOver` clears the picks, heading
+and transcript and calls `CuratorEngine.reset()`, which empties the history,
+request, seeds and current list. It is disabled only while a turn is in
+flight, which on a long request can be a couple of minutes.

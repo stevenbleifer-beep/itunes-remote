@@ -541,15 +541,23 @@ final class CuratorEngine {
 
     /// "three songs", "20 song playlist", "about fifty": the count a request
     /// asks for, read from the words rather than trusted to the model.
+    /// The longest playlist the curator will build. A hundred songs is a
+    /// long wait on any model; past that the candidate list runs out before
+    /// the list is full anyway.
+    static let maxLength = 100
+
     static func requestedCount(in text: String) -> Int? {
         let t = text.lowercased()
         let words = ["one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
                      "ten": 10, "twelve": 12, "fifteen": 15, "twenty": 20, "twenty-five": 25, "twenty five": 25,
                      "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "a dozen": 12]
         let span = NSRange(t.startIndex..., in: t)
-        if let m = try? NSRegularExpression(pattern: "\\b([1-9][0-9]?)\\s*(?:-|\\s)?(?:song|track|tune)s?\\b").firstMatch(in: t, range: span),
+        // Up to three digits: "100 songs" is a perfectly ordinary request and
+        // a two-digit pattern read it as no number at all, which left the
+        // list at the length it already had.
+        if let m = try? NSRegularExpression(pattern: "\\b([1-9][0-9]{0,2})\\s*(?:-|\\s)?(?:song|track|tune)s?\\b").firstMatch(in: t, range: span),
            let r = Range(m.range(at: 1), in: t), let n = Int(t[r]) { return n }
-        if let m = try? NSRegularExpression(pattern: "\\b(?:about|around|roughly|make it|keep it to|keep it at|down to|up to|just)\\s+([1-9][0-9]?)\\b").firstMatch(in: t, range: span),
+        if let m = try? NSRegularExpression(pattern: "\\b(?:about|around|roughly|make it|keep it to|keep it at|down to|up to|just)\\s+([1-9][0-9]{0,2})\\b").firstMatch(in: t, range: span),
            let r = Range(m.range(at: 1), in: t), let n = Int(t[r]) { return n }
         for (w, n) in words.sorted(by: { $0.key.count > $1.key.count }) {
             if let _ = try? NSRegularExpression(pattern: "\\b\(NSRegularExpression.escapedPattern(for: w))\\s+(?:upbeat |slow |great |good |more )?(?:song|track|tune)s?\\b").firstMatch(in: t, range: span) { return n }
@@ -698,8 +706,8 @@ final class CuratorEngine {
         p.queries = (obj["queries"] as? [Any])?.compactMap { $0 as? String } ?? []
         p.artists = (obj["artists"] as? [Any])?.compactMap { $0 as? String } ?? []
         p.avoid = (obj["avoid"] as? [Any])?.compactMap { $0 as? String } ?? []
-        if let n = obj["length"] as? Int { p.length = max(3, min(60, n)) }
-        else if let s = obj["length"] as? String, let n = Int(s) { p.length = max(3, min(60, n)) }
+        if let n = obj["length"] as? Int { p.length = max(3, min(CuratorEngine.maxLength, n)) }
+        else if let s = obj["length"] as? String, let n = Int(s) { p.length = max(3, min(CuratorEngine.maxLength, n)) }
         p.name = obj["name"] as? String ?? ""
         p.fresh = (obj["fresh"] as? Bool) ?? false
         if let ys = obj["years"] as? [Any], ys.count == 2,
@@ -707,7 +715,10 @@ final class CuratorEngine {
             p.years = a...b
         }
         if let spoken = CuratorEngine.yearRange(in: (feedback ? request + " " : "") + text) { p.years = spoken }
-        if !feedback, let n = CuratorEngine.requestedCount(in: text) { p.length = max(1, min(100, n)) }
+        // Only on a fresh request: in feedback a number is as likely to be
+        // "drop the 3 Miles Davis ones" as a length, and applyEdit reads the
+        // length from the words there itself.
+        if !feedback, let n = CuratorEngine.requestedCount(in: text) { p.length = max(1, min(CuratorEngine.maxLength, n)) }
         if p.queries.isEmpty { p.queries = [text] }
         if !seeds.isEmpty {
             // The seed's own artists join the search, whatever the model
@@ -1194,13 +1205,14 @@ final class CuratorEngine {
         // Removals with nothing added are taken as removals, and stay.
         let added = list.count - (current.count - removed.count)
         let span = NSRange(text.startIndex..., in: text)
-        let grows = (try? NSRegularExpression(pattern: "\\b(add|more|extra|another|include|longer)\\b", options: .caseInsensitive))?
+        let grows = (try? NSRegularExpression(pattern: "\\b(add|more|extra|another|include|long|longer|lengthen|bigger)\\b", options: .caseInsensitive))?
             .firstMatch(in: text, range: span) != nil
         let swaps = (try? NSRegularExpression(pattern: "\\b(swap|replace|instead|trade|switch|change)\\b", options: .caseInsensitive))?
             .firstMatch(in: text, range: span) != nil
         // A count only when it reads as one — "keep it to 20", "30 songs" —
         // not any digit: "maroon 5 isn't indie" once cut a list to five.
-        if let n = CuratorEngine.requestedCount(in: text), n >= 1 {
+        if let asked = CuratorEngine.requestedCount(in: text), asked >= 1 {
+            let n = min(asked, CuratorEngine.maxLength)
             if list.count > n {
                 list = Array(list.prefix(n))
             } else if list.count < n {
