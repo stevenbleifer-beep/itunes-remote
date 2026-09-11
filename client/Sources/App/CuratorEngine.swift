@@ -544,7 +544,30 @@ final class CuratorEngine {
     /// The longest playlist the curator will build. A hundred songs is a
     /// long wait on any model; past that the candidate list runs out before
     /// the list is full anyway.
+    /// Christmas songs stay out of a July playlist unless they are asked
+    /// for. The words need boundaries: without them "santa" matched all 19
+    /// Santana songs, "noel" matched Noel Gallagher and Big Star's "Stroke
+    /// It Noel", and "jingle" matched a Butthole Surfers title. Bare "noel"
+    /// is gone — as a word it is a man's name more often than a carol — and
+    /// "jingle" needs its bells. "christmas" keeps a loose tail so that
+    /// "Christmastime" still counts. Measured over this library: 46 songs
+    /// were being hidden that had nothing to do with Christmas.
+    static let holidayWords = try! NSRegularExpression(
+        pattern: "\\bchristmas|\\bxmas\\b|\\bchanukk?ah|\\bhanukk?ah|\\bsanta\\b"
+               + "|\\bjingle bells?\\b|\\bsilent night\\b|\\bfirst noel\\b|\\bfeliz navidad\\b|\\bauld lang syne\\b",
+        options: .caseInsensitive)
+
     static let maxLength = 100
+
+    /// How many songs by one artist may share a playlist. Two is right for
+    /// twenty; on a hundred-song list it is not variety but a straitjacket —
+    /// it would need fifty artists that all fit the request, and a list
+    /// asking for one corner of the library simply cannot fill. So it grows
+    /// with the length: 2 up to two dozen songs, 5 at sixty, 9 at a hundred.
+    /// A request that names an artist is exempt from it altogether.
+    static func perArtistLimit(_ length: Int) -> Int {
+        max(2, Int((Double(length) / 12).rounded(.up)))
+    }
 
     static func requestedCount(in text: String) -> Int? {
         let t = text.lowercased()
@@ -810,7 +833,7 @@ final class CuratorEngine {
                 }
             }
             guard let tracks = found else { continue }
-            lists.append(CuratorEngine.best(of: tracks, limit: 8))
+            lists.append(CuratorEngine.best(of: tracks, limit: max(8, CuratorEngine.perArtistLimit(plan.length) * 3)))
         }
         // Seeds first: the songs nearest the seed as a whole, then nearest
         // each seed song, so a mixed playlist pulls from every corner of
@@ -979,7 +1002,7 @@ final class CuratorEngine {
             - "remove" lists ✓ songs the feedback objects to, and nothing else.
             - "add" lists new songs the feedback asks for ("a couple" means two or three), that fit the request.
             - If the feedback asks for a length, remove or add enough to reach it.
-            - At most 2 songs by the same artist unless the request is about one artist.
+            - At most \(CuratorEngine.perArtistLimit(max(current.count, plan.length))) songs by the same artist unless the request is about one artist.
             - "order" is every remaining ✓ song and every added song, sequenced like a real playlist.
             - If the feedback corrects your description of the playlist rather than the songs, remove and add nothing, and say so in the note.
             \(eraRule)
@@ -993,7 +1016,7 @@ final class CuratorEngine {
             Choose \(plan.length + max(6, plan.length / 3)) songs for the playlist. Rules:
             - Use ONLY the numbers listed. Never invent a song.
             - Sequence them like a real playlist: an opener, a flow, an ender.
-            - Vary artists; at most 2 songs by the same artist unless the request is about one artist.
+            - Vary artists; at most \(CuratorEngine.perArtistLimit(plan.length)) songs by the same artist unless the request is about one artist.
             - Prefer songs that clearly fit the request over merely famous ones.
             \(eraRule)
             Return JSON: {"playlist": [{"n": 12, "why": "a few words"}, ...], "note": "one or two sentences to the listener about the songs chosen — describe the music, never a scene or occasion the listener did not mention", "name": "a short playlist name"}
@@ -1015,10 +1038,11 @@ final class CuratorEngine {
         // The model is told the rules and forgets them often enough that
         // they are enforced here: only real numbers, no repeats, two per
         // artist, no holiday songs unless asked, and the planned length.
-        let holiday = try! NSRegularExpression(pattern: "christmas|xmas|santa|jingle|silent night|noel|hanukkah", options: .caseInsensitive)
+        let holiday = CuratorEngine.holidayWords
         func isHoliday(_ s: String) -> Bool { holiday.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil }
         let wantsHoliday = isHoliday(request) || isHoliday(text)
         let requestFold = CuratorEngine.fold(request + " " + text)
+        let artistLimit = CuratorEngine.perArtistLimit(plan.length)
         var picks: [CuratorPick] = []
         var used = Set<String>()
         var titles = Set<String>()
@@ -1034,7 +1058,7 @@ final class CuratorEngine {
             guard !titles.contains(title) else { continue }
             let a = CuratorEngine.fold(t.artist)
             let aboutArtist = a.count >= 3 && requestFold.contains(a)
-            if perArtist[a, default: 0] >= 2 && !aboutArtist { continue }
+            if perArtist[a, default: 0] >= artistLimit && !aboutArtist { continue }
             if !wantsHoliday && (isHoliday(t.name) || isHoliday(t.album)) { continue }
             used.insert(t.persistentId)
             titles.insert(title)
@@ -1066,10 +1090,11 @@ final class CuratorEngine {
     private func chooseMore(_ count: Int, plan: Plan, candidates cands: [Track], eraRule: String,
                             used: inout Set<String>, perArtist: inout [String: Int], requestFold: String,
                             allowHoliday: Bool, isHoliday: (String) -> Bool) async throws -> (picks: [CuratorPick], seconds: Double) {
+        let limit = CuratorEngine.perArtistLimit(plan.length)
         var lines: [String] = []
         for (i, t) in cands.enumerated() where !used.contains(t.persistentId) {
             let a = CuratorEngine.fold(t.artist)
-            if perArtist[a, default: 0] >= 2 && !(a.count >= 3 && requestFold.contains(a)) { continue }
+            if perArtist[a, default: 0] >= limit && !(a.count >= 3 && requestFold.contains(a)) { continue }
             if let years = plan.years, let y = t.year, !years.contains(y) { continue }
             var s = "\(i + 1). \(t.artist) – \(t.name) (\(t.album.isEmpty ? "?" : t.album)"
             if let y = t.year { s += " \(y)" }
@@ -1106,7 +1131,7 @@ final class CuratorEngine {
             guard !used.contains(t.persistentId) else { continue }
             let a = CuratorEngine.fold(t.artist)
             if out.contains(where: { CuratorEngine.sameSong($0.track, t) }) || current.contains(where: { CuratorEngine.sameSong($0.track, t) }) { continue }
-            if perArtist[a, default: 0] >= 2 && !(a.count >= 3 && requestFold.contains(a)) { continue }
+            if perArtist[a, default: 0] >= limit && !(a.count >= 3 && requestFold.contains(a)) { continue }
             if !allowHoliday && (isHoliday(t.name) || isHoliday(t.album)) { continue }
             if let years = plan.years, let y = t.year, !years.contains(y) { continue }
             used.insert(t.persistentId)
@@ -1123,6 +1148,7 @@ final class CuratorEngine {
                       requestFold: String, allowHoliday: Bool, isHoliday: (String) -> Bool, years: ClosedRange<Int>?,
                       exclude: Set<String> = []) {
         guard picks.count < length else { return }
+        let limit = CuratorEngine.perArtistLimit(length)
         // Never the songs an edit just took out: the current list sits at
         // the head of the candidates, so they would come straight back.
         let used = Set(picks.map { $0.track.persistentId }).union(exclude)
@@ -1142,7 +1168,7 @@ final class CuratorEngine {
             if picks.contains(where: { CuratorEngine.sameSong($0.track, t) }) { continue }
             let a = CuratorEngine.fold(t.artist)
             let aboutArtist = a.count >= 3 && requestFold.contains(a)
-            if perArtist[a, default: 0] >= 2 && !aboutArtist { continue }
+            if perArtist[a, default: 0] >= limit && !aboutArtist { continue }
             if !allowHoliday && (isHoliday(t.name) || isHoliday(t.album)) { continue }
             perArtist[a, default: 0] += 1
             // Not the model's pick, and said so: the search put it forward.
@@ -1171,17 +1197,21 @@ final class CuratorEngine {
         var list = current.filter { !removed.contains($0.track.persistentId) }
         var perArtist: [String: Int] = [:]
         for p in list { perArtist[CuratorEngine.fold(p.track.artist), default: 0] += 1 }
-        let holiday = try! NSRegularExpression(pattern: "christmas|xmas|santa|jingle|silent night|noel|hanukkah", options: .caseInsensitive)
+        let holiday = CuratorEngine.holidayWords
         func isHoliday(_ s: String) -> Bool { holiday.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil }
         let wantsHoliday = isHoliday(request) || isHoliday(text)
         let requestFold = CuratorEngine.fold(request + " " + text)
+        // The edit's target length is what the cap should follow: growing a
+        // list to a hundred must not be held to a twenty-song list's ration.
+        let artistLimit = CuratorEngine.perArtistLimit(max(current.count, plan.length,
+                                                          CuratorEngine.requestedCount(in: text) ?? 0))
         for item in (obj["add"] as? [[String: Any]]) ?? [] {
             guard let n = number(item["n"]), let t = track(n) else { continue }
             guard !list.contains(where: { $0.track.persistentId == t.persistentId }) else { continue }
             if let years = plan.years, let y = t.year, !years.contains(y) { continue }
             let a = CuratorEngine.fold(t.artist)
             let aboutArtist = a.count >= 3 && requestFold.contains(a)
-            if perArtist[a, default: 0] >= 2 && !aboutArtist { continue }
+            if perArtist[a, default: 0] >= artistLimit && !aboutArtist { continue }
             if !wantsHoliday && (isHoliday(t.name) || isHoliday(t.album)) { continue }
             perArtist[a, default: 0] += 1
             list.append(CuratorPick(track: t, why: item["why"] as? String ?? ""))

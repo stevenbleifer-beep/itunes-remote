@@ -2137,3 +2137,45 @@ The **New** button was not at fault: `startOver` clears the picks, heading
 and transcript and calls `CuratorEngine.reset()`, which empties the history,
 request, seeds and current list. It is disabled only while a turn is in
 flight, which on a long request can be a couple of minutes.
+
+## What is built into the curator, and two rules that were wrong (2026-09-10)
+
+Steven asked why only two songs per artist were allowed and what else is
+hidden in there. The full inventory is in his answer; two rules were wrong
+and are fixed.
+
+**1. The artist cap did not scale.** A flat 2 per artist is right for a
+twenty-song list and impossible for a hundred-song one — it needs fifty
+artists that all fit the request, so a list about one corner of the library
+cannot fill. `CuratorModels`… no: `CuratorEngine.perArtistLimit(_ length:)`
+= `max(2, ceil(length / 12))`, so 20 → 2, 60 → 5, 100 → 9. Enforced at all
+five places that used a literal 2 (the choose parse, chooseMore's candidate
+list and its parse, fill, and applyEdit's add), interpolated into both
+prompts so the model is told the same number, and the per-artist candidate
+shelf (`best(of:limit:)`) grew from a flat 8 to `max(8, limit * 3)`.
+The "request names the artist" exemption is unchanged.
+
+**2. The holiday filter had no word boundaries.** `christmas|xmas|santa|
+jingle|silent night|noel|hanukkah` matched inside words, so every Santana
+song, all of Noel Gallagher's High Flying Birds, Big Star's "Stroke It
+Noel", THE BLACK RYDER's "Santaria" and a Butthole Surfers title were
+silently dropped from every playlist that did not ask for Christmas —
+46 songs in this library. Now `CuratorEngine.holidayWords`, one shared
+regex: `\bchristmas` (loose tail, so "Christmastime" still counts),
+`\bxmas\b`, `\bchanukk?ah`, `\bhanukk?ah`, `\bsanta\b`, `\bjingle bells?\b`,
+`\bsilent night\b`, `\bfirst noel\b`, `\bfeliz navidad\b`,
+`\bauld lang syne\b`. Checked against the library: every real Christmas
+song still caught, the 46 handed back.
+
+Left alone deliberately: the reissue rule (`isReissue`) matches the title as
+well as the album, which catches AC/DC's "Live Wire", but 1,780 of its
+title-only matches are genuine live takes and it only ever deprioritises,
+never removes, and only when a year range was asked for.
+
+Verified: "a long study jazz playlist that i can use as ambient music" then
+"make the playlist 100 songs long" now gives 100 songs over 25 artists, then
+100 over 26, at most 9 by one artist.
+
+**When testing with `--curate`, redirect to a file and wait for the process
+to exit** — stdout is fully buffered there, so an in-progress run looks dead
+for its whole length. A 100-song turn is about four minutes on gemma4:12b.
